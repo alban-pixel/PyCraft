@@ -11,6 +11,8 @@ import colorsys
 
 import numpy as np
 
+from pycraft import config
+
 # 16 familles de teintes : ciel, eau, herbe, feuillage, terre, sable, pierre,
 # bois, neige, lave, soleil, nuit, rouge, rose, turquoise, gris sombre.
 _FAMILLES: tuple[tuple[float, float, float], ...] = (
@@ -45,25 +47,28 @@ _BASES: tuple[tuple[int, int, int], ...] = (
 
 
 def _construire_palette() -> np.ndarray:
-    """Construit 256 couleurs uniques : bases + rampes HSV + remplissage."""
-    couleurs: list[tuple[int, int, int]] = list(_BASES)
-    for i, (teinte, saturation, valeur) in enumerate(_FAMILLES):
+    """256 couleurs uniques.
+
+    Les 16 premières sont **exactement** la palette du jeu (config.PALETTE) : le
+    HUD, les couleurs de blocs et l'ancien renderer CPU restent cohérents. Les
+    240 suivantes sont des rampes pour les dégradés et l'éclairage.
+    """
+    bases: list[tuple[int, int, int]] = [(int(r), int(g), int(b)) for r, g, b in config.PALETTE]
+    vus: set[tuple[int, int, int]] = set(bases)
+    uniques: list[tuple[int, int, int]] = list(bases)
+
+    for teinte, saturation, _ in _FAMILLES:
         for j in range(_NUANCES):
             t = j / (_NUANCES - 1)
-            v = 0.12 + 0.88 * t
+            v = 0.10 + 0.90 * t
             s = saturation * (1.0 - 0.20 * t)
-            # léger décalage de teinte pour éviter les doublons entre familles
-            h = (teinte + 0.006 * j) % 1.0
+            h = (teinte + 0.004 * j) % 1.0
             r, g, b = colorsys.hsv_to_rgb(h, min(1.0, s), min(1.0, v))
-            couleurs.append((int(r * 255), int(g * 255), int(b * 255)))
+            c = (int(r * 255), int(g * 255), int(b * 255))
+            if c not in vus:
+                vus.add(c)
+                uniques.append(c)
 
-    uniques: list[tuple[int, int, int]] = []
-    vus: set[tuple[int, int, int]] = set()
-    for c in couleurs:
-        if c not in vus:
-            vus.add(c)
-            uniques.append(c)
-    # Complète avec un treillis pseudo-aléatoire déterministe.
     i = 0
     while len(uniques) < 256:
         c = ((i * 37 + 11) % 256, (i * 91 + 53) % 256, (i * 151 + 97) % 256)
@@ -116,3 +121,23 @@ def detect_palette_size(pyxel_module) -> int:
         return 256
     except Exception:
         return 16
+
+
+def install_palette(pyxel_module) -> int:
+    """Étend la palette Pyxel et installe les 256 couleurs du jeu.
+
+    À appeler **après** `pyxel.init()`. Renvoie la taille effective (256 ou 16).
+    """
+    taille = detect_palette_size(pyxel_module)
+    for i in range(taille):
+        r, g, b = (int(v) for v in PALETTE[i])
+        pyxel_module.colors[i] = (r << 16) | (g << 8) | b
+    return taille
+
+
+def lut_as_texture(lut: np.ndarray) -> np.ndarray:
+    """Réorganise le LUT (32, 32, 32) en image 2D (hauteur=32, largeur=1024).
+
+    x = r + 32·g, y = b : une texture 2D se sample de façon fiable partout.
+    """
+    return np.ascontiguousarray(lut.transpose(2, 1, 0).reshape(32, 1024))
