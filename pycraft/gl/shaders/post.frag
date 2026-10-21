@@ -5,6 +5,12 @@ uniform sampler2D u_scene;
 uniform sampler2D u_lut;
 uniform vec3 u_tint;
 uniform float u_vignette;
+uniform float u_rain;
+uniform float u_time;
+
+float hash_pluie(vec2 p) {
+    return fract(sin(dot(p, vec2(41.7, 289.3))) * 43758.5453);
+}
 out vec4 frag_color;
 
 void main() {
@@ -12,6 +18,13 @@ void main() {
     vec2 d = v_uv - 0.5;
     float vignette = 1.0 - u_vignette * dot(d, d) * 1.8;
     color *= u_tint * vignette;
+
+    if (u_rain > 0.01) {
+        vec2 p = v_uv * vec2(120.0, 320.0);
+        p.y -= u_time * 60.0;
+        float goutte = step(0.955, hash_pluie(floor(p * vec2(1.0, 0.5)) + floor(u_time * 4.0)));
+        color = mix(color, vec3(0.72, 0.80, 0.90), goutte * u_rain * 0.6);
+    }
 
     int r = min(int(clamp(color.r, 0.0, 1.0) * 31.999), 31);
     int g = min(int(clamp(color.g, 0.0, 1.0) * 31.999), 31);

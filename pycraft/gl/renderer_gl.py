@@ -55,6 +55,8 @@ class GlRenderer:
         self.chunks_visibles = 0
         self._light_mvp = np.eye(4, dtype=np.float64)
         self._jour = 1.0
+        self._temps = 0.0
+        self.rain = 0.0
         self._tint = (1.0, 1.0, 1.0)
         self._ciel_horizon = np.array(config.PALETTE[config.SKY_HORIZON], np.float32) / 255.0
         self._ciel_zenith = np.array(config.PALETTE[config.SKY_TOP], np.float32) / 255.0
@@ -152,6 +154,7 @@ class GlRenderer:
 
     # ------------------------------------------------------------------
     def draw(self, camera: Camera, selection=None, time: float = 0.0) -> None:
+        self._temps = time
         self._rendre_scene(camera, time)
         self._post_traitement()
         self.gl.blit_to_pyxel()
@@ -293,6 +296,8 @@ class GlRenderer:
         self.post_prog["u_lut"].value = 1
         self.post_prog["u_tint"].value = tuple(float(v) for v in self._tint)
         self.post_prog["u_vignette"].value = 0.55
+        self.post_prog["u_rain"].value = float(self.rain)
+        self.post_prog["u_time"].value = float(self._temps)
         self.post_vao.render()
 
     def invalidate(self, x: int, y: int) -> None:

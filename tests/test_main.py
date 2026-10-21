@@ -57,3 +57,7 @@ def test_gpu_par_defaut():
     args = main.parse_args([])
     assert args.cpu is False
     assert args.no_shadows is False
+
+
+def test_option_meteo():
+    assert main.parse_args(["--weather"]).weather is True

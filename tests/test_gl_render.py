@@ -196,3 +196,28 @@ def test_cycle_jour_nuit(pyxel_headless):
         assert PALETTE[nuit].astype(float).mean() < PALETTE[jour].astype(float).mean()
     finally:
         renderer.close()
+
+
+def test_pluie_visible(pyxel_headless):
+    from pycraft.gl.context import GlContext
+    from pycraft.gl.renderer_gl import GlRenderer
+
+    monde = World(sx=32, sy=32, sz=16, seed=0)
+    monde.data = bytearray(len(monde.data))
+    for y in range(32):
+        for x in range(32):
+            for z in range(4):
+                monde.set(x, y, z, Block.GRASS)
+    gl = GlContext(320, 200)
+    renderer = GlRenderer(monde, ChunkMeshes(monde), 320, 200, view_distance=40, detail_radius=16, gl=gl)
+    try:
+        camera = Camera(16, 16, 8, yaw=0.6, pitch=-0.1, width=320, height=200)
+        renderer.rain = 0.0
+        renderer.draw(camera, time=10.0)
+        sec = np.frombuffer(gl.read_indices(), dtype=np.uint8).copy()
+        renderer.rain = 1.0
+        renderer.draw(camera, time=10.0)
+        pluie = np.frombuffer(gl.read_indices(), dtype=np.uint8).copy()
+        assert (sec != pluie).sum() > 100
+    finally:
+        renderer.close()

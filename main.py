@@ -69,6 +69,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=0, help="graine du monde (défaut : 0)")
     parser.add_argument("--cpu", action="store_true", help="force le renderer CPU (sans OpenGL)")
     parser.add_argument("--no-shadows", action="store_true", help="désactive les ombres (GPU)")
+    parser.add_argument("--weather", action="store_true", help="active la pluie (GPU)")
     return parser.parse_args(argv)
 
 
@@ -235,6 +236,13 @@ def update() -> None:
     camera.set_angles(joueur.yaw, joueur.pitch)
     etat["selection"] = joueur.raycast(monde, 5.0)
 
+    if etat.get("weather") and hasattr(renderer, "rain"):
+        # Pas de pluie sous un toit : on teste le bloc au-dessus de la tête.
+        couvert = monde.is_solid(
+            int(joueur.x), int(joueur.y), int(joueur.z + joueur.height + 1.0)
+        )
+        renderer.rain = 0.0 if couvert else 1.0
+
 
 def draw() -> None:
     etat = _etat
@@ -318,6 +326,9 @@ def main(argv: list[str] | None = None) -> None:
             gl=None,
         )
     _etat.update(etat)
+    _etat["weather"] = bool(args.weather) and hasattr(etat["renderer"], "rain")
+    if _etat["weather"]:
+        _etat["renderer"].rain = 1.0
     _etat["ecran"] = "titre"
     _etat["args"] = args
     pyxel.run(update, draw)
