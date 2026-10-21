@@ -18,6 +18,7 @@ class World:
         # One block of air padding on every side, so meshing never goes out of bounds.
         # World block (x, y, z) is stored at blocks[x + 1, y + 1, z + 1].
         self.blocks = np.zeros((sx + 2, sy + 2, sz + 2), dtype=np.uint8)
+        self.active_water = set()
         if generate:
             self.generate()
 
@@ -36,6 +37,38 @@ class World:
     def set(self, x, y, z, block):
         if self.inside(x, y, z):
             self.blocks[x + 1, y + 1, z + 1] = block
+
+    def trigger_water(self, x, y, z):
+        """Wake up fluid simulation around position (x, y, z)."""
+        for dx, dy, dz in [(0, 0, 0), (0, 1, 0), (0, -1, 0), (1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1)]:
+            nx, ny, nz = x + dx, y + dy, z + dz
+            if self.inside(nx, ny, nz) and self.get(nx, ny, nz) == WATER:
+                self.active_water.add((nx, ny, nz))
+
+    def tick_fluids(self):
+        """Step dynamic water flow. Returns a set of (cx, cz) chunk indices that were updated."""
+        if not self.active_water:
+            return set()
+        next_active = set()
+        modified_chunks = set()
+        for x, y, z in list(self.active_water):
+            if self.get(x, y, z) != WATER:
+                continue
+            # Priority: downwards
+            if y > 1 and self.get(x, y - 1, z) == AIR:
+                self.set(x, y - 1, z, WATER)
+                next_active.add((x, y - 1, z))
+                modified_chunks.add((x // 16, z // 16))
+                continue
+            # Spread horizontally if resting on solid or water
+            for dx, dz in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
+                nx, nz = x + dx, z + dz
+                if self.inside(nx, y, nz) and self.get(nx, y, nz) == AIR:
+                    self.set(nx, y, nz, WATER)
+                    next_active.add((nx, y, nz))
+                    modified_chunks.add((nx // 16, nz // 16))
+        self.active_water = next_active
+        return modified_chunks
 
     def is_solid(self, x, y, z):
         # Invisible walls around the world and a solid floor, so the player can't fall out

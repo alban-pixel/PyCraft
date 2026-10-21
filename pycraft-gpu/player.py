@@ -1,9 +1,23 @@
-"""First-person player: walking, jumping, swimming, flying and collisions with blocks."""
+"""First-person player: walking, jumping, swimming, flying, health/survival, and collisions."""
 import math
 
 import pyxel
 
 from blocks import WATER
+
+
+def _btn(key):
+    try:
+        return pyxel.btn(key)
+    except BaseException:
+        return False
+
+
+def _btnp(key):
+    try:
+        return pyxel.btnp(key)
+    except BaseException:
+        return False
 
 HALF_WIDTH = 0.3
 HEIGHT = 1.8
@@ -22,7 +36,7 @@ STEP_DISTANCE = 1.7  # blocks walked between footstep sounds
 
 
 class Player:
-    def __init__(self, x, y, z):
+    def __init__(self, x, y, z, mode="survival"):
         self.pos = [x, y, z]  # feet position
         self.vel_y = 0.0
         self.yaw = 0.0  # degrees, 0 looks toward +z
@@ -32,6 +46,21 @@ class Player:
         self.in_water = False
         self.against_wall = False
         self.walked = 0.0
+        self.mode = mode  # "survival" or "creative"
+
+        # Health & Survival
+        self.max_health = 20
+        self.health = 20
+        self.max_air = 10.0
+        self.air = 10.0
+        self.drown_timer = 0.0
+        self.fall_start_y = float(y)
+        self.hurt_timer = 0.0
+        self.swing_progress = 0.0
+
+    @property
+    def is_dead(self):
+        return self.health <= 0
 
     def eye(self):
         return (self.pos[0], self.pos[1] + EYE_HEIGHT, self.pos[2])
@@ -54,12 +83,52 @@ class Player:
         return (x < px + HALF_WIDTH and x + 1 > px - HALF_WIDTH and y < py + HEIGHT and y + 1 > py
                 and z < pz + HALF_WIDTH and z + 1 > pz - HALF_WIDTH)
 
+    def swing(self):
+        """Trigger hand/tool swing animation."""
+        self.swing_progress = 1.0
+
+    def take_damage(self, amount):
+        """Apply damage in survival mode. Returns True if damage was taken."""
+        if self.mode == "creative" or self.health <= 0:
+            return False
+        self.health = max(0, self.health - amount)
+        self.hurt_timer = 0.35
+        return True
+
+    def heal(self, amount):
+        if self.health > 0:
+            self.health = min(self.max_health, self.health + amount)
+
+    def respawn(self, spawn_pos):
+        self.pos = list(spawn_pos)
+        self.health = self.max_health
+        self.air = self.max_air
+        self.vel_y = 0.0
+        self.fall_start_y = float(self.pos[1])
+        self.hurt_timer = 0.0
+        self.flying = False
+
+    def toggle_mode(self):
+        if self.mode == "survival":
+            self.mode = "creative"
+        else:
+            self.mode = "survival"
+            self.flying = False
+
     def update(self, world, dt):
-        """Move the player for one frame. Returns the set of sound events: "jump", "step", "splash"."""
+        """Move the player for one frame. Returns the set of sound events."""
         events = set()
-        if pyxel.btnp(pyxel.KEY_F):
-            self.flying = not self.flying
-            self.vel_y = 0.0
+
+        if self.hurt_timer > 0:
+            self.hurt_timer = max(0.0, self.hurt_timer - dt)
+        if self.swing_progress > 0:
+            self.swing_progress = max(0.0, self.swing_progress - dt * 4.5)
+
+        # Flying toggle (Creative mode only)
+        if _btnp(pyxel.KEY_F):
+            if self.mode == "creative":
+                self.flying = not self.flying
+                self.vel_y = 0.0
 
         px, py, pz = self.pos
         was_in_water = self.in_water
@@ -67,12 +136,26 @@ class Player:
         if self.in_water and not was_in_water and self.vel_y < -4:
             events.add("splash")
 
-        # Horizontal movement relative to where the player looks
+        # Drowning in survival mode
+        if self.mode == "survival":
+            if self.head_in_water(world):
+                self.air = max(0.0, self.air - dt)
+                if self.air <= 0.0:
+                    self.drown_timer += dt
+                    if self.drown_timer >= 1.0:
+                        self.drown_timer = 0.0
+                        if self.take_damage(2):
+                            events.add("hurt")
+            else:
+                self.air = min(self.max_air, self.air + dt * 4.0)
+                self.drown_timer = 0.0
+
+        # Horizontal movement relative to look orientation
         yaw = math.radians(self.yaw)
         fx, fz = math.sin(yaw), math.cos(yaw)
         rx, rz = -fz, fx
-        move_f = (pyxel.btn(pyxel.KEY_W) or pyxel.btn(pyxel.KEY_Z)) - pyxel.btn(pyxel.KEY_S)
-        move_r = pyxel.btn(pyxel.KEY_D) - (pyxel.btn(pyxel.KEY_A) or pyxel.btn(pyxel.KEY_Q))
+        move_f = (_btn(pyxel.KEY_W) or _btn(pyxel.KEY_Z)) - _btn(pyxel.KEY_S)
+        move_r = _btn(pyxel.KEY_D) - (_btn(pyxel.KEY_A) or _btn(pyxel.KEY_Q))
         dx, dz = fx * move_f + rx * move_r, fz * move_f + rz * move_r
         length = math.hypot(dx, dz)
         if length:
@@ -80,32 +163,47 @@ class Player:
                 speed = FLY_SPEED
             elif self.in_water:
                 speed = SWIM_SPEED
-            elif pyxel.btn(pyxel.KEY_LCTRL):
+            elif _btn(pyxel.KEY_LCTRL):
                 speed = SPRINT_SPEED
             else:
                 speed = WALK_SPEED
             dx, dz = dx / length * speed * dt, dz / length * speed * dt
 
         if self.flying:
-            self.vel_y = (pyxel.btn(pyxel.KEY_SPACE) - pyxel.btn(pyxel.KEY_LSHIFT)) * FLY_SPEED
+            self.vel_y = (_btn(pyxel.KEY_SPACE) - _btn(pyxel.KEY_LSHIFT)) * FLY_SPEED
+            self.fall_start_y = self.pos[1]
         elif self.in_water:
-            if pyxel.btn(pyxel.KEY_SPACE):
-                # Swimming against a wall climbs out of the water onto the bank
+            if _btn(pyxel.KEY_SPACE):
                 self.vel_y = JUMP_SPEED * 0.75 if self.against_wall else SWIM_UP_SPEED
             self.vel_y = max(self.vel_y - WATER_GRAVITY * dt, -MAX_SINK_SPEED)
+            self.fall_start_y = self.pos[1]
         else:
-            if self.on_ground and pyxel.btn(pyxel.KEY_SPACE):
-                self.vel_y = JUMP_SPEED
-                events.add("jump")
+            if self.on_ground:
+                if _btn(pyxel.KEY_SPACE):
+                    self.vel_y = JUMP_SPEED
+                    events.add("jump")
+            else:
+                # Track highest point when falling
+                if self.pos[1] > self.fall_start_y:
+                    self.fall_start_y = self.pos[1]
             self.vel_y = max(self.vel_y - GRAVITY * dt, -MAX_FALL_SPEED)
 
         hit_x = self._move_axis(world, 0, dx)
         hit_z = self._move_axis(world, 2, dz)
         self.against_wall = hit_x or hit_z
+        was_on_ground = self.on_ground
         self.on_ground = False
         if self._move_axis(world, 1, self.vel_y * dt):
             if self.vel_y < 0:
                 self.on_ground = True
+                # Fall damage check
+                if not was_on_ground and not self.flying and not self.in_water:
+                    fallen = self.fall_start_y - self.pos[1]
+                    if fallen > 3.5 and self.mode == "survival":
+                        damage = int(round(fallen - 3.0))
+                        if damage > 0 and self.take_damage(damage):
+                            events.add("hurt")
+                self.fall_start_y = self.pos[1]
             self.vel_y = 0.0
 
         if self.on_ground and not self.flying:

@@ -9,7 +9,10 @@ import math
 import moderngl
 import numpy as np
 
-from blocks import ATLAS_TILES, BLOCK_TILES, CUTOUT, OPAQUE, SELF_CULL, WATER
+from blocks import (
+    ATLAS_TILES, BLOCK_TILES, CUTOUT, OPAQUE, SELF_CULL, WATER,
+    T_CRACK_0, T_DIRT, T_PIG_BODY, T_PIG_FACE, T_ZOMBIE_BODY, T_ZOMBIE_FACE,
+)
 
 CHUNK = 16
 OUTLINE_INDEX = 0  # Pyxel black
@@ -181,6 +184,14 @@ class Renderer:
             self.sky_vao = ctx.vertex_array(self.sky_program, [(sky_quad, "2f", "in_pos")])
             self.outline_vbo = ctx.buffer(reserve=24 * 3 * 4)
             self.outline_vao = ctx.vertex_array(self.outline_program, [(self.outline_vbo, "3f", "in_pos")])
+            self.entity_vbo = ctx.buffer(reserve=256 * 1024)  # 256KB for dynamic mobs
+            self.entity_vao = ctx.vertex_array(
+                self.program, [(self.entity_vbo, "3f 2f 1f 1f", "in_pos", "in_uv", "in_shade", "in_kind")]
+            )
+            self.crack_vbo = ctx.buffer(reserve=36 * 7 * 4)
+            self.crack_vao = ctx.vertex_array(
+                self.program, [(self.crack_vbo, "3f 2f 1f 1f", "in_pos", "in_uv", "in_shade", "in_kind")]
+            )
         self.resize(width, height)
         self.set_world(world)
 
@@ -314,7 +325,85 @@ class Renderer:
                 return False
         return True
 
-    def render(self, screen, eye, forward, target=None):
+    @staticmethod
+    def _make_box_verts(pos, size, yaw_deg, tile_faces, kind=0.0, shade_mult=1.0):
+        sx, sy, sz = size
+        yaw = math.radians(yaw_deg)
+        cos_y, sin_y = math.cos(yaw), math.sin(yaw)
+        tiles = [tile_faces] * 6 if isinstance(tile_faces, int) else tile_faces
+        parts = []
+
+        for face_idx, ((dx, dy, dz), corners, shade) in enumerate(FACES):
+            tile_num = tiles[face_idx]
+            ty, tx = divmod(tile_num, ATLAS_TILES)
+            corner_uv = (np.array([tx, ty], dtype=np.float32) + UV_INSET + CORNER_UV * (1 - 2 * UV_INSET)) / ATLAS_TILES
+
+            c_arr = (np.array(corners, dtype=np.float32) - 0.5) * np.array([sx, sy, sz], dtype=np.float32)
+            rx = c_arr[:, 0] * cos_y + c_arr[:, 2] * sin_y
+            rz = -c_arr[:, 0] * sin_y + c_arr[:, 2] * cos_y
+            ry = c_arr[:, 1]
+            p = np.stack([rx + pos[0], ry + pos[1], rz + pos[2]], axis=1)
+
+            f_p = p[TRIANGLES]
+            f_uv = corner_uv[TRIANGLES]
+            f_sh = np.full((6, 1), shade * shade_mult, dtype=np.float32)
+            f_kd = np.full((6, 1), kind, dtype=np.float32)
+            parts.append(np.concatenate([f_p, f_uv, f_sh, f_kd], axis=1))
+        return np.concatenate(parts, axis=0)
+
+    def _build_entities_mesh(self, entities):
+        if not entities:
+            return None, 0
+        boxes = []
+        for ent in entities:
+            x, y, z = ent.pos
+            yaw = ent.yaw
+            shade_mult = 1.8 if ent.hurt_timer > 0 else 1.0
+
+            if ent.kind == "zombie":
+                # Head
+                boxes.append(self._make_box_verts((x, y + 1.55, z), (0.45, 0.45, 0.45), yaw, T_ZOMBIE_FACE, shade_mult=shade_mult))
+                # Torso
+                boxes.append(self._make_box_verts((x, y + 0.95, z), (0.5, 0.75, 0.28), yaw, T_ZOMBIE_BODY, shade_mult=shade_mult))
+                # Extended arms (forward)
+                yaw_rad = math.radians(yaw)
+                cos_y, sin_y = math.cos(yaw_rad), math.sin(yaw_rad)
+                ra_x = x + 0.32 * cos_y + 0.3 * sin_y
+                ra_z = z - 0.32 * sin_y + 0.3 * cos_y
+                la_x = x - 0.32 * cos_y + 0.3 * sin_y
+                la_z = z + 0.32 * sin_y + 0.3 * cos_y
+                boxes.append(self._make_box_verts((ra_x, y + 0.95, ra_z), (0.18, 0.18, 0.6), yaw, T_ZOMBIE_FACE, shade_mult=shade_mult))
+                boxes.append(self._make_box_verts((la_x, y + 0.95, la_z), (0.18, 0.18, 0.6), yaw, T_ZOMBIE_FACE, shade_mult=shade_mult))
+                # Legs
+                sw = math.sin(ent.walk_cycle) * 0.15
+                rl_x = x + 0.15 * cos_y + sw * sin_y
+                rl_z = z - 0.15 * sin_y + sw * cos_y
+                ll_x = x - 0.15 * cos_y - sw * sin_y
+                ll_z = z + 0.15 * sin_y - sw * cos_y
+                boxes.append(self._make_box_verts((rl_x, y + 0.3, rl_z), (0.2, 0.6, 0.2), yaw, T_DIRT, shade_mult=shade_mult))
+                boxes.append(self._make_box_verts((ll_x, y + 0.3, ll_z), (0.2, 0.6, 0.2), yaw, T_DIRT, shade_mult=shade_mult))
+            elif ent.kind == "pig":
+                yaw_rad = math.radians(yaw)
+                cos_y, sin_y = math.cos(yaw_rad), math.sin(yaw_rad)
+                # Body
+                boxes.append(self._make_box_verts((x, y + 0.45, z), (0.65, 0.55, 0.9), yaw, T_PIG_BODY, shade_mult=shade_mult))
+                # Head
+                hx = x + 0.45 * sin_y
+                hz = z + 0.45 * cos_y
+                boxes.append(self._make_box_verts((hx, y + 0.6, hz), (0.42, 0.42, 0.42), yaw, T_PIG_FACE, shade_mult=shade_mult))
+                # 4 legs
+                sw = math.sin(ent.walk_cycle) * 0.12
+                for ox, oz, s in [(-0.2, -0.3, sw), (0.2, -0.3, -sw), (-0.2, 0.3, -sw), (0.2, 0.3, sw)]:
+                    lx = x + ox * cos_y + (oz + s) * sin_y
+                    lz = z - ox * sin_y + (oz + s) * cos_y
+                    boxes.append(self._make_box_verts((lx, y + 0.18, lz), (0.18, 0.35, 0.18), yaw, T_PIG_BODY, shade_mult=shade_mult))
+
+        if not boxes:
+            return None, 0
+        data = np.concatenate(boxes, axis=0).astype("f4")
+        return data, len(data)
+
+    def render(self, screen, eye, forward, target=None, entities=None, mining_target=None, crack_stage=-1):
         """Draw the world seen from eye into screen (a (height, width) uint8 view of pyxel.screen)."""
         vp = self.projection @ look_at(eye, forward)
         mvp = vp.T.copy().tobytes()
@@ -342,6 +431,21 @@ class Renderer:
             for (cx, cz), chunk in self.chunks.items():
                 if chunk and self._chunk_in_frustum(planes, cx, cz):
                     chunk[1].render()
+
+            # Render 3D Mobs
+            if entities:
+                ent_data, vcount = self._build_entities_mesh(entities)
+                if ent_data is not None and vcount > 0:
+                    self.entity_vbo.write(ent_data.tobytes())
+                    self.entity_vao.render(moderngl.TRIANGLES, vertices=vcount)
+
+            # Render block crack overlay
+            if mining_target and 0 <= crack_stage <= 3:
+                tx, ty, tz = mining_target
+                crack_tile = T_CRACK_0 + crack_stage
+                crack_verts = self._make_box_verts((tx + 0.5, ty + 0.5, tz + 0.5), (1.004, 1.004, 1.004), 0.0, crack_tile, kind=1.0)
+                self.crack_vbo.write(crack_verts.astype("f4").tobytes())
+                self.crack_vao.render(moderngl.TRIANGLES, vertices=36)
 
             if target:
                 corners = np.array([(x, y, z) for x in (0, 1) for y in (0, 1) for z in (0, 1)], dtype="f4")
