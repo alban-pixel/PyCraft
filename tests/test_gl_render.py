@@ -1,5 +1,7 @@
 """T4 : premier rendu 3D GPU (terrain + quantification)."""
 
+import math
+
 import numpy as np
 import pytest
 
@@ -219,5 +221,69 @@ def test_pluie_visible(pyxel_headless):
         renderer.draw(camera, time=10.0)
         pluie = np.frombuffer(gl.read_indices(), dtype=np.uint8).copy()
         assert (sec != pluie).sum() > 100
+    finally:
+        renderer.close()
+
+
+def test_contour_du_bloc_vise(pyxel_headless):
+    """Le bloc sous le réticule doit être entouré d'un contour (comme en CPU)."""
+    from pycraft.gl.context import GlContext
+    from pycraft.gl.renderer_gl import GlRenderer
+
+    monde = World(sx=32, sy=32, sz=16, seed=0)
+    monde.data = bytearray(len(monde.data))
+    monde.set(16, 16, 8, Block.GRASS)
+
+    gl = GlContext(320, 200)
+    renderer = GlRenderer(
+        monde, ChunkMeshes(monde), 320, 200, view_distance=40, detail_radius=16, gl=gl
+    )
+    try:
+        # Caméra pile en face de la face -Y du bloc : il occupe le centre de l'écran.
+        camera = Camera(16.5, 14.0, 8.5, yaw=math.pi / 2, pitch=0.0, width=320, height=200)
+
+        renderer.draw(camera)
+        sans = np.frombuffer(gl.read_indices(), dtype=np.uint8).copy()
+
+        renderer.draw(camera, selection=(16, 16, 8))
+        avec = np.frombuffer(gl.read_indices(), dtype=np.uint8).copy()
+
+        masque = (avec != sans).reshape(200, 320)
+        diff = np.argwhere(masque)
+        assert len(diff) > 600, "le bloc visé doit être entouré d'un contour"
+        # Un contour, pas un aplat : le centre de la face ne change pas.
+        assert avec[100 * 320 + 160] == sans[100 * 320 + 160]
+        # Le changement reste confiné à la boîte projetée du bloc (±55 px ici).
+        ys, xs = diff[:, 0], diff[:, 1]
+        assert xs.min() >= 160 - 70 and xs.max() <= 160 + 70
+        assert ys.min() >= 100 - 70 and ys.max() <= 100 + 70
+        # Trait de 2 px d'épaisseur (glLineWidth n'est pas garanti > 1).
+        rangees = np.flatnonzero(masque[:, 160])
+        assert rangees[1] == rangees[0] + 1, "le contour doit faire 2 px d'épaisseur"
+        assert len(rangees) == 4
+    finally:
+        renderer.close()
+
+
+def test_pas_de_contour_sans_selection(pyxel_headless):
+    """Sans sélection, aucune ligne parasite ne doit apparaître."""
+    from pycraft.gl.context import GlContext
+    from pycraft.gl.renderer_gl import GlRenderer
+
+    monde = World(sx=32, sy=32, sz=16, seed=0)
+    monde.data = bytearray(len(monde.data))
+    monde.set(16, 16, 8, Block.GRASS)
+
+    gl = GlContext(320, 200)
+    renderer = GlRenderer(
+        monde, ChunkMeshes(monde), 320, 200, view_distance=40, detail_radius=16, gl=gl
+    )
+    try:
+        camera = Camera(16.5, 14.0, 8.5, yaw=math.pi / 2, pitch=0.0, width=320, height=200)
+        renderer.draw(camera)
+        a = np.frombuffer(gl.read_indices(), dtype=np.uint8).copy()
+        renderer.draw(camera, selection=None)
+        b = np.frombuffer(gl.read_indices(), dtype=np.uint8).copy()
+        assert (a != b).sum() == 0
     finally:
         renderer.close()

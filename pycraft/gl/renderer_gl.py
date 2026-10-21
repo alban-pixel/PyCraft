@@ -10,6 +10,7 @@ import numpy as np
 
 from pycraft import config
 from pycraft.camera import Camera
+from pycraft.cube import selection_edges
 from pycraft.gl.context import GlContext
 from pycraft.gl.geometry import GpuMeshes, split_water
 from pycraft.gl.math import as_uniform, light_matrix, mvp_matrix
@@ -112,6 +113,15 @@ class GlRenderer:
             vertex_shader=_lire("post.vert"),
             fragment_shader=_lire("post.frag"),
         )
+        self.lignes_prog = self.ctx.program(
+            vertex_shader=_lire("lignes.vert"),
+            fragment_shader=_lire("lignes.frag"),
+        )
+        # 12 arêtes × 2 sommets, réécrits à chaque image (24 vec3).
+        self._lignes_vbo = self.ctx.buffer(reserve=24 * 3 * 4, dynamic=True)
+        self.lignes_vao = self.ctx.vertex_array(
+            self.lignes_prog, [(self._lignes_vbo, "3f", "in_pos")]
+        )
         plein_ecran = np.array([-1.0, -1.0, 3.0, -1.0, -1.0, 3.0], dtype=np.float32)
         self._ecran_vbo = self.ctx.buffer(plein_ecran.tobytes())
         self.post_vao = self.ctx.vertex_array(self.post_prog, [(self._ecran_vbo, "2f", "in_pos")])
@@ -155,11 +165,13 @@ class GlRenderer:
     # ------------------------------------------------------------------
     def draw(self, camera: Camera, selection=None, time: float = 0.0) -> None:
         self._temps = time
-        self._rendre_scene(camera, time)
+        self._rendre_scene(camera, time, selection)
         self._post_traitement()
         self.gl.blit_to_pyxel()
 
-    def _rendre_scene(self, camera: Camera, time: float = 0.0) -> None:
+    def _rendre_scene(
+        self, camera: Camera, time: float = 0.0, selection=None
+    ) -> None:
         ciel = np.array(config.PALETTE[config.SKY_HORIZON], dtype=np.float32) / 255.0
         self.scene_fbo.use()
         self.scene_fbo.clear(float(ciel[0]), float(ciel[1]), float(ciel[2]), 1.0)
@@ -209,6 +221,7 @@ class GlRenderer:
                 self._eau.append((cx, cy, vbo_eau, nombre_eau))
         self.chunks_visibles = vus
         self._dessiner_eau(camera, time)
+        self._dessiner_contour(camera, selection)
 
     def _dessiner_eau(self, camera: Camera, time: float) -> None:
         if not self._eau:
@@ -232,6 +245,25 @@ class GlRenderer:
             vao.render()
             self.quads += nombre // 6
         self.ctx.depth_mask = True
+
+    def _dessiner_contour(self, camera: Camera, selection) -> None:
+        """Contour du bloc visé : 12 arêtes, comme le renderer CPU."""
+        if selection is None:
+            return
+        edges = selection_edges(*selection)
+        verts = np.array([p for edge in edges for p in edge], dtype=np.float32)
+        self._lignes_vbo.write(verts.tobytes())
+        prog = self.lignes_prog
+        prog["u_mvp"].write(as_uniform(mvp_matrix(camera)))
+        prog["u_res"].value = (float(self.width), float(self.height))
+        couleur = np.array(config.PALETTE[config.SELECTED_COLOR], dtype=np.float32) / 255.0
+        prog["u_color"].value = tuple(float(v) for v in couleur)
+        # glLineWidth > 1 n'est pas garanti (cœur de profil) : on épaissit en
+        # décalant le trait d'un pixel, ce qui donne un contour de 2 px.
+        for dx in (0.0, 1.0):
+            for dy in (0.0, 1.0):
+                prog["u_offset"].value = (dx, dy)
+                self.lignes_vao.render(moderngl.LINES)
 
     def _dessiner_ombres(self, camera: Camera) -> None:
         cible = camera.pos + camera.fwd * 20.0
@@ -324,6 +356,9 @@ class GlRenderer:
         self._shadow_vaos.clear()
         self.post_vao.release()
         self.sky_vao.release()
+        self.lignes_vao.release()
+        self._lignes_vbo.release()
+        self.lignes_prog.release()
         self.gpu.release()
         self.lut_tex.release()
         self.scene_tex.release()

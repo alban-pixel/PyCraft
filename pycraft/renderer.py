@@ -9,6 +9,7 @@ import pyxel
 
 from pycraft import config
 from pycraft.camera import Camera, clip_near
+from pycraft.cube import selection_edges  # noqa: F401  (réexporté pour les tests)
 from pycraft.mesher import CHUNK, ChunkMeshes, select_mesh
 from pycraft.world import World
 
@@ -62,32 +63,6 @@ def fog_color_index(color: int, factor: float) -> int:
         couleur = nearest_palette(_mix(config.PALETTE[color], config.PALETTE[config.FOG_COLOR], t))
         _fog_cache[cle] = couleur
     return couleur
-
-
-_CUBE_EDGES = (
-    (0, 1), (1, 2), (2, 3), (3, 0),
-    (4, 5), (5, 6), (6, 7), (7, 4),
-    (0, 4), (1, 5), (2, 6), (3, 7),
-)
-
-
-def selection_edges(
-    x: int, y: int, z: int, marge: float = 0.004
-) -> list[tuple[tuple[float, float, float], tuple[float, float, float]]]:
-    """Les 12 arêtes du cube (x, y, z) → (x+1, y+1, z+1), légèrement agrandi."""
-    lo = (x - marge, y - marge, z - marge)
-    hi = (x + 1 + marge, y + 1 + marge, z + 1 + marge)
-    coins = [
-        (lo[0], lo[1], lo[2]),
-        (hi[0], lo[1], lo[2]),
-        (hi[0], hi[1], lo[2]),
-        (lo[0], hi[1], lo[2]),
-        (lo[0], lo[1], hi[2]),
-        (hi[0], lo[1], hi[2]),
-        (hi[0], hi[1], hi[2]),
-        (lo[0], hi[1], hi[2]),
-    ]
-    return [(coins[a], coins[b]) for a, b in _CUBE_EDGES]
 
 
 def sky_color_at(t: float) -> int:
