@@ -15,7 +15,8 @@ quantifié sur une palette indexée de 256 couleurs Pyxel (rendu rétro assumé 
 |---|---|---|
 | `gpu-render` | renderer GLSL (OpenGL 4.1 via moderngl), framebuffer indexé 256 couleurs, readback dans Pyxel, eau, brouillard, ciel | world, mesher |
 | `render-fx` | cycle jour/nuit, AO cuit, tramage fin, post-traitement, HUD enrichi | gpu-render |
-| `world-sim` | blocs variés, structures, eau qui coule, horloge du monde | world |
+| `world-sim` | blocs variés, biomes, structures, eau qui coule, météo, horloge | world |
+| `audio` | sons procéduraux (pas, casse, pose), ambiance, musique | — |
 | `survival` | vie, faim, dégâts, mort/respawn, règles de jeu | player, world-sim |
 | `inventory-craft` | inventaire 9 slots, items, craft, recettes | world |
 | `mobs` | spawn, IA simple, combat | survival, world |
@@ -25,7 +26,7 @@ quantifié sur une palette indexée de 256 couleurs Pyxel (rendu rétro assumé 
 ## Ordre de construction
 
 ```
-gpu-render → render-fx → world-sim → survival → inventory-craft → mobs → persistence → creative
+gpu-render → render-fx → world-sim → audio → survival → inventory-craft → mobs → persistence → creative
 ```
 
 Règles :
@@ -50,6 +51,7 @@ Règles :
 | gpu-render | `SPEC-gpu-render.md` (à approuver) | — | — |
 | render-fx | — | — | — |
 | world-sim | — | — | — |
+| audio | — | — | — |
 | survival | — | — | — |
 | inventory-craft | — | — | — |
 | mobs | — | — | — |

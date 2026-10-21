@@ -38,13 +38,52 @@ Huit modules, détaillés dans [CAPABILITIES.md](CAPABILITIES.md) :
 | `inventory-craft` | inventaire 9 slots, items, craft |
 | `mobs` | spawn, IA, combat |
 | `persistence` | sauvegarde monde + joueur + inventaire |
+| `audio` | sons procéduraux (pas, casse, pose), ambiance, musique |
 | `creative` | vol, palette de blocs, casse instantanée |
 
-Ordre : `gpu-render → render-fx → world-sim → survival → inventory-craft → mobs →
-persistence → creative`.
+Ordre : `gpu-render → render-fx → world-sim → audio → survival → inventory-craft →
+mobs → persistence → creative`.
 
 **Hors périmètre :** multijoueur, serveur, redstone, villages PNJ, dimensions
 multiples (Nether/End), shaders de type ray tracing.
+
+## Capacités Pyxel vérifiées (21/10/2026)
+
+Sondées dans la doc officielle **et** à l'exécution sur cette machine :
+
+| Capacité | Statut | Détail |
+|---|---|---|
+| Palette 256 couleurs | ✅ vérifié, **non documenté** | `NUM_COLORS=16`, mais `pyxel.colors` s'étend à 256 et les indices 0-255 s'affichent (241 couleurs distinctes mesurées en fenêtre) |
+| Indices > 255 | ❌ | `OverflowError` — le framebuffer est 8 bits, 256 couleurs maximum |
+| Couleur RGB par pixel | ❌ | les primitives prennent un indice, pas un `0xRRGGBB` |
+| Palette modifiable à chaud | ✅ | changer `colors[i]` change l'affichage sans redessiner |
+| Résolutions | ✅ | 1920×1200, 2560×1600, 3840×2160 testées (buffer indexé 8,3 Mo en 4K) |
+| Fullscreen / mode écran | ✅ | `pyxel.fullscreen()`, `pyxel.screen_mode()` |
+| Audio | ✅ | 64 sons, 8 musiques, 4 canaux, `Sound.set(notes, tones, volumes, effects, speed)` |
+| Manettes | ✅ | 4 manettes, boutons + axes |
+| Police personnalisée | ✅ | `pyxel.Font("fichier.bdf")` |
+| Saisie texte | ✅ | `pyxel.set_input_text()` |
+| `blt3d` (plan en perspective) | ✅ | warp d'image natif, utile pour un ciel/océan de secours |
+| Dithering alpha | ✅ | `pyxel.dither(0..1)` |
+
+Conséquences : **256 couleurs** au lieu de 16, fenêtre jusqu'en 4K, audio natif,
+manettes — soit tout ce qu'il faut pour un jeu complet.
+
+## Cible visuelle
+
+Rendu de type *shader pack*, quantifié sur 256 couleurs (rétro assumé) :
+
+- **Ciel** : dégradé horizon/zénith, soleil et lune, étoiles la nuit, nuages
+  procéduraux qui défilent, halo autour du soleil.
+- **Éclairage** : soleil directionnel, ambiante, **ombres portées** (shadow map),
+  occlusion ambiante par sommet, torches (lumières ponctuelles), blocs émissifs.
+- **Eau** : vagues animées (normales), reflets du ciel, transparence, brouillard
+  et teinte sous-marine.
+- **Brouillard** : distance + hauteur, coloré par le ciel, version sous-marine.
+- **Météo** : pluie/neige en particules, éclairs, nuages.
+- **Post-traitement** : vignette, courbe de couleurs, cycle jour/nuit par palette,
+  tramage rétro optionnel.
+- **Effets** : particules de casse, balancement de marche, flash de dégâts.
 
 ## Tech Stack
 
@@ -69,6 +108,7 @@ python3 -m venv .venv
 .venv/bin/python main.py                     # GPU par défaut
 .venv/bin/python main.py --cpu               # renderer CPU (fallback)
 .venv/bin/python main.py --res 1920x1200 --dist 120 --seed 42
+.venv/bin/python main.py --res 2560x1600 --fullscreen
 
 # Tests
 .venv/bin/python -m pytest -q                # tests sans GPU
@@ -162,11 +202,13 @@ def quantize(couleur: np.ndarray, palette: np.ndarray) -> np.ndarray:
 
 1. Le jeu se lance par défaut en GPU et affiche un monde avec ciel dégradé, eau
    animée, brouillard et éclairage lisible.
-2. **1280×800 : ≤ 8 ms/frame** (rendu + readback + blit), p95 mesuré.
-3. `--cpu` fonctionne toujours et reste ≤ 8 ms.
+2. **1920×1200 : ≤ 6 ms/frame** (rendu + readback + blit), p95 ; **2560×1600 : ≤ 10 ms**.
+3. `--cpu` fonctionne toujours et reste ≤ 8 ms à 1280×800.
 4. La survie est jouable : vie, faim, dégâts, mort et respawn.
 5. L'inventaire et le craft fonctionnent (9 slots, au moins 6 recettes).
 6. Au moins 2 types de mobs avec une IA simple et du combat.
+6b. Ombres portées visibles, eau animée avec reflets, brouillard et cycle jour/nuit.
+6c. Sons de pas, casse, pose et une musique d'ambiance.
 7. La sauvegarde recharge le monde, le joueur et l'inventaire à l'identique.
 8. Le mode créatif (vol, casse instantanée, palette de blocs) est accessible.
 9. La palette 256 est détectée ; en cas d'échec, le jeu tourne en 16 couleurs.
@@ -174,8 +216,10 @@ def quantize(couleur: np.ndarray, palette: np.ndarray) -> np.ndarray:
 
 ## Open Questions
 
-- **Shadow map** : dans `render-fx` (recommandé) ou jamais ?
+- **Shadow map** : résolution (1024² ou 2048²) et portée ?
 - **Palette 256** : fixe et dessinée à la main, ou générée depuis une image de
-  référence puis figée ?
+  référence puis figée ? (recommandation : générée puis figée)
+- **Résolution par défaut** : 1280×800 (compatible tous écrans) ou 1920×1200
+  (plus beau, fenêtre possiblement plus grande que l'écran) ?
 - **Profondeur de la survie** : faim simulée en continu ou seulement visuelle ?
 - **Sauvegarde** : un seul emplacement ou plusieurs slots ?
