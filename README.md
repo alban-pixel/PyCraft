@@ -1,12 +1,17 @@
 # PyCraft
 
-Un monde de blocs en **vraie 3D**, en vue première personne, rendu avec les
-primitives **2D** de [Pyxel](https://github.com/kitao/pyxel) — projet NSI.
+Un monde de blocs en **vraie 3D**, en vue première personne, projet NSI.
+
+Le rendu 3D est calculé par le **GPU** (OpenGL 4.1 via moderngl) : ombres portées,
+eau animée, ciel dégradé, brouillard, cycle jour/nuit et pluie. Le résultat est
+quantifié sur une palette de **256 couleurs** puis affiché par
+[Pyxel](https://github.com/kitao/pyxel), qui gère la fenêtre, les entrées, le HUD
+et le son. Un renderer **CPU** reste disponible en secours (`--cpu`).
 
 On marche, on regarde autour de soi, on **casse** et on **pose** des blocs dans un
 monde généré de 256×256 blocs.
 
-![PyCraft en jeu](docs/images/pycraft_hud.png)
+![PyCraft en jeu](docs/images/gpu_jeu.png)
 
 ## Installation
 
@@ -45,25 +50,39 @@ python3 -m venv .venv
 | `--detail N` | `24` | rayon du maillage détaillé (LOD) |
 | `--no-lod` | — | tout en maillage détaillé (plus joli, plus lent) |
 | `--seed N` | `0` | graine du monde |
+| `--cpu` | — | force le renderer CPU (sans OpenGL) |
+| `--no-shadows` | — | désactive les ombres portées |
+| `--weather` | — | active la pluie |
 
 ## Tests et benchmark
 
 ```bash
-.venv/bin/python -m pytest -q
-.venv/bin/python tools/bench.py --res 1280x800 --dist 96
+.venv/bin/python -m pytest -q              # tests sans GPU
+.venv/bin/python -m pytest -q -m gpu      # tests OpenGL
+.venv/bin/python tools/bench.py --renderer gpu --res 1280x800 --dist 96
 ```
 
 Mesures sur Mac arm64 (monde 256×256×32, fenêtre réelle) :
 
-| Configuration | Frame moyenne | p95 | fps max |
-|---|---|---|---|
-| 1280×800, distance 96 | **3,44 ms** | 3,46 ms | 291 |
-| 1920×1200, distance 120 | **5,29 ms** | 5,56 ms | 189 |
+| Renderer | Configuration | Frame moyenne | p95 | fps max |
+|---|---|---|---|---|
+| GPU | 1280×800, distance 96 | **3,71 ms** | 3,83 ms | 269 |
+| GPU | 1920×1200, distance 120 | **5,62 ms** | 5,81 ms | 178 |
+| CPU | 1280×800, distance 96 | 3,67 ms | 3,77 ms | 272 |
 
 ## Comment ça marche
 
-Pyxel ne sait dessiner que des triangles, des rectangles et des sprites en 2D.
-La 3D est donc entièrement calculée en Python :
+Deux renderers partagent la même scène :
+
+**GPU (par défaut)** — `pycraft/gl/` :
+
+1. **six passes** : shadow map (ombres), ciel, terrain, eau, météo, post-traitement ;
+2. la scène est rendue en RGB dans un framebuffer, puis convertie en **indices de
+   palette** (LUT 32³) dans une texture R8 ;
+3. `glReadPixels` lit 1 octet par pixel, recopié dans `pyxel.screen` ; Pyxel
+   affiche la frame et dessine le HUD par-dessus.
+
+**CPU (secours)** — l'ancien renderer, tout en Python :
 
 1. **Monde** : un `bytearray` de 256×256×32, découpé en chunks de 16×16.
 2. **Maillage** : chaque chunk garde la liste de ses faces visibles, en cache.
@@ -81,6 +100,7 @@ Détails, formules et choix de performance : [docs/technique.md](docs/technique.
 ```
 main.py          → point d'entrée (arguments, boucle Pyxel, entrées)
 pycraft/
+  gl/            → renderer GPU : contexte, palette, géométrie, shaders
   config.py      → constantes, palette, types de blocs
   world.py       → monde voxel (bytearray), génération, lacs, arbres
   mesher.py      → maillages détail + greedy, cache par chunk

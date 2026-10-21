@@ -48,7 +48,7 @@ Règles :
 
 | Module | Spec | Plan | Build |
 |---|---|---|---|
-| gpu-render | `SPEC-gpu-render.md` (à approuver) | `tasks/plan.md` (11 tâches) | — |
+| gpu-render | `SPEC-gpu-render.md` ✅ | `tasks/plan.md` (11 tâches) | ✅ T1–T11 |
 | render-fx | — | — | — |
 | world-sim | — | — | — |
 | audio | — | — | — |
