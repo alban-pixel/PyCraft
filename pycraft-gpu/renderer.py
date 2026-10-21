@@ -159,9 +159,11 @@ class Renderer:
     def __init__(self, ctx, world, atlas, width, height, fov=70):
         """ctx must be created before pyxel.init, so Pyxel's own OpenGL context ends up current."""
         self.ctx = ctx
-        self.size = (width, height)
-        self.projection = perspective(fov, width / height, 0.05, 300)
+        self.fov = fov
+        self.fbo = None
         self.chunks = {}
+        self.chunk_centers = {}
+        self.chunk_radius = 0.0
         # Lighting and sky, changed by the game every frame (see set_environment)
         self.light = 1.0
         self.zenith = self.horizon = (0.6, 0.8, 1.0)
@@ -175,27 +177,45 @@ class Renderer:
             self.texture = ctx.texture((atlas.shape[1], atlas.shape[0]), 4, atlas.tobytes())
             self.texture.filter = (moderngl.NEAREST, moderngl.NEAREST)
             self.program["atlas"] = 0
-            color = ctx.texture((width, height), 1, dtype="f1")
-            depth = ctx.depth_renderbuffer((width, height))
-            self.fbo = ctx.framebuffer(color_attachments=[color], depth_attachment=depth)
             sky_quad = ctx.buffer(np.array([-1, -1, 1, -1, -1, 1, 1, 1], dtype="f4").tobytes())
             self.sky_vao = ctx.vertex_array(self.sky_program, [(sky_quad, "2f", "in_pos")])
             self.outline_vbo = ctx.buffer(reserve=24 * 3 * 4)
             self.outline_vao = ctx.vertex_array(self.outline_program, [(self.outline_vbo, "3f", "in_pos")])
+        self.resize(width, height)
         self.set_world(world)
+
+    def resize(self, width, height):
+        """Draw frames of a new size (when the resolution setting changes)."""
+        self.size = (width, height)
+        self.projection = perspective(self.fov, width / height, 0.05, 300)
+        with self.ctx:
+            if self.fbo:
+                for obj in (*self.fbo.color_attachments, self.fbo.depth_attachment, self.fbo):
+                    obj.release()
+            color = self.ctx.texture((width, height), 1, dtype="f1")
+            depth = self.ctx.depth_renderbuffer((width, height))
+            self.fbo = self.ctx.framebuffer(color_attachments=[color], depth_attachment=depth)
+
+    def set_fov(self, fov):
+        self.fov = fov
+        width, height = self.size
+        self.projection = perspective(self.fov, width / height, 0.05, 300)
 
     def set_world(self, world):
         """Use a new world (after loading or generating one) and build all of its chunks."""
         self.world = world
-        sx, _, sz = world.size
+        sx, sy, sz = world.size
+        self.chunk_radius = math.hypot(CHUNK / 2, sy / 2, CHUNK / 2)
         with self.ctx:
             for chunk in self.chunks.values():
                 if chunk:
                     chunk[0].release()
                     chunk[1].release()
             self.chunks = {}
+            self.chunk_centers = {}
             for cx in range(math.ceil(sx / CHUNK)):
                 for cz in range(math.ceil(sz / CHUNK)):
+                    self.chunk_centers[(cx, cz)] = (cx * CHUNK + CHUNK / 2, sy / 2, cz * CHUNK + CHUNK / 2)
                     self._build_chunk(cx, cz)
 
     def set_environment(self, light, zenith, horizon, sun_dir, fog_color, fog_start, fog_end):
@@ -265,11 +285,41 @@ class Renderer:
             self.program, [(vbo, "3f 2f 1f 1f", "in_pos", "in_uv", "in_shade", "in_kind")])
         self.chunks[(cx, cz)] = (vbo, vao)
 
+    @staticmethod
+    def _frustum_planes(vp):
+        """Extract the 6 normalized clipping planes (A, B, C, D) from the view-projection matrix."""
+        rows = [
+            vp[3] + vp[0],  # Left
+            vp[3] - vp[0],  # Right
+            vp[3] + vp[1],  # Bottom
+            vp[3] - vp[1],  # Top
+            vp[3] + vp[2],  # Near
+            vp[3] - vp[2],  # Far
+        ]
+        planes = []
+        for p in rows:
+            norm = float(np.linalg.norm(p[:3]))
+            planes.append(p / norm if norm > 1e-7 else p)
+        return planes
+
+    def _chunk_in_frustum(self, planes, cx, cz):
+        """True if the chunk bounding sphere is inside or intersects the view frustum."""
+        center = self.chunk_centers.get((cx, cz))
+        if center is None:
+            return True
+        cx0, cy0, cz0 = center
+        r = self.chunk_radius
+        for pl in planes:
+            if pl[0] * cx0 + pl[1] * cy0 + pl[2] * cz0 + pl[3] < -r:
+                return False
+        return True
+
     def render(self, screen, eye, forward, target=None):
         """Draw the world seen from eye into screen (a (height, width) uint8 view of pyxel.screen)."""
         vp = self.projection @ look_at(eye, forward)
         mvp = vp.T.copy().tobytes()
         fog_color, fog_start, fog_end = self.fog
+        planes = self._frustum_planes(vp)
         with self.ctx:
             self.fbo.use()
             self.fbo.clear(depth=1.0)
@@ -289,8 +339,8 @@ class Renderer:
             self.program["fog_color"] = fog_color
             self.program["fog_start"] = fog_start
             self.program["fog_end"] = fog_end
-            for chunk in self.chunks.values():
-                if chunk:
+            for (cx, cz), chunk in self.chunks.items():
+                if chunk and self._chunk_in_frustum(planes, cx, cz):
                     chunk[1].render()
 
             if target:

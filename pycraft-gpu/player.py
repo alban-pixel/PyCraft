@@ -71,8 +71,8 @@ class Player:
         yaw = math.radians(self.yaw)
         fx, fz = math.sin(yaw), math.cos(yaw)
         rx, rz = -fz, fx
-        move_f = pyxel.btn(pyxel.KEY_W) - pyxel.btn(pyxel.KEY_S)
-        move_r = pyxel.btn(pyxel.KEY_D) - pyxel.btn(pyxel.KEY_A)
+        move_f = (pyxel.btn(pyxel.KEY_W) or pyxel.btn(pyxel.KEY_Z)) - pyxel.btn(pyxel.KEY_S)
+        move_r = pyxel.btn(pyxel.KEY_D) - (pyxel.btn(pyxel.KEY_A) or pyxel.btn(pyxel.KEY_Q))
         dx, dz = fx * move_f + rx * move_r, fz * move_f + rz * move_r
         length = math.hypot(dx, dz)
         if length:

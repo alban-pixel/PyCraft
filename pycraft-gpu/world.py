@@ -4,8 +4,8 @@ import math
 import numpy as np
 import pyxel
 
-from blocks import (AIR, BEDROCK, COAL_ORE, DIRT, GRASS, IRON_ORE, LEAVES, LOG, SAND, SOLID, STONE,
-                    TARGETABLE, WATER)
+from blocks import (AIR, BEDROCK, COAL_ORE, DIAMOND_ORE, DIRT, GLOWSTONE, GOLD_ORE, GRASS,
+                    IRON_ORE, LEAVES, LOG, SAND, SNOW, SOLID, STONE, TARGETABLE, WATER)
 
 SEA_LEVEL = 22  # water fills every empty block below this height that is open to the sky
 
@@ -72,8 +72,14 @@ class World:
         # Ores scattered in the stone
         roll = rng.random(inner.shape)
         stone = inner == STONE
-        inner[stone & (roll < 0.012)] = COAL_ORE
-        inner[stone & (roll > 0.993) & (ys < 26)] = IRON_ORE
+        inner[stone & (roll < 0.014)] = COAL_ORE
+        inner[stone & (roll > 0.991) & (ys < 28)] = IRON_ORE
+        inner[stone & (roll > 0.996) & (ys < 18)] = GOLD_ORE
+        inner[stone & (roll > 0.9982) & (ys < 12)] = DIAMOND_ORE
+
+        # Snow caps on higher terrain
+        snow_caps = top & (h > 33)
+        inner[snow_caps] = SNOW
 
         # Caves: tunnels where two smooth noise fields both cross their middle value
         n1 = _value_noise(rng, inner.shape, 14)

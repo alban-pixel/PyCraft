@@ -5,13 +5,14 @@ TILE = 16
 ATLAS_TILES = 8  # the atlas is 8x8 tiles = 128x128 pixels
 
 (AIR, GRASS, DIRT, STONE, COBBLESTONE, PLANKS, LOG, LEAVES, SAND, BRICK,
- GLASS, WATER, COAL_ORE, IRON_ORE, BEDROCK) = range(15)
+ GLASS, WATER, COAL_ORE, IRON_ORE, BEDROCK, GOLD_ORE, DIAMOND_ORE, GLOWSTONE, SNOW) = range(19)
 BLOCK_NAMES = ["Air", "Grass", "Dirt", "Stone", "Cobblestone", "Planks", "Log", "Leaves", "Sand", "Brick",
-               "Glass", "Water", "Coal ore", "Iron ore", "Bedrock"]
+               "Glass", "Water", "Coal ore", "Iron ore", "Bedrock", "Gold ore", "Diamond ore", "Glowstone", "Snow"]
 NUM_BLOCKS = len(BLOCK_NAMES)
 
 # Blocks the player can pick in the inventory (E)
-PLACEABLE = [GRASS, DIRT, STONE, COBBLESTONE, PLANKS, LOG, LEAVES, SAND, BRICK, GLASS, WATER, COAL_ORE, IRON_ORE]
+PLACEABLE = [GRASS, DIRT, STONE, COBBLESTONE, PLANKS, LOG, LEAVES, SAND, BRICK,
+             GLASS, WATER, COAL_ORE, IRON_ORE, GOLD_ORE, DIAMOND_ORE, GLOWSTONE, SNOW]
 DEFAULT_HOTBAR = [GRASS, DIRT, STONE, COBBLESTONE, PLANKS, LOG, LEAVES, GLASS, BRICK]
 
 
@@ -31,7 +32,8 @@ UNBREAKABLE = _flags(BEDROCK)
 
 # Tile numbers inside the atlas
 (T_GRASS_TOP, T_GRASS_SIDE, T_DIRT, T_STONE, T_COBBLE, T_PLANKS, T_LOG_SIDE, T_LOG_TOP, T_LEAVES,
- T_SAND, T_BRICK, T_GLASS, T_WATER, T_COAL, T_IRON, T_BEDROCK) = range(16)
+ T_SAND, T_BRICK, T_GLASS, T_WATER, T_COAL, T_IRON, T_BEDROCK,
+ T_GOLD, T_DIAMOND, T_GLOWSTONE, T_SNOW, T_SNOW_SIDE) = range(21)
 
 
 def _faces(side, top=None, bottom=None):
@@ -58,7 +60,33 @@ BLOCK_TILES = np.array([
     _faces(T_COAL),
     _faces(T_IRON),
     _faces(T_BEDROCK),
+    _faces(T_GOLD),
+    _faces(T_DIAMOND),
+    _faces(T_GLOWSTONE),
+    _faces(T_SNOW_SIDE, T_SNOW, T_DIRT),
 ], dtype=np.int32)
+
+# Representative Pyxel palette colors for block particles
+BLOCK_COLORS = {
+    GRASS: 3,
+    DIRT: 4,
+    STONE: 6,
+    COBBLESTONE: 13,
+    PLANKS: 4,
+    LOG: 4,
+    LEAVES: 11,
+    SAND: 10,
+    BRICK: 2,
+    GLASS: 7,
+    WATER: 12,
+    COAL_ORE: 0,
+    IRON_ORE: 15,
+    BEDROCK: 0,
+    GOLD_ORE: 10,
+    DIAMOND_ORE: 12,
+    GLOWSTONE: 9,
+    SNOW: 7,
+}
 
 
 def _noisy(rng, base, var):
@@ -115,10 +143,13 @@ def build_atlas(seed=7):
     tiles[T_STONE] = stone
     tiles[T_COAL] = _ore(rng, stone, (30, 30, 30), 6)
     tiles[T_IRON] = _ore(rng, stone, (216, 175, 147), 6)
+    tiles[T_GOLD] = _ore(rng, stone, (245, 215, 60), 6)
+    tiles[T_DIAMOND] = _ore(rng, stone, (75, 235, 235), 6)
     tiles[T_BEDROCK] = _noisy(rng, (70, 70, 70), 0.6)
 
     tiles[T_COBBLE] = _masonry(rng, (122, 122, 122), (72, 72, 72), 4, 5, 0.12, random_offsets=True)
     tiles[T_BRICK] = _masonry(rng, (150, 74, 58), (178, 170, 160), 4, 8, 0.08)
+    tiles[T_GLOWSTONE] = _masonry(rng, (230, 190, 80), (190, 140, 50), 4, 4, 0.18, random_offsets=True)
 
     planks = _noisy(rng, (162, 130, 78), 0.06)
     for row in range(4):
@@ -141,6 +172,14 @@ def build_atlas(seed=7):
     alpha[T_LEAVES] = rng.random((TILE, TILE)) >= 0.18
 
     tiles[T_SAND] = _noisy(rng, (219, 207, 163), 0.05)
+
+    snow = _noisy(rng, (242, 245, 255), 0.04)
+    tiles[T_SNOW] = snow
+    snow_side = dirt.copy()
+    for x in range(TILE):
+        depth = rng.integers(3, 6)
+        snow_side[:depth, x] = snow[:depth, x]
+    tiles[T_SNOW_SIDE] = snow_side
 
     glass = np.full((TILE, TILE, 3), (215, 235, 240), dtype=float)
     glass_alpha = (ring > 6.5)  # frame

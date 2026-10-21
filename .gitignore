@@ -17,6 +17,9 @@ __pycache__/
 .vscode/
 .idea/
 
+# Tests
+.pytest_cache/
+
 # Outils agents (hors code du projet)
 .agents/
 skills-lock.json
