@@ -38,11 +38,17 @@ class GlRenderer:
         detail_radius: float = config.DEFAULT_DETAIL_RADIUS,
         gl: GlContext | None = None,
         shadows: bool = True,
+        scale: float = 1.0,
     ) -> None:
         self.world = world
         self.meshes = meshes
         self.width = int(width)
         self.height = int(height)
+        # Résolution interne : la scène est rendue en rw×rh puis agrandie en
+        # nearest par la passe de post-traitement (rendu rétro + gain de perf).
+        self.scale = max(0.25, min(1.0, float(scale)))
+        self.rw = max(1, int(self.width * self.scale))
+        self.rh = max(1, int(self.height * self.scale))
         self.view_distance = float(view_distance)
         self.detail_radius = float(detail_radius)
         self.gl = gl if gl is not None else GlContext(width, height)
@@ -77,17 +83,20 @@ class GlRenderer:
 
     # ------------------------------------------------------------------
     def _construire_cibles(self) -> None:
-        self.scene_tex = self.ctx.texture((self.width, self.height), 4)
+        self.scene_tex = self.ctx.texture((self.rw, self.rh), 4)
         self.scene_tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
-        self.depth = self.ctx.depth_renderbuffer((self.width, self.height))
+        self.depth = self.ctx.depth_renderbuffer((self.rw, self.rh))
         self.scene_fbo = self.ctx.framebuffer(
             color_attachments=[self.scene_tex], depth_attachment=self.depth
         )
         # Shadow map en couleur R32F : gl_FragCoord.z est écrit explicitement,
         # ce qui évite les subtilités de sampling des textures de profondeur.
-        self.shadow_tex = self.ctx.texture((2048, 2048), 1, dtype="f4")
+        # La shadow map suit la résolution interne : inutile de la payer plein
+        # tarif quand la scène est rendue en demi-résolution.
+        self.shadow_res = max(512, int(2048 * self.scale))
+        self.shadow_tex = self.ctx.texture((self.shadow_res, self.shadow_res), 1, dtype="f4")
         self.shadow_tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
-        self._shadow_depth = self.ctx.depth_renderbuffer((2048, 2048))
+        self._shadow_depth = self.ctx.depth_renderbuffer((self.shadow_res, self.shadow_res))
         self.shadow_fbo = self.ctx.framebuffer(
             color_attachments=[self.shadow_tex], depth_attachment=self._shadow_depth
         )
@@ -209,6 +218,7 @@ class GlRenderer:
         prog["u_shadow_on"].value = 1.0 if self.shadows else 0.0
         prog["u_daylight"].value = 0.35 + 0.65 * self._jour
         prog["u_light_mvp"].write(as_uniform(self._light_mvp))
+        prog["u_shadow_texel"].value = 1.0 / float(self.shadow_res)
         self.shadow_tex.use(2)
         prog["u_shadow"].value = 2
 
@@ -273,7 +283,7 @@ class GlRenderer:
         self._lignes_vbo.write(verts.tobytes())
         prog = self.lignes_prog
         prog["u_mvp"].write(as_uniform(mvp_matrix(camera)))
-        prog["u_res"].value = (float(self.width), float(self.height))
+        prog["u_res"].value = (float(self.rw), float(self.rh))
         couleur = np.array(config.PALETTE[config.SELECTED_COLOR], dtype=np.float32) / 255.0
         prog["u_color"].value = tuple(float(v) for v in couleur)
         # glLineWidth > 1 n'est pas garanti (cœur de profil) : on épaissit en
@@ -328,7 +338,7 @@ class GlRenderer:
         prog["u_right"].value = tuple(float(v) for v in camera.right)
         prog["u_up"].value = tuple(float(v) for v in camera.up)
         prog["u_fwd"].value = tuple(float(v) for v in camera.fwd)
-        prog["u_res"].value = (float(self.width), float(self.height))
+        prog["u_res"].value = (float(self.rw), float(self.rh))
         prog["u_focal"].value = float(camera.focal)
         prog["u_sun"].value = tuple(float(v) for v in self.sun_dir)
         self._ambiance(time)

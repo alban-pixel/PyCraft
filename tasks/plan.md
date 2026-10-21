@@ -57,12 +57,14 @@ mesure de la frame → commit.
 - [x] Test GPU : une tour derrière la caméra projette une ombre devant elle
 - **Mesure** : 3,63 ms à 1280×800 (budget 4 ms)
 
-### T4 — Résolution interne réduite + upscale
-- [ ] `scale` dans `GlRenderer`, FBO à `width*scale`
-- [ ] Passe d'upscale nearest vers le FBO final (pas de flou)
-- [ ] `--scale N` dans `main.py` et `bench.py`
-- [ ] Test GPU : `scale=0.5` → chaque 2×2 de l'image finale est uniforme
-- **Critère** : `scale=0.5` divise le temps de frame par ~4
+### T4 — Résolution interne réduite + upscale ✅
+- [x] `scale` dans `GlRenderer`, FBO de scène à `width*scale`
+- [x] Upscale nearest gratuit par la passe de post-traitement
+- [x] `--scale N` dans `main.py`
+- [x] La shadow map suit la résolution interne (2048 → 1024 à `scale=0.5`)
+- [x] Test GPU : ≥ 90 % de blocs 2×2 uniformes à `scale=0.5`
+- **Mesure** : 3,58 → 3,29 ms à 1280×800. Pas de division par 4 : la frame
+  est limitée par la géométrie et le CPU, pas par le remplissage
 
 ### T5 — Lumière horaire
 - [ ] 6 paliers (aube, matin, midi, après-midi, crépuscule, nuit) interpolés

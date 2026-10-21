@@ -390,3 +390,35 @@ def test_ombre_d_un_casteur_hors_champ(pyxel_headless):
         assert PALETTE[avec].astype(float).mean() < PALETTE[sans].astype(float).mean()
     finally:
         renderer.close()
+
+
+def test_resolution_interne_reduite(pyxel_headless):
+    """À scale=0.5, la scène est rendue en 160×100 puis agrandie en nearest."""
+    from pycraft.gl.context import GlContext
+    from pycraft.gl.renderer_gl import GlRenderer
+
+    monde = World(sx=32, sy=32, sz=16, seed=0)
+    monde.data = bytearray(len(monde.data))
+    for y in range(32):
+        for x in range(32):
+            for z in range(4):
+                monde.set(x, y, z, Block.GRASS)
+
+    gl = GlContext(320, 200)
+    renderer = GlRenderer(
+        monde, ChunkMeshes(monde), 320, 200,
+        view_distance=40, detail_radius=16, gl=gl, scale=0.5,
+    )
+    try:
+        assert renderer.scene_tex.size == (160, 100)
+        camera = Camera(16, 16, 8, yaw=0.6, pitch=-0.25, width=320, height=200)
+        renderer.draw(camera, time=30.0)
+        img = np.frombuffer(gl.read_indices(), np.uint8).reshape(200, 320)
+        # Agrandissement nearest : chaque bloc 2×2 vient d'un seul texel.
+        blocs = img.reshape(100, 2, 160, 2).transpose(0, 2, 1, 3).reshape(-1, 4)
+        uniformes = (blocs == blocs[:, :1]).all(axis=1).mean()
+        # La vignette du post-traitement varie par pixel : quelques blocs
+        # changent d'un cran de palette. On exige donc 90 %, pas 100 %.
+        assert uniformes > 0.90, f"seulement {uniformes:.0%} de blocs 2×2 uniformes"
+    finally:
+        renderer.close()

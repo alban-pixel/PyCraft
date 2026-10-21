@@ -14,6 +14,7 @@ uniform float u_fog_end;
 uniform sampler2D u_shadow;
 uniform mat4 u_light_mvp;
 uniform float u_shadow_on;
+uniform float u_shadow_texel;
 uniform float u_daylight;
 uniform int u_material[16];
 
@@ -42,7 +43,7 @@ float facteur_ombre(vec3 world) {
     vec2 uv = ndc.xy * 0.5 + 0.5;
     float z = ndc.z * 0.5 + 0.5;
     float biais = 0.0022;
-    vec2 texel = vec2(1.0 / 2048.0);
+    vec2 texel = vec2(u_shadow_texel);
     float eclaire = 0.0;
     for (int dx = -1; dx <= 1; dx++) {
         for (int dy = -1; dy <= 1; dy++) {

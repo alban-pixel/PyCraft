@@ -70,6 +70,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cpu", action="store_true", help="force le renderer CPU (sans OpenGL)")
     parser.add_argument("--no-shadows", action="store_true", help="désactive les ombres (GPU)")
     parser.add_argument("--weather", action="store_true", help="active la pluie (GPU)")
+    parser.add_argument(
+        "--scale",
+        type=float,
+        default=1.0,
+        help="résolution interne du rendu GPU, 0.25 à 1.0 (défaut : 1.0)",
+    )
     return parser.parse_args(argv)
 
 
@@ -91,6 +97,7 @@ def construire(
     lod: bool = True,
     gl=None,
     shadows: bool = True,
+    scale: float = 1.0,
 ) -> dict:
     """Construit le monde, la caméra, le joueur et le renderer."""
     monde = World(seed=seed)
@@ -112,6 +119,7 @@ def construire(
             detail_radius=rayon_detail,
             gl=gl,
             shadows=shadows,
+            scale=scale,
         )
     else:
         renderer = Renderer(
@@ -314,7 +322,7 @@ def main(argv: list[str] | None = None) -> None:
     try:
         etat = construire(
             width, height, args.seed, args.dist, args.detail, not args.no_lod,
-            gl=gl, shadows=not args.no_shadows,
+            gl=gl, shadows=not args.no_shadows, scale=args.scale,
         )
     except Exception as exc:
         if gl is None:
