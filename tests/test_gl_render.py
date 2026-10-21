@@ -68,3 +68,24 @@ def test_rendu_apres_modification_de_bloc(pyxel_headless):
         assert avant != apres
     finally:
         renderer.close()
+
+
+def test_ciel_degrade_etoiles_et_soleil(pyxel_headless):
+    from pycraft.gl.context import GlContext
+    from pycraft.gl.renderer_gl import GlRenderer
+
+    monde = World(sx=32, sy=32, sz=16, seed=0)
+    monde.data = bytearray(len(monde.data))  # ciel seul
+    meshes = ChunkMeshes(monde)
+    gl = GlContext(320, 200)
+    renderer = GlRenderer(monde, meshes, 320, 200, view_distance=16, detail_radius=8, gl=gl)
+    try:
+        camera = Camera(16, 16, 8, yaw=0.6, pitch=0.35, width=320, height=200)
+        renderer.draw(camera, time=3.0)
+        data = gl.read_indices()
+        assert len(set(data)) >= 8, "le ciel doit produire un dégradé"
+        haut = set(data[: 320 * 30])
+        bas = set(data[-320 * 30 :])
+        assert haut != bas, "zénith et horizon doivent différer"
+    finally:
+        renderer.close()

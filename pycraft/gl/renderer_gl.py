@@ -72,6 +72,10 @@ class GlRenderer:
         )
 
     def _construire_programmes(self) -> None:
+        self.sky_prog = self.ctx.program(
+            vertex_shader=_lire("sky.vert"),
+            fragment_shader=_lire("sky.frag"),
+        )
         self.terrain_prog = self.ctx.program(
             vertex_shader=_lire("terrain.vert"),
             fragment_shader=_lire("terrain.frag"),
@@ -83,6 +87,7 @@ class GlRenderer:
         plein_ecran = np.array([-1.0, -1.0, 3.0, -1.0, -1.0, 3.0], dtype=np.float32)
         self._ecran_vbo = self.ctx.buffer(plein_ecran.tobytes())
         self.post_vao = self.ctx.vertex_array(self.post_prog, [(self._ecran_vbo, "2f", "in_pos")])
+        self.sky_vao = self.ctx.vertex_array(self.sky_prog, [(self._ecran_vbo, "2f", "in_pos")])
         self._vaos: dict[tuple[int, int], object] = {}
 
     def _construire_palette(self) -> None:
@@ -119,14 +124,15 @@ class GlRenderer:
 
     # ------------------------------------------------------------------
     def draw(self, camera: Camera, selection=None, time: float = 0.0) -> None:
-        self._rendre_scene(camera)
+        self._rendre_scene(camera, time)
         self._post_traitement()
         self.gl.blit_to_pyxel()
 
-    def _rendre_scene(self, camera: Camera) -> None:
+    def _rendre_scene(self, camera: Camera, time: float = 0.0) -> None:
         ciel = np.array(config.PALETTE[config.SKY_HORIZON], dtype=np.float32) / 255.0
         self.scene_fbo.use()
         self.scene_fbo.clear(float(ciel[0]), float(ciel[1]), float(ciel[2]), 1.0)
+        self._dessiner_ciel(camera, time)
         self.ctx.enable(moderngl.DEPTH_TEST)
 
         prog = self.terrain_prog
@@ -160,6 +166,25 @@ class GlRenderer:
             vus += 1
         self.chunks_visibles = vus
 
+    def _dessiner_ciel(self, camera: Camera, time: float) -> None:
+        self.ctx.disable(moderngl.DEPTH_TEST)
+        prog = self.sky_prog
+        prog["u_right"].value = tuple(float(v) for v in camera.right)
+        prog["u_up"].value = tuple(float(v) for v in camera.up)
+        prog["u_fwd"].value = tuple(float(v) for v in camera.fwd)
+        prog["u_res"].value = (float(self.width), float(self.height))
+        prog["u_focal"].value = float(camera.focal)
+        soleil = np.array([0.45, 0.65, 0.60], dtype=np.float32)
+        soleil /= np.linalg.norm(soleil)
+        prog["u_sun"].value = tuple(float(v) for v in soleil)
+        hor = np.array(config.PALETTE[config.SKY_HORIZON], dtype=np.float32) / 255.0
+        zen = np.array(config.PALETTE[config.SKY_TOP], dtype=np.float32) / 255.0
+        prog["u_horizon"].value = tuple(float(v) for v in hor)
+        prog["u_zenith"].value = tuple(float(v) for v in zen)
+        prog["u_time"].value = float(time)
+        prog["u_night"].value = 0.0
+        self.sky_vao.render()
+
     def _post_traitement(self) -> None:
         self.ctx.disable(moderngl.DEPTH_TEST)
         self.gl.fbo.use()
@@ -180,6 +205,7 @@ class GlRenderer:
             vao.release()
         self._vaos.clear()
         self.post_vao.release()
+        self.sky_vao.release()
         self.gpu.release()
         self.lut_tex.release()
         self.scene_tex.release()
@@ -187,5 +213,6 @@ class GlRenderer:
         self.scene_fbo.release()
         self._ecran_vbo.release()
         self.terrain_prog.release()
+        self.sky_prog.release()
         self.post_prog.release()
         self.gl.close()
