@@ -114,7 +114,7 @@ class World:
 
         for y in range(self.sy):
             for x in range(self.sx):
-                bruit = (rng.random() - 0.5) * 1.8
+                bruit = (rng.random() - 0.5) * 1.2
                 base = (
                     7.0
                     + 3.0 * math.sin(x / 11.0)
@@ -122,7 +122,8 @@ class World:
                     + 1.6 * math.sin((x + y) / 7.0)
                     + bruit
                 )
-                h = max(3, min(max_h, int(round(base))))
+                # hauteurs quantifiées par 2 : plateaux francs, style Minecraft
+                h = max(3, min(max_h, 2 * round(base / 2)))
                 heights[y * self.sx + x] = h
 
                 colonne = bytearray()
