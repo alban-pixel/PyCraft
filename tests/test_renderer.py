@@ -47,3 +47,15 @@ def test_ciel_par_bandes():
 def test_nearest_palette_retrouve_chaque_couleur():
     for i, rgb in enumerate(config.PALETTE):
         assert nearest_palette(rgb) == i
+
+
+def test_selection_fait_douze_aretes():
+    from pycraft.renderer import selection_edges
+
+    aretes = selection_edges(3, 4, 5)
+    assert len(aretes) == 12
+    for a, b in aretes:
+        for p in (a, b):
+            assert 3 - 0.01 <= p[0] <= 4 + 0.01
+            assert 4 - 0.01 <= p[1] <= 5 + 0.01
+            assert 5 - 0.01 <= p[2] <= 6 + 0.01

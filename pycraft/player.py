@@ -118,6 +118,50 @@ class Player:
         self.move(world, dx, dy)
         self.set_angles(self.yaw + tourner * dt, self.pitch + incliner * dt)
 
+    # ------------------------------------------------------------------
+    def raycast(
+        self, world: World, max_dist: float = 5.0
+    ) -> tuple[tuple[int, int, int], tuple[int, int, int]] | None:
+        """Bloc visé et normale de sa face, par marche de voxels (Amanatides & Woo)."""
+        ox, oy, oz = self.eye_position()
+        dx, dy, dz = self.look_direction()
+        x, y, z = math.floor(ox), math.floor(oy), math.floor(oz)
+
+        sx = 1 if dx > 0 else (-1 if dx < 0 else 0)
+        sy = 1 if dy > 0 else (-1 if dy < 0 else 0)
+        sz = 1 if dz > 0 else (-1 if dz < 0 else 0)
+
+        infini = float("inf")
+        tdx = abs(1.0 / dx) if dx else infini
+        tdy = abs(1.0 / dy) if dy else infini
+        tdz = abs(1.0 / dz) if dz else infini
+        tmx = ((x + (1 if dx > 0 else 0)) - ox) / dx if dx else infini
+        tmy = ((y + (1 if dy > 0 else 0)) - oy) / dy if dy else infini
+        tmz = ((z + (1 if dz > 0 else 0)) - oz) / dz if dz else infini
+
+        normale = (0, 0, 0)
+        for _ in range(256):
+            if tmx <= tmy and tmx <= tmz:
+                x += sx
+                t = tmx
+                tmx += tdx
+                normale = (-sx, 0, 0)
+            elif tmy <= tmz:
+                y += sy
+                t = tmy
+                tmy += tdy
+                normale = (0, -sy, 0)
+            else:
+                z += sz
+                t = tmz
+                tmz += tdz
+                normale = (0, 0, -sz)
+            if t > max_dist:
+                return None
+            if world.is_solid(x, y, z):
+                return (x, y, z), normale
+        return None
+
     def set_angles(self, yaw: float, pitch: float) -> None:
         limite = math.pi / 2 - 0.01
         self.yaw = yaw % (2 * math.pi)

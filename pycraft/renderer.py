@@ -64,6 +64,32 @@ def fog_color_index(color: int, factor: float) -> int:
     return couleur
 
 
+_CUBE_EDGES = (
+    (0, 1), (1, 2), (2, 3), (3, 0),
+    (4, 5), (5, 6), (6, 7), (7, 4),
+    (0, 4), (1, 5), (2, 6), (3, 7),
+)
+
+
+def selection_edges(
+    x: int, y: int, z: int, marge: float = 0.004
+) -> list[tuple[tuple[float, float, float], tuple[float, float, float]]]:
+    """Les 12 arêtes du cube (x, y, z) → (x+1, y+1, z+1), légèrement agrandi."""
+    lo = (x - marge, y - marge, z - marge)
+    hi = (x + 1 + marge, y + 1 + marge, z + 1 + marge)
+    coins = [
+        (lo[0], lo[1], lo[2]),
+        (hi[0], lo[1], lo[2]),
+        (hi[0], hi[1], lo[2]),
+        (lo[0], hi[1], lo[2]),
+        (lo[0], lo[1], hi[2]),
+        (hi[0], lo[1], hi[2]),
+        (hi[0], hi[1], hi[2]),
+        (lo[0], hi[1], hi[2]),
+    ]
+    return [(coins[a], coins[b]) for a, b in _CUBE_EDGES]
+
+
 def sky_color_at(t: float) -> int:
     """Couleur du ciel : t = 0 à l'horizon, 1 au zénith."""
     return config.SKY_TOP if t > 0.62 else config.SKY_HORIZON
@@ -98,7 +124,7 @@ class Renderer:
         self.chunks_visibles = 0
 
     # ------------------------------------------------------------------
-    def draw(self, camera: Camera) -> None:
+    def draw(self, camera: Camera, selection: tuple[int, int, int] | None = None) -> None:
         self._draw_sky(camera)
         verts, colors = self._gather(camera)
         self.quads = 0
@@ -109,6 +135,8 @@ class Renderer:
         devant = (z > config.NEAR_PLANE).all(axis=1)
         self._draw_front(camera, cam, z, colors, devant)
         self._draw_clipped(camera, cam, z, colors, devant)
+        if selection is not None:
+            self._draw_selection(camera, selection)
 
     # ------------------------------------------------------------------
     def _gather(self, camera: Camera) -> tuple[np.ndarray, np.ndarray]:
@@ -203,6 +231,15 @@ class Renderer:
             for k in range(1, len(pts) - 1):
                 tri(x0, y0, pts[k][0], pts[k][1], pts[k + 1][0], pts[k + 1][1], couleur)
             self.quads += 1
+
+    # ------------------------------------------------------------------
+    def _draw_selection(self, camera: Camera, bloc: tuple[int, int, int]) -> None:
+        """Contour du bloc visé."""
+        for a, b in selection_edges(*bloc):
+            pa = camera.project_point(a)
+            pb = camera.project_point(b)
+            if pa is not None and pb is not None:
+                pyxel.line(pa[0], pa[1], pb[0], pb[1], config.SELECTED_COLOR)
 
     # ------------------------------------------------------------------
     def _draw_sky(self, camera: Camera) -> None:

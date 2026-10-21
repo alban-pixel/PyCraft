@@ -96,3 +96,57 @@ def test_update_tourne_la_camera():
     p = joueur()
     p.update(w, dt=1.0, tourner=math.pi / 2)
     assert p.yaw == pytest.approx(math.pi / 2)
+
+
+# ----------------------------------------------------------------------
+# Raycast (T9)
+# ----------------------------------------------------------------------
+def mur_en_x(w, x=15, zmax=8):
+    for y in range(w.sy):
+        for z in range(zmax):
+            w.set(x, y, z, Block.STONE)
+
+
+def test_raycast_touche_le_bloc_devant():
+    w = monde_plat()
+    mur_en_x(w)
+    p = joueur()
+    p.set_angles(0.0, 0.0)
+    resultat = p.raycast(w, 6.0)
+    assert resultat == ((15, 10, 5), (-1, 0, 0))
+
+
+def test_raycast_portee_limitee():
+    w = monde_plat()
+    mur_en_x(w)
+    p = joueur()
+    p.set_angles(0.0, 0.0)
+    assert p.raycast(w, 2.0) is None
+
+
+def test_raycast_ignore_l_eau():
+    w = monde_plat()
+    w.set(12, 10, 5, Block.WATER)
+    p = joueur()
+    p.set_angles(0.0, 0.0)
+    assert p.raycast(w, 6.0) is None
+
+
+def test_raycast_vers_le_haut():
+    w = monde_plat()
+    w.set(10, 10, 7, Block.STONE)
+    p = joueur()
+    p.set_angles(0.0, math.pi / 2 - 0.01)
+    resultat = p.raycast(w, 5.0)
+    assert resultat is not None
+    bloc, normale = resultat
+    assert bloc == (10, 10, 7)
+    assert normale == (0, 0, -1)
+
+
+def test_raycast_portee_par_defaut_cinq_blocs():
+    w = monde_plat()
+    mur_en_x(w, x=17)  # 6,5 blocs devant l'œil
+    p = joueur()
+    p.set_angles(0.0, 0.0)
+    assert p.raycast(w) is None

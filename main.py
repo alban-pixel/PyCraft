@@ -14,6 +14,7 @@ import pyxel
 from pycraft import config
 from pycraft.camera import Camera
 from pycraft.mesher import ChunkMeshes
+from pycraft.player import Player
 from pycraft.renderer import Renderer
 from pycraft.world import World
 
@@ -63,13 +64,52 @@ def construire(width: int, height: int, seed: int, distance: int) -> dict:
     monde = World(seed=seed)
     maillages = ChunkMeshes(monde)
     x, y, z = monde.spawn_point()
-    camera = Camera(x, y, z + 2.0, yaw=0.6, pitch=-0.18, width=width, height=height)
+    joueur = Player(x, y, z, yaw=0.6, pitch=-0.18)
+    camera = Camera(x, y, z + joueur.eye, yaw=0.6, pitch=-0.18, width=width, height=height)
     renderer = Renderer(monde, maillages, width, height, view_distance=distance)
-    return {"monde": monde, "maillages": maillages, "camera": camera, "renderer": renderer}
+    return {
+        "monde": monde,
+        "maillages": maillages,
+        "camera": camera,
+        "renderer": renderer,
+        "joueur": joueur,
+        "selection": None,
+        "souris": False,
+    }
 
 
 def update() -> None:
-    """Logique du jeu (déplacement ajouté en T8)."""
+    etat = _etat
+    if not etat:
+        return
+    joueur = etat["joueur"]
+    monde = etat["monde"]
+    camera = etat["camera"]
+    dt = 1.0 / config.DEFAULT_FPS
+
+    if not etat["souris"]:
+        pyxel.mouse(True)
+        pyxel.set_mouse_pos(camera.width // 2, camera.height // 2)
+        etat["souris"] = True
+
+    # Souris : delta par rapport au centre, puis recentrage (pas de mouvement relatif natif)
+    mx, my = pyxel.mouse_x, pyxel.mouse_y
+    dx = mx - camera.width // 2
+    dy = my - camera.height // 2
+    if dx or dy:
+        joueur.set_angles(joueur.yaw + dx * 0.0035, joueur.pitch - dy * 0.0035)
+        pyxel.set_mouse_pos(camera.width // 2, camera.height // 2)
+
+    avant = int(pyxel.btn(pyxel.KEY_W)) - int(pyxel.btn(pyxel.KEY_S))
+    cote = int(pyxel.btn(pyxel.KEY_D)) - int(pyxel.btn(pyxel.KEY_A))
+    tourner = (int(pyxel.btn(pyxel.KEY_RIGHT)) - int(pyxel.btn(pyxel.KEY_LEFT))) * 2.2
+    incliner = (int(pyxel.btn(pyxel.KEY_UP)) - int(pyxel.btn(pyxel.KEY_DOWN))) * 1.6
+    joueur.update(monde, dt, avant, cote, tourner, incliner)
+
+    x, y, z = joueur.eye_position()
+    camera.set_position(x, y, z)
+    camera.set_angles(joueur.yaw, joueur.pitch)
+    etat["selection"] = joueur.raycast(monde, 5.0)
 
 
 def draw() -> None:
@@ -77,7 +117,8 @@ def draw() -> None:
     if not etat:
         pyxel.cls(config.SKY_HORIZON)
         return
-    etat["renderer"].draw(etat["camera"])
+    selection = etat.get("selection")
+    etat["renderer"].draw(etat["camera"], selection[0] if selection else None)
 
 
 def main(argv: list[str] | None = None) -> None:
