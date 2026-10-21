@@ -2,7 +2,7 @@
 
 Usage :
     python main.py
-    python main.py --res 1920x1200 --dist 120
+    python main.py --res 1920x1200 --dist 120 --seed 42
 """
 
 from __future__ import annotations
@@ -12,6 +12,12 @@ import argparse
 import pyxel
 
 from pycraft import config
+from pycraft.camera import Camera
+from pycraft.mesher import ChunkMeshes
+from pycraft.renderer import Renderer
+from pycraft.world import World
+
+_etat: dict = {}
 
 
 def parse_res(text: str) -> tuple[int, int]:
@@ -42,13 +48,36 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=config.DEFAULT_VIEW_DISTANCE,
         help="distance de vue en blocs (défaut : 96)",
     )
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=0,
-        help="graine du monde (défaut : 0)",
-    )
+    parser.add_argument("--seed", type=int, default=0, help="graine du monde (défaut : 0)")
     return parser.parse_args(argv)
+
+
+def appliquer_palette() -> None:
+    """Installe la palette 16 couleurs du jeu (style Minecraft)."""
+    for i, couleur in enumerate(config.PALETTE_HEX):
+        pyxel.colors[i] = couleur
+
+
+def construire(width: int, height: int, seed: int, distance: int) -> dict:
+    """Construit le monde, la caméra et le renderer."""
+    monde = World(seed=seed)
+    maillages = ChunkMeshes(monde)
+    x, y, z = monde.spawn_point()
+    camera = Camera(x, y, z + 2.0, yaw=0.6, pitch=-0.18, width=width, height=height)
+    renderer = Renderer(monde, maillages, width, height, view_distance=distance)
+    return {"monde": monde, "maillages": maillages, "camera": camera, "renderer": renderer}
+
+
+def update() -> None:
+    """Logique du jeu (déplacement ajouté en T8)."""
+
+
+def draw() -> None:
+    etat = _etat
+    if not etat:
+        pyxel.cls(config.SKY_HORIZON)
+        return
+    etat["renderer"].draw(etat["camera"])
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -61,24 +90,10 @@ def main(argv: list[str] | None = None) -> None:
         fps=config.DEFAULT_FPS,
         quit_key=pyxel.KEY_ESCAPE,
     )
+    appliquer_palette()
+    _etat.update(construire(width, height, args.seed, args.dist))
+    _etat["args"] = args
     pyxel.run(update, draw)
-
-
-def update() -> None:
-    """Logique du jeu, appelée à chaque frame par Pyxel."""
-
-
-def draw() -> None:
-    """Affichage, appelé à chaque frame par Pyxel."""
-    pyxel.cls(config.SKY_HORIZON)
-    titre = f"{config.TITLE} {config.VERSION}"
-    pyxel.text(pyxel.width // 2 - len(titre) * 2, pyxel.height // 2 - 4, titre, config.TEXT_COLOR)
-    pyxel.text(
-        pyxel.width // 2 - 60,
-        pyxel.height // 2 + 6,
-        "monde en construction — Echap pour quitter",
-        config.TEXT_COLOR,
-    )
 
 
 if __name__ == "__main__":
