@@ -66,11 +66,15 @@ mesure de la frame → commit.
 - **Mesure** : 3,58 → 3,29 ms à 1280×800. Pas de division par 4 : la frame
   est limitée par la géométrie et le CPU, pas par le remplissage
 
-### T5 — Lumière horaire
-- [ ] 6 paliers (aube, matin, midi, après-midi, crépuscule, nuit) interpolés
-- [ ] `u_horizon` / `u_zenith` / brouillard / teinte pilotés par le palier
-- [ ] Test GPU : ciel de 6 h ≠ ciel de midi ≠ ciel de 18 h
-- **Critère** : le brouillard suit la couleur du ciel à toute heure
+### T5 — Lumière horaire ✅
+- [x] Le soleil **tourne** (`sun_vector`) : il se lève à l'est, se couche à
+      l'ouest, en 120 s — les ombres tournent avec lui
+- [x] Ciel, brouillard, teinte et eau suivent l'heure (chaleur à l'aube et au
+      crépuscule)
+- [x] Rampes de bleu explicites dans la palette (les bleus intermédiaires
+      tombaient sur la famille cyan → liserés verts dans le ciel)
+- [x] Étoiles uniquement la nuit profonde, nuages non étirés à l'horizon
+- [x] Test GPU : la scène de 15 s diffère de celle de 45 s, ombres comprises
 
 ### T6 — AO de contact
 - [ ] Occlusion de contact dans `mesher.build_detail` (arêtes et coins)

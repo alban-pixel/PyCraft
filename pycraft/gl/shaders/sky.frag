@@ -51,18 +51,19 @@ void main() {
     col += vec3(1.0, 0.80, 0.50) * pow(s, 10.0) * 0.28;
 
     // Étoiles la nuit
-    if (u_night > 0.01) {
+    if (u_night > 0.72) {
         float h = hash31(floor(dir * 220.0));
-        float star = step(0.9982, h) * smoothstep(0.02, 0.35, dir.z);
-        col += vec3(star * u_night);
+        float star = step(0.9975, h) * smoothstep(0.02, 0.35, dir.z);
+        col += vec3(star * smoothstep(0.72, 0.95, u_night));
     }
 
-    // Nuages : deux octaves de bruit, projetés sur un plan
-    if (dir.z > 0.02) {
-        vec2 p = dir.xy / max(dir.z, 0.15) * 0.55 + u_time * 0.008;
+    // Nuages : deux octaves de bruit sur un plan, sans étirement à l'horizon
+    if (dir.z > 0.05) {
+        vec2 p = dir.xy / max(dir.z, 0.45) * 1.15 + u_time * 0.01;
         float n = value_noise(p) * 0.65 + value_noise(p * 2.7) * 0.35;
-        float cloud = smoothstep(0.56, 0.78, n) * smoothstep(0.02, 0.25, dir.z);
-        col = mix(col, vec3(0.93, 0.94, 0.97), cloud * 0.55);
+        float cloud = smoothstep(0.60, 0.80, n) * smoothstep(0.05, 0.30, dir.z);
+        vec3 nuage = mix(vec3(0.72, 0.76, 0.84), vec3(1.0, 0.98, 0.94), 0.5 + 0.5 * u_sun.z);
+        col = mix(col, nuage, cloud * 0.70);
     }
 
     frag_color = vec4(col, 1.0);

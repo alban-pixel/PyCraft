@@ -46,6 +46,21 @@ _BASES: tuple[tuple[int, int, int], ...] = (
 )
 
 
+# Rampes explicites, insérées juste après les 16 couleurs de base : le ciel,
+# l'eau et le brouillard ont besoin de dégradés continus. Sans elles, un bleu
+# intermédiaire tombe sur la famille cyan et le ciel se couvre de liserés verts.
+_RAMPES: tuple[tuple[str, ...], ...] = (
+    # nuit → jour (zénith)
+    ("0A1020", "132445", "1D3B6E", "2A4E86", "38639E", "4878B4", "5A8FC8", "6FA4D8"),
+    # horizon clair
+    ("74B3E0", "86C1E8", "9ACFEF", "AFDCF4", "C4E7F8", "D9F0FB"),
+    # aube et crépuscule
+    ("3A2233", "5E2F2C", "87402C", "B05630", "D4703A", "E88C50", "F2A876"),
+    # nuages
+    ("C8CDD8", "DDE2EA", "EFF2F7", "FAFBFD"),
+)
+
+
 def _construire_palette() -> np.ndarray:
     """256 couleurs uniques.
 
@@ -56,6 +71,13 @@ def _construire_palette() -> np.ndarray:
     bases: list[tuple[int, int, int]] = [(int(r), int(g), int(b)) for r, g, b in config.PALETTE]
     vus: set[tuple[int, int, int]] = set(bases)
     uniques: list[tuple[int, int, int]] = list(bases)
+
+    for rampe in _RAMPES:
+        for hexa in rampe:
+            c = (int(hexa[0:2], 16), int(hexa[2:4], 16), int(hexa[4:6], 16))
+            if c not in vus:
+                vus.add(c)
+                uniques.append(c)
 
     for teinte, saturation, _ in _FAMILLES:
         for j in range(_NUANCES):

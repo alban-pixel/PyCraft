@@ -199,7 +199,8 @@ class GlRenderer:
     def _rendre_scene(
         self, camera: Camera, time: float = 0.0, selection=None
     ) -> None:
-        ciel = np.array(config.PALETTE[config.SKY_HORIZON], dtype=np.float32) / 255.0
+        self._ambiance(time)
+        ciel = self._ciel_horizon
         self.scene_fbo.use()
         self.scene_fbo.clear(float(ciel[0]), float(ciel[1]), float(ciel[2]), 1.0)
         self._dessiner_ciel(camera, time)
@@ -320,17 +321,47 @@ class GlRenderer:
         """0 = nuit, 1 = plein jour (période de 120 s)."""
         return max(0.0, min(1.0, 0.5 + 0.55 * math.sin(time * math.pi / 60.0)))
 
+    @staticmethod
+    def sun_vector(time: float) -> np.ndarray:
+        """Direction du soleil : il se lève à l'est et se couche à l'ouest.
+
+        La hauteur suit `sin(theta)` (même période que `daylight`) ; pendant la
+        nuit la direction reste légèrement au-dessus de l'horizon pour que les
+        ombres gardent un sens.
+        """
+        theta = time * math.tau / 120.0
+        direction = np.array(
+            [math.cos(theta) * 0.9, 0.45, max(0.14, math.sin(theta))],
+            dtype=np.float64,
+        )
+        return direction / np.linalg.norm(direction)
+
     def _ambiance(self, time: float) -> None:
+        theta = time * math.tau / 120.0
+        hauteur = math.sin(theta)
         jour = self.daylight(time)
         self._jour = jour
-        jour_h = np.array(config.PALETTE[config.SKY_HORIZON], dtype=np.float32) / 255.0
-        jour_z = np.array(config.PALETTE[config.SKY_TOP], dtype=np.float32) / 255.0
+        self.sun_dir = self.sun_vector(time)
+
+        # Rampes de bleu continues : la palette contient une famille ciel
+        # complète, donc le dégradé se quantifie sans trou.
+        jour_h = np.array([0.62, 0.80, 0.94], dtype=np.float32)
+        jour_z = np.array([0.24, 0.44, 0.78], dtype=np.float32)
         nuit_h = np.array([0.05, 0.07, 0.16], dtype=np.float32)
         nuit_z = np.array([0.01, 0.02, 0.06], dtype=np.float32)
-        self._ciel_horizon = nuit_h + (jour_h - nuit_h) * jour
-        self._ciel_zenith = nuit_z + (jour_z - nuit_z) * jour
-        tint = np.array([0.55, 0.62, 0.90], dtype=np.float32)
-        self._tint = tint + (np.ones(3, dtype=np.float32) - tint) * jour
+        horizon = nuit_h + (jour_h - nuit_h) * jour
+        zenith = nuit_z + (jour_z - nuit_z) * jour
+
+        # Chaleur : le soleil rase l'horizon à l'aube et au crépuscule.
+        chaleur = max(0.0, 1.0 - abs(hauteur) / 0.32) * jour
+        aube = np.array([0.95, 0.48, 0.20], dtype=np.float32)
+        self._ciel_horizon = horizon * (1.0 - 0.62 * chaleur) + aube * (0.62 * chaleur)
+        self._ciel_zenith = zenith * (1.0 - 0.22 * chaleur) + aube * (0.22 * chaleur)
+
+        nuit_tint = np.array([0.55, 0.62, 0.90], dtype=np.float32)
+        tint = nuit_tint + (np.ones(3, dtype=np.float32) - nuit_tint) * jour
+        chaud_tint = np.array([1.0, 0.78, 0.58], dtype=np.float32)
+        self._tint = tint * (1.0 - 0.30 * chaleur) + chaud_tint * (0.30 * chaleur)
 
     def _dessiner_ciel(self, camera: Camera, time: float) -> None:
         self.ctx.disable(moderngl.DEPTH_TEST)
@@ -341,7 +372,6 @@ class GlRenderer:
         prog["u_res"].value = (float(self.rw), float(self.rh))
         prog["u_focal"].value = float(camera.focal)
         prog["u_sun"].value = tuple(float(v) for v in self.sun_dir)
-        self._ambiance(time)
         prog["u_horizon"].value = tuple(float(v) for v in self._ciel_horizon)
         prog["u_zenith"].value = tuple(float(v) for v in self._ciel_zenith)
         prog["u_time"].value = float(time)

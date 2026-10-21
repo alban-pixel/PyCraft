@@ -357,32 +357,36 @@ def test_ombre_d_un_casteur_hors_champ(pyxel_headless):
     from pycraft.gl.palette import PALETTE
     from pycraft.gl.renderer_gl import GlRenderer
 
-    monde = World(sx=48, sy=48, sz=16, seed=0)
+    monde = World(sx=48, sy=48, sz=32, seed=0)
     monde.data = bytearray(len(monde.data))
     for y in range(48):
         for x in range(48):
             for z in range(2):
                 monde.set(x, y, z, Block.STONE)
-    # Tour derrière la caméra : jamais dans le frustum de la caméra.
-    for z in range(2, 14):
+    for z in range(2, 24):  # tour assez haute pour ombrer tout le champ
         for dy in (0, 1):
             for dx in (0, 1):
-                monde.set(33 + dx, 33 + dy, z, Block.STONE)
+                monde.set(24 + dx, 22 + dy, z, Block.STONE)
 
     gl = GlContext(320, 200)
     renderer = GlRenderer(
-        monde, ChunkMeshes(monde), 320, 200, view_distance=48, detail_radius=100, gl=gl
+        monde, ChunkMeshes(monde), 320, 200,
+        view_distance=48, detail_radius=100, gl=gl,
     )
     try:
-        # La caméra regarde vers -x,-y : la tour à (33,33) est derrière elle,
-        # mais son ombre tombe vers (28,28), donc devant la caméra.
-        camera = Camera(28, 28, 6, yaw=math.pi + 0.9, pitch=-0.45,
-                        width=320, height=200)
+        # La caméra regarde dans le sens où l'ombre tombe : la tour est donc
+        # derrière elle, hors du frustum, mais son ombre arrive de face.
+        soleil = GlRenderer.sun_vector(15.0)
+        yaw = math.atan2(-soleil[1], -soleil[0])
+        camera = Camera(16, 16, 6, yaw=yaw, pitch=-0.35, width=320, height=200)
+        vus = {(cx, cy) for cx, cy, _ in renderer._chunks_visibles(camera)}
+        assert (1, 1) not in vus, "la tour doit être hors du frustum"
+
         renderer.shadows = True
-        renderer.draw(camera, time=30.0)
+        renderer.draw(camera, time=15.0)
         avec = np.frombuffer(gl.read_indices(), np.uint8).copy()
         renderer.shadows = False
-        renderer.draw(camera, time=30.0)
+        renderer.draw(camera, time=15.0)
         sans = np.frombuffer(gl.read_indices(), np.uint8).copy()
 
         changes = int((avec != sans).sum())
@@ -420,5 +424,38 @@ def test_resolution_interne_reduite(pyxel_headless):
         # La vignette du post-traitement varie par pixel : quelques blocs
         # changent d'un cran de palette. On exige donc 90 %, pas 100 %.
         assert uniformes > 0.90, f"seulement {uniformes:.0%} de blocs 2×2 uniformes"
+    finally:
+        renderer.close()
+
+
+def test_soleil_qui_bouge(pyxel_headless):
+    """Le soleil doit tourner : 15 s et 45 s ne donnent pas la même scène."""
+    from pycraft.gl.context import GlContext
+    from pycraft.gl.renderer_gl import GlRenderer
+
+    monde = World(sx=32, sy=32, sz=16, seed=0)
+    monde.data = bytearray(len(monde.data))
+    for y in range(32):
+        for x in range(32):
+            for z in range(4):
+                monde.set(x, y, z, Block.GRASS)
+    for z in range(4, 10):
+        monde.set(16, 16, z, Block.STONE)
+
+    gl = GlContext(320, 200)
+    renderer = GlRenderer(
+        monde, ChunkMeshes(monde), 320, 200, view_distance=40, detail_radius=16, gl=gl
+    )
+    try:
+        camera = Camera(16, 10, 9, yaw=1.2, pitch=-0.35, width=320, height=200)
+        renderer.draw(camera, time=15.0)
+        matin = np.frombuffer(gl.read_indices(), np.uint8).copy()
+        renderer.draw(camera, time=45.0)
+        apres_midi = np.frombuffer(gl.read_indices(), np.uint8).copy()
+
+        assert (matin != apres_midi).mean() > 0.08, "le soleil ne bouge pas"
+        sol_matin = matin[: 120 * 320].reshape(120, 320)
+        sol_apres = apres_midi[: 120 * 320].reshape(120, 320)
+        assert (sol_matin != sol_apres).mean() > 0.05, "les ombres ne tournent pas"
     finally:
         renderer.close()
