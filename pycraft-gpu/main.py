@@ -1,8 +1,10 @@
 """PyCraft GPU: a Minecraft-like game. OpenGL draws the 3D world, Pyxel shows it and runs everything else."""
+import ctypes
 import json
 import math
 import os
 import random
+import sys
 import time
 
 import moderngl
@@ -19,10 +21,11 @@ BASE_WIDTH, BASE_HEIGHT = 320, 180
 RESOLUTIONS = [(320, 180), (384, 216), (480, 270), (640, 360), (800, 450), (960, 540)]
 FRAME_RATES = [30, 60, 75, 120, 144, 165, 240]
 FOVS = [60, 70, 80, 90]
-DEFAULT_SETTINGS = {"resolution": (320, 180), "fps": 60, "fov": 70, "music": True}
+SENSITIVITIES = [0.12, 0.18, 0.25, 0.35, 0.50]
+SENS_NAMES = {0.12: "Low", 0.18: "Medium", 0.25: "Normal", 0.35: "High", 0.50: "Very High"}
+DEFAULT_SETTINGS = {"resolution": (320, 180), "fps": 60, "fov": 70, "sensitivity": 0.25, "music": True}
 MAX_DT = 1 / 30
 REACH = 6.0
-MOUSE_SENSITIVITY = 0.45  # degrees per pixel at 320x180
 KEY_LOOK_SPEED = 120.0  # degrees per second with arrow keys
 DAY_SECONDS = 8 * 60  # full day/night cycle
 AUTOSAVE_SECONDS = 120
@@ -66,6 +69,68 @@ class Particle:
         self.z += self.vz * dt
         self.vy -= 18.0 * dt
         return self.age < self.max_age
+
+
+class MouseGrabber:
+    """Hardware mouse grabber.
+
+    On macOS, uses CoreGraphics to decouple cursor position from the window and read raw
+    unbounded mouse deltas. This completely eliminates screen edge boundary clamping and the
+    resulting asynchronous warp rollback glitch.
+    """
+
+    def __init__(self):
+        self.is_mac = sys.platform == "darwin"
+        self._cg = None
+        self._dx = None
+        self._dy = None
+        if self.is_mac:
+            try:
+                self._cg = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+                self._cg.CGAssociateMouseAndMouseCursorPosition.argtypes = [ctypes.c_bool]
+                self._cg.CGAssociateMouseAndMouseCursorPosition.restype = ctypes.c_int32
+                self._dx = ctypes.c_int32()
+                self._dy = ctypes.c_int32()
+                self._cg.CGGetLastMouseDelta.argtypes = [ctypes.POINTER(ctypes.c_int32), ctypes.POINTER(ctypes.c_int32)]
+                self._cg.CGGetLastMouseDelta.restype = None
+            except Exception:
+                self._cg = None
+        self.captured = False
+        self.last_pos = None
+
+    def capture(self, x=None, y=None):
+        self.captured = True
+        if self._cg:
+            self._cg.CGAssociateMouseAndMouseCursorPosition(False)
+            self._cg.CGGetLastMouseDelta(ctypes.byref(self._dx), ctypes.byref(self._dy))
+        if x is not None and y is not None:
+            self.last_pos = (x, y)
+
+    def release(self):
+        self.captured = False
+        if self._cg:
+            self._cg.CGAssociateMouseAndMouseCursorPosition(True)
+        self.last_pos = None
+
+    def get_delta(self, mx, my, cx, cy):
+        if not self.captured:
+            return 0.0, 0.0
+
+        if self._cg:
+            self._cg.CGGetLastMouseDelta(ctypes.byref(self._dx), ctypes.byref(self._dy))
+            return float(self._dx.value), float(self._dy.value)
+
+        # Fallback without CoreGraphics (Linux / Windows / headless)
+        if self.last_pos is None:
+            self.last_pos = (mx, my)
+            return 0.0, 0.0
+
+        dx = mx - self.last_pos[0]
+        dy = my - self.last_pos[1]
+        self.last_pos = (mx, my)
+        if abs(dx) > cx or abs(dy) > cy:
+            return 0.0, 0.0
+        return float(dx), float(dy)
 
 
 def make_palette():
@@ -142,6 +207,7 @@ class App:
         self.screen = None
         self.set_resolution(*self.settings["resolution"])
 
+        self.mouse_grabber = MouseGrabber()
         self.state = "title"
         self.settings_parent = "title"
         self.menu_index = 0
@@ -168,21 +234,24 @@ class App:
     def run(self):
         """Like pyxel.run(update, draw), but with paced frames matching settings."""
         next_frame = last_update = time.perf_counter()
-        while True:
-            now = time.perf_counter()
-            self.dt = min(now - last_update, MAX_DT)
-            last_update = now
-            self.update()
-            self.draw()
-            next_frame += 1 / self.settings["fps"]
-            now = time.perf_counter()
-            if now > next_frame + MAX_DT:
-                next_frame = now
-            elif next_frame - now > 0.002:
-                time.sleep(next_frame - now - 0.0015)
-            while time.perf_counter() < next_frame:
-                pass
-            pyxel.flip()
+        try:
+            while True:
+                now = time.perf_counter()
+                self.dt = min(now - last_update, MAX_DT)
+                last_update = now
+                self.update()
+                self.draw()
+                next_frame += 1 / self.settings["fps"]
+                now = time.perf_counter()
+                if now > next_frame + MAX_DT:
+                    next_frame = now
+                elif next_frame - now > 0.002:
+                    time.sleep(next_frame - now - 0.0015)
+                while time.perf_counter() < next_frame:
+                    pass
+                pyxel.flip()
+        finally:
+            self.release_mouse()
 
     # --- Settings ------------------------------------------------------------------------------
 
@@ -201,6 +270,8 @@ class App:
                 settings["fps"] = saved["fps"]
             if saved.get("fov") in FOVS:
                 settings["fov"] = saved["fov"]
+            if saved.get("sensitivity") in SENSITIVITIES:
+                settings["sensitivity"] = saved["sensitivity"]
             if isinstance(saved.get("music"), bool):
                 settings["music"] = saved["music"]
         return settings
@@ -238,6 +309,14 @@ class App:
         self.settings["fov"] = FOVS[(i + step) % len(FOVS)]
         self.save_settings()
         self.renderer.set_fov(self.settings["fov"])
+
+    def change_sensitivity(self, step):
+        sens = self.settings.get("sensitivity", 0.25)
+        if sens not in SENSITIVITIES:
+            sens = 0.25
+        i = SENSITIVITIES.index(sens)
+        self.settings["sensitivity"] = SENSITIVITIES[(i + step) % len(SENSITIVITIES)]
+        self.save_settings()
 
     def frames(self, seconds):
         return max(1, round(seconds * self.settings["fps"]))
@@ -327,15 +406,20 @@ class App:
         if state == "playing":
             self.capture_mouse()
         else:
-            self.mouse_captured = False
-            pyxel.mouse(True)
+            self.release_mouse()
 
     def capture_mouse(self):
         self.mouse_captured = True
         if not self.headless:
             pyxel.mouse(False)
-            pyxel.set_mouse_pos(pyxel.width / 2, pyxel.height / 2)
+            self.mouse_grabber.capture(pyxel.mouse_x, pyxel.mouse_y)
         self.last_mouse = (pyxel.mouse_x, pyxel.mouse_y)
+
+    def release_mouse(self):
+        self.mouse_captured = False
+        if not self.headless:
+            self.mouse_grabber.release()
+            pyxel.mouse(True)
 
     def on_title(self):
         return self.state == "title" or (self.state == "settings" and self.settings_parent == "title")
@@ -358,10 +442,13 @@ class App:
             ]
         if self.state == "settings":
             w, h = self.settings["resolution"]
+            sens = self.settings.get("sensitivity", 0.25)
+            sens_label = SENS_NAMES.get(sens, "Normal")
             return [
                 (f"Resolution: {w} x {h}", self.change_resolution),
                 (f"Frame rate: {self.settings['fps']} FPS", self.change_fps),
                 (f"Field of view: {self.settings['fov']} deg", self.change_fov),
+                (f"Mouse speed: {sens_label}", self.change_sensitivity),
                 ("Music: " + ("on" if self.settings["music"] else "off"), lambda step: self.toggle_music()),
                 ("Done", lambda step: self.close_settings()),
             ]
@@ -379,6 +466,7 @@ class App:
         self.set_state("title")
 
     def save_and_quit(self):
+        self.release_mouse()
         self.save()
         pyxel.quit()
 
@@ -497,8 +585,7 @@ class App:
             return
         if pyxel.btnp(pyxel.KEY_TAB):
             if self.mouse_captured:
-                self.mouse_captured = False
-                pyxel.mouse(True)
+                self.release_mouse()
             else:
                 self.capture_mouse()
         if pyxel.btnp(pyxel.KEY_H):
@@ -553,15 +640,14 @@ class App:
         self.player.look(keys_yaw * KEY_LOOK_SPEED * self.dt, keys_pitch * KEY_LOOK_SPEED * self.dt)
         if not self.mouse_captured:
             return
-        mx, my = pyxel.mouse_x, pyxel.mouse_y
-        scale = BASE_WIDTH / pyxel.width
-        dx, dy = (mx - self.last_mouse[0]) * scale, (my - self.last_mouse[1]) * scale
-        self.player.look(-dx * MOUSE_SENSITIVITY, -dy * MOUSE_SENSITIVITY)
-        if not self.headless and (abs(mx - pyxel.width / 2) > pyxel.width / 4 or abs(my - pyxel.height / 2) > pyxel.height / 4):
-            pyxel.set_mouse_pos(pyxel.width / 2, pyxel.height / 2)
-            self.last_mouse = (pyxel.width // 2, pyxel.height // 2)
-        else:
-            self.last_mouse = (mx, my)
+
+        dx, dy = self.mouse_grabber.get_delta(
+            pyxel.mouse_x, pyxel.mouse_y, pyxel.width // 2, pyxel.height // 2
+        )
+        if dx != 0.0 or dy != 0.0:
+            scale = BASE_WIDTH / pyxel.width
+            sens = self.settings.get("sensitivity", 0.25)
+            self.player.look(-dx * sens * scale, -dy * sens * scale)
 
     def notify(self, text):
         self.message, self.message_time = text, self.play_time
