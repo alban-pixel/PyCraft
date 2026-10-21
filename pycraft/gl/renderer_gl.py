@@ -14,7 +14,13 @@ from pycraft.cube import selection_edges
 from pycraft.gl.context import GlContext
 from pycraft.gl.geometry import GpuMeshes, split_water
 from pycraft.gl.math import as_uniform, light_matrix, mvp_matrix
-from pycraft.gl.palette import build_lut, install_palette, lut_as_texture
+from pycraft.gl.palette import (
+    build_lut,
+    build_lut_subset,
+    install_palette,
+    lut_as_texture,
+    retro_indices,
+)
 from pycraft.mesher import CHUNK, ChunkMeshes, select_mesh
 from pycraft.world import World
 
@@ -65,6 +71,9 @@ class GlRenderer:
         self._temps = 0.0
         self.rain = 0.0
         self.dither = True
+        self.retro = False
+        self.scanlines = True
+        self._lut16_tex = None
         self._tint = (1.0, 1.0, 1.0)
         self._ciel_horizon = np.array(config.PALETTE[config.SKY_HORIZON], np.float32) / 255.0
         self._ciel_zenith = np.array(config.PALETTE[config.SKY_TOP], np.float32) / 255.0
@@ -387,15 +396,34 @@ class GlRenderer:
         self.ctx.disable(moderngl.DEPTH_TEST)
         self.gl.fbo.use()
         self.scene_tex.use(0)
-        self.lut_tex.use(1)
+        if self.retro:
+            self._lut16()
+            self._lut16_tex.use(1)
+            self.post_prog["u_scan"].value = 1.0 if self.scanlines else 0.0
+        else:
+            self.lut_tex.use(1)
+            self.post_prog["u_scan"].value = 0.0
         self.post_prog["u_scene"].value = 0
         self.post_prog["u_lut"].value = 1
         self.post_prog["u_tint"].value = tuple(float(v) for v in self._tint)
         self.post_prog["u_vignette"].value = 0.55
         self.post_prog["u_rain"].value = float(self.rain)
         self.post_prog["u_time"].value = float(self._temps)
-        self.post_prog["u_dither"].value = 1.0 if self.dither else 0.0
+        # En rétro la palette est plus grossière : il faut tramer plus fort.
+        self.post_prog["u_pixel"].value = 1.0 / self.scale
+        amplitude = 1.7 / 16.0 if self.retro else 1.0 / 16.0
+        self.post_prog["u_dither"].value = amplitude if self.dither else 0.0
         self.post_vao.render()
+
+    def _lut16(self) -> None:
+        """LUT des 16 couleurs de base (mode rétro), construite à la demande."""
+        if self._lut16_tex is not None:
+            return
+        lut = build_lut_subset(retro_indices())
+        self._lut16_tex = self.ctx.texture(
+            (1024, 32), 1, lut_as_texture(lut).tobytes(), dtype="f1"
+        )
+        self._lut16_tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
 
     def invalidate(self, x: int, y: int) -> None:
         self.gpu.invalidate(x, y)
@@ -426,6 +454,8 @@ class GlRenderer:
         self.lignes_prog.release()
         self.gpu.release()
         self.lut_tex.release()
+        if self._lut16_tex is not None:
+            self._lut16_tex.release()
         self.scene_tex.release()
         self.depth.release()
         self.scene_fbo.release()

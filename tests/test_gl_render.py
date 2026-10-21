@@ -538,3 +538,90 @@ def test_eau_vagues_et_reflet_du_soleil(pyxel_headless):
         assert lum.max() / max(lum.mean(), 1e-6) > 1.40, "pas de reflet de soleil sur l'eau"
     finally:
         renderer.close()
+
+
+def _scene_retro():
+    """Scène colorée : herbe, pierre, sable, bois et ciel."""
+    monde = World(sx=32, sy=32, sz=16, seed=0)
+    monde.data = bytearray(len(monde.data))
+    for y in range(32):
+        for x in range(32):
+            for z in range(3):
+                monde.set(x, y, z, Block.GRASS)
+    for y in range(12, 20):
+        for x in range(10, 18):
+            for z in range(3, 5):
+                monde.set(x, y, z, Block.STONE)
+    for z in range(3, 9):
+        for dy in (0, 1):
+            for dx in (0, 1):
+                monde.set(22 + dx, 20 + dy, z, Block.WOOD)
+    for y in range(4, 9):
+        for x in range(4, 9):
+            monde.set(x, y, 3, Block.SAND)
+    return monde
+
+
+def test_mode_retro_8bits(pyxel_headless):
+    """En mode rétro, l'image se limite aux 16 couleurs de base."""
+    from pycraft.gl.context import GlContext
+    from pycraft.gl.palette import retro_indices
+    from pycraft.gl.renderer_gl import GlRenderer
+
+    monde = _scene_retro()
+    gl = GlContext(320, 200)
+    renderer = GlRenderer(
+        monde, ChunkMeshes(monde), 320, 200, view_distance=40, detail_radius=16, gl=gl
+    )
+    try:
+        camera = Camera(16, 10, 9, yaw=0.9, pitch=-0.25, width=320, height=200)
+        renderer.retro = False
+        renderer.draw(camera, time=30.0)
+        moderne = np.frombuffer(gl.read_indices(), np.uint8).copy()
+
+        renderer.retro = True
+        renderer.draw(camera, time=30.0)
+        retro = np.frombuffer(gl.read_indices(), np.uint8).copy()
+
+        couleurs_modernes = len(set(moderne.tolist()))
+        couleurs_retro = len(set(retro.tolist()))
+        assert couleurs_modernes > 30, "la scène doit être riche en couleurs"
+        assert couleurs_retro <= len(retro_indices()), "le mode rétro dépasse sa palette"
+        assert couleurs_retro < couleurs_modernes * 0.6, "le mode rétro doit appauvrir la palette"
+        assert (moderne != retro).mean() > 0.3, "le mode rétro doit changer l'image"
+    finally:
+        renderer.close()
+
+
+def test_lignes_de_balayage_retro(pyxel_headless):
+    """Le mode rétro assombrit une ligne sur deux (scanlines)."""
+    from pycraft.gl.context import GlContext
+    from pycraft.gl.palette import PALETTE
+    from pycraft.gl.renderer_gl import GlRenderer
+
+    monde = _scene_retro()
+    gl = GlContext(320, 200)
+    renderer = GlRenderer(
+        monde, ChunkMeshes(monde), 320, 200, view_distance=40, detail_radius=16, gl=gl
+    )
+    try:
+        camera = Camera(16, 10, 9, yaw=0.9, pitch=-0.25, width=320, height=200)
+        renderer.retro = True
+        renderer.dither = False  # le tramage fausserait la comparaison ligne/ligne
+        renderer.scanlines = False
+        renderer.draw(camera, time=30.0)
+        sans = np.frombuffer(gl.read_indices(), np.uint8).reshape(200, 320)
+        renderer.scanlines = True
+        renderer.draw(camera, time=30.0)
+        avec = np.frombuffer(gl.read_indices(), np.uint8).reshape(200, 320)
+
+        lum_sans = PALETTE[sans].astype(float).mean(axis=2)
+        lum_avec = PALETTE[avec].astype(float).mean(axis=2)
+        # Une ligne sur deux est assombrie, l'autre non (la parité dépend du
+        # sens de lecture du framebuffer : on ne fixe pas laquelle).
+        ecart = lum_avec - lum_sans
+        paires = (ecart[0::2].mean(), ecart[1::2].mean())
+        assert min(paires) < -2.0, "aucune ligne assombrie : pas de scanlines"
+        assert max(paires) > -0.5, "toutes les lignes sont assombries"
+    finally:
+        renderer.close()

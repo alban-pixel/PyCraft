@@ -129,6 +129,17 @@ mesure de la frame → commit.
 - **Mesures** : 1280×800 → 3,47 ms · 1920×1200 dist 120 → 5,05 ms
   (`scale=0.5` : 4,44 ms)
 
+### T13 — Mode rétro 8 bits
+- [x] `--retro` : palette réduite (16 bases + ombre + lumière), basse résolution
+      interne automatique (~320 px de large) et lignes de balayage
+- [x] `retro_indices()` / `build_lut_subset()` : les couleurs autorisées restent
+      des indices de la palette installée (sinon l'image partait en couleurs
+      délirantes)
+- [x] Tramage calculé en pixels **internes** (`u_pixel`) : à la résolution écran
+      il détruisait le pixel-art
+- [x] `--no-scanlines` pour couper les lignes de balayage
+- [x] 2 tests GPU : palette appauvrie, une ligne sur deux assombrie
+
 ## Ordre d'exécution
 
 ```

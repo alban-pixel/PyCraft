@@ -104,6 +104,31 @@ def _construire_palette() -> np.ndarray:
 PALETTE = _construire_palette()
 
 
+def retro_indices() -> np.ndarray:
+    """Les indices de palette autorisés en mode 8 bits.
+
+    Les 16 couleurs de base n'ont aucune marge d'ombrage : les faces à l'ombre
+    tombaient sur le noir. On y ajoute une ombre et une lumière, en prenant à
+    chaque fois l'entrée **existante** la plus proche — la palette installée
+    dans Pyxel ne change pas, seuls les indices autorisés changent.
+    """
+    base = PALETTE[:16].astype(np.int32)
+    cibles = np.concatenate(
+        (base, np.clip(base * 0.62, 0, 255), np.clip(base * 1.25, 0, 255))
+    ).astype(np.uint8)
+    return np.unique(nearest_index(cibles))
+
+
+def build_lut_subset(indices: np.ndarray, palette: np.ndarray = PALETTE, bits: int = 5) -> np.ndarray:
+    """LUT restreinte à un sous-ensemble de la palette.
+
+    `build_lut` renvoie des indices **dans le sous-ensemble** : il faut les
+    remapper vers les vrais indices de la palette affichée.
+    """
+    indices = np.asarray(indices, dtype=np.uint8)
+    return indices[build_lut(palette=palette[indices], bits=bits)]
+
+
 def nearest_index(couleurs: np.ndarray, palette: np.ndarray = PALETTE) -> np.ndarray:
     """Indice de la couleur de palette la plus proche (distance RGB)."""
     couleurs = np.asarray(couleurs, dtype=np.int32)

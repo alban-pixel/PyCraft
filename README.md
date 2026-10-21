@@ -54,6 +54,8 @@ python3 -m venv .venv
 | `--no-shadows` | — | désactive les ombres portées |
 | `--weather` | — | active la pluie |
 | `--scale` | `1.0` | résolution interne du rendu GPU (0.25 à 1.0) : plus bas = plus rétro et plus rapide, agrandi en nearest |
+| `--retro` | — | mode 8 bits : palette réduite, ~320 px de large, lignes de balayage |
+| `--no-scanlines` | — | coupe les lignes de balayage du mode rétro |
 
 ## Tests et benchmark
 

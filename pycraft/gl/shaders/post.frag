@@ -8,6 +8,8 @@ uniform float u_vignette;
 uniform float u_rain;
 uniform float u_time;
 uniform float u_dither;
+uniform float u_scan;
+uniform float u_pixel;  // taille d'un pixel interne à l'écran
 
 // Matrice de Bayer récursive (bruit ordonné) : casse les bandes du dégradé
 // sans introduire de bruit haute fréquence.
@@ -38,8 +40,14 @@ void main() {
     }
 
     // Un demi-pas de quantification (LUT 5 bits) suffit à casser les bandes.
-    float grain = (bayer8(gl_FragCoord.xy) - 0.5) * u_dither / 16.0;
+    // Le tramage se calcule en pixels **internes** : sinon il détruit le pixel-art.
+    float grain = (bayer8(floor(gl_FragCoord.xy / u_pixel)) - 0.5) * u_dither;
     color += vec3(grain);
+
+    // Lignes de balayage : une ligne sur deux assombrie (mode rétro).
+    if (u_scan > 0.5 && mod(gl_FragCoord.y, 2.0) < 1.0) {
+        color *= 0.74;
+    }
 
     int r = min(int(clamp(color.r, 0.0, 1.0) * 31.999), 31);
     int g = min(int(clamp(color.g, 0.0, 1.0) * 31.999), 31);
