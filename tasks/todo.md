@@ -1,86 +1,64 @@
-# PyCraft — tâches
+# `gpu-render` — tâches
 
-Plan détaillé : [plan.md](plan.md). Intention : [../docs/intent/pycraft.md](../docs/intent/pycraft.md).
-Direction : faces projetées + chunks + greedy meshing + LOD, **1280×800** (max 1920×1200),
-**60 fps**, 100 % Python + numpy.
+Plan : [plan.md](plan.md) · Spec : [SPEC-gpu-render.md](../SPEC-gpu-render.md) ·
+Carte : [CAPABILITIES.md](../CAPABILITIES.md).
 
-## Phase 0 — Fondations
+## Phase 1 — Fondations
 
-- [x] **T1 · Spike perf verrouillé**
-  - [x] 1920×1200 + dist 120 : frame ≤ 16 ms
-  - [x] 1280×800 + dist 96 : frame ≤ 8 ms
-  - [x] aucune fissure T-junction sur capture
-  - [x] chiffres consignés dans `docs/ideas/pycraft.md`
-- [x] **T2 · Squelette du dépôt**
-  - [x] git init + remote PyCraft
-  - [x] `pyxel`, `numpy`, `pytest` installés ; `.gitignore` complet
-  - [x] `import pycraft` OK, pytest vert
-  - [x] premier commit
-- [x] **T3 · Monde de voxels**
-  - [x] bytearray 256×256×32, get/set/solid
-  - [x] génération seedée < 150 ms, spawn sûr
-  - [x] ≥ 5 tests
+- [ ] **T1 · Contexte GL et frame dans Pyxel**
+  - [ ] contexte moderngl + FBO R8
+  - [ ] readback + memmove dans `pyxel.screen`
+  - [ ] frame affichée en fenêtre réelle (capture)
+  - [ ] readback ≤ 1,5 ms en 1920×1200
+- [ ] **T2 · Palette 256 et quantification**
+  - [ ] palette du jeu + LUT 32³
+  - [ ] `quantize` exact (10 000 couleurs aléatoires)
+  - [ ] détection 256 / repli 16 testé
+- [ ] **T3 · Matrices et packing**
+  - [ ] matrices cohérentes avec `Camera.project`
+  - [ ] packing interleaved (position, face, bloc, ao)
+  - [ ] cache + invalidation
 
 ### Checkpoint Fondations
-- [x] tests verts · perf validée · revue humaine
+- [ ] frame affichée · palette exacte · géométrie packée · revue humaine
 
-## Phase 1 — Rendu
+## Phase 2 — Cœur visuel
 
-- [x] **T4 · Caméra + projection numpy + clipping**
-  - [x] point devant → centre ; derrière → exclu
-  - [x] face à cheval sur le plan proche → **découpée**
-  - [x] horizon à H/2 si pitch=0
-  - [x] tests unitaires
-- [x] **T5 · Mesher détail par chunk**
-  - [x] chunk 16×16 < 5 ms, monde < 300 ms
-  - [x] seul le chunk modifié est reconstruit
-  - [x] bloc isolé = 6 faces
-- [x] **T6 · Greedy meshing + LOD**
-  - [x] ≥ 3× moins de quads en terrain plat
-  - [x] aucune fissure détail/fusionné
-  - [x] pas de saut visuel en déplacement continu
-  - [x] chunk plat = 1 quad de dessus
-- [x] **T7 · Ciel, brouillard, palette, texture**
-  - [x] horizon cohérent en rotation
-  - [x] fondu cache la bascule LOD
-  - [x] mouchetures stables (pas de scintillement)
+- [ ] **T4 · Terrain pass**
+  - [ ] monde rendu par le GPU en 1920×1200
+  - [ ] frame ≤ 6 ms
+  - [ ] capture ciel/terrain validée
+- [ ] **T5 · Ciel complet**
+  - [ ] ≥ 8 indices dans le dégradé
+  - [ ] soleil + halo, étoiles la nuit
+- [ ] **T6 · Ombres portées**
+  - [ ] ombre visible d'un bloc isolé
+  - [ ] pas d'acné
+  - [ ] coût ≤ 2 ms
 
-### Checkpoint Rendu
-- [x] 1280×800 @ 60 fps · 1920×1200 @ 30 fps · aucun artefact · revue humaine
+### Checkpoint Cœur visuel
+- [ ] terrain + ciel + ombres · ≤ 6 ms · captures · revue humaine
 
-## Phase 2 — Interaction
+## Phase 3 — Eau et finition
 
-- [x] **T8 · Déplacement + collisions**
-  - [x] pas de traversée de mur
-  - [x] glissement le long des murs
-  - [x] caméra bornée ; tests unitaires
-- [x] **T9 · Raycast DDA + surbrillance**
-  - [x] 3 cas de test corrects
-  - [x] contour du bloc visé ; < 0,5 ms/frame
-- [x] **T10 · Casser / poser + hotbar**
-  - [x] mise à jour en une frame
-  - [x] jamais de bloc dans le joueur
-  - [x] hotbar 1/2/3 ; rebuild chunk < 5 ms
+- [ ] **T7 · Eau animée**
+  - [ ] vagues animées
+  - [ ] transparence sans artefact
+  - [ ] teinte sous-marine
+- [ ] **T8 · Brouillard + textures**
+  - [ ] fondu lointain vers le ciel
+  - [ ] textures procédurales près
+- [ ] **T9 · Post + palette jour/nuit**
+  - [ ] vignette + courbe
+  - [ ] palette interpolée sur 60 s
+- [ ] **T10 · Intégration et fallback**
+  - [ ] `--gpu` par défaut, `--cpu` intact
+  - [ ] erreur GL → message + fallback
+  - [ ] bench GPU + README
+- [ ] **T11 · Météo**
+  - [ ] pluie visible dehors, pas sous un toit
+  - [ ] ≤ 2 ms
 
-### Checkpoint Interaction
-- [x] jouable · 60 fps · revue humaine
-
-## Phase 3 — Finition
-
-- [x] **T11 · Monde riche**
-  - [x] 3 seeds distinctes
-  - [x] relief + eau/sable au spawn
-  - [x] génération + maillage < 1 s
-- [x] **T12 · HUD + écran titre + F3**
-  - [x] titre, aide `H`, réticule centré
-  - [x] F3 : fps + quads
-- [x] **T13 · Réglages résolution/distance/LOD**
-  - [x] `--res`, `--dist`, `--lod`, `--detail`
-  - [x] garde-fou si fenêtre > écran
-- [x] **T14 · Doc + push**
-  - [x] README avec captures
-  - [x] `docs/technique.md`
-  - [x] pytest vert, push `origin/main`
-
-### Checkpoint Livraison
-- [x] 5 min sans crash · 60 fps · push fait · revue finale
+### Checkpoint Module
+- [ ] critères `SPEC-gpu-render.md` validés
+- [ ] `pytest -q` vert · push
