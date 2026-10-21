@@ -90,3 +90,23 @@ def test_hauteur_de_surface():
     assert 0 <= h <= w.sz
     # le bloc juste en dessous est solide (ou de l'eau), celui au-dessus est vide
     assert not w.is_solid(5, 5, h)
+
+
+def test_trois_seeds_donnent_trois_mondes_differents():
+    a = World(sx=48, sy=48, sz=16, seed=1)
+    b = World(sx=48, sy=48, sz=16, seed=2)
+    c = World(sx=48, sy=48, sz=16, seed=3)
+    assert bytes(a.data) != bytes(b.data)
+    assert bytes(b.data) != bytes(c.data)
+    assert bytes(a.data) != bytes(c.data)
+
+
+def test_le_monde_contient_des_lacs():
+    w = World(seed=0)
+    assert w.data.count(config.Block.WATER) > 500
+
+
+def test_le_relief_depasse_six_blocs():
+    w = World(seed=0)
+    hauteurs = [w.surface_height(x, y) for x in range(0, 256, 16) for y in range(0, 256, 16)]
+    assert max(hauteurs) - min(hauteurs) > 6

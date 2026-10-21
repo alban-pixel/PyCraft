@@ -19,7 +19,7 @@ CHUNK_SIZE = 16
 WORLD_X = 256
 WORLD_Y = 256
 WORLD_Z = 32
-SEA_LEVEL = 5
+SEA_LEVEL = 7
 
 # --- Caméra / rendu ----------------------------------------------------
 NEAR_PLANE = 0.2

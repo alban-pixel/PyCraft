@@ -18,6 +18,27 @@ _STONE = Block.STONE
 _WATER = Block.WATER
 
 
+def _grille_aleatoire(rng: random.Random, gw: int, gh: int) -> list[list[float]]:
+    return [[rng.random() for _ in range(gw)] for _ in range(gh)]
+
+
+def _echantillon(grille: list[list[float]], x: float, y: float, cellule: float) -> float:
+    """Interpolation bilinéaire (smoothstep) d'une grille de bruit de valeur."""
+    gx = x / cellule
+    gy = y / cellule
+    ix = min(int(gx), len(grille[0]) - 2)
+    iy = min(int(gy), len(grille) - 2)
+    fx = gx - ix
+    fy = gy - iy
+    fx = fx * fx * (3 - 2 * fx)
+    fy = fy * fy * (3 - 2 * fy)
+    a = grille[iy][ix]
+    b = grille[iy][ix + 1]
+    c = grille[iy + 1][ix]
+    d = grille[iy + 1][ix + 1]
+    return (a * (1 - fx) + b * fx) * (1 - fy) + (c * (1 - fx) + d * fx) * fy
+
+
 class World:
     """Un monde cubique de blocs, généré de façon déterministe."""
 
@@ -103,7 +124,7 @@ class World:
     # Génération
     # ------------------------------------------------------------------
     def generate(self, seed: int) -> None:
-        """Relief, eau, plages et arbres — déterministe pour une graine donnée."""
+        """Relief, lacs, plages et arbres — déterministe pour une graine donnée."""
         self.seed = seed
         self.data = bytearray(self.sx * self.sy * self.sz)
         rng = random.Random(seed)
@@ -112,37 +133,63 @@ class World:
         max_h = self.sz - 2
         heights: list[int] = [0] * (self.sx * self.sy)
 
+        # 1. Relief : deux octaves de bruit de valeur (grandes collines + ondulations).
+        cellule1 = max(8, self.sx // 4)
+        cellule2 = max(4, self.sx // 14)
+        grille1 = _grille_aleatoire(rng, self.sx // cellule1 + 3, self.sy // cellule1 + 3)
+        grille2 = _grille_aleatoire(rng, self.sx // cellule2 + 3, self.sy // cellule2 + 3)
         for y in range(self.sy):
             for x in range(self.sx):
-                bruit = (rng.random() - 0.5) * 1.2
-                base = (
-                    7.0
-                    + 3.0 * math.sin(x / 11.0)
-                    + 2.4 * math.cos(y / 13.0)
-                    + 1.6 * math.sin((x + y) / 7.0)
-                    + bruit
-                )
-                # hauteurs quantifiées par 2 : plateaux francs, style Minecraft
-                h = max(3, min(max_h, 2 * round(base / 2)))
-                heights[y * self.sx + x] = h
+                n1 = _echantillon(grille1, x, y, cellule1)
+                n2 = _echantillon(grille2, x, y, cellule2)
+                base = 3.0 + 10.0 * n1 + 3.5 * n2
+                heights[y * self.sx + x] = max(3, min(max_h, int(round(base))))
 
+        # 2. Lacs : on creuse des cuvettes sous le niveau de la mer.
+        self._creuser_lacs(heights, rng, sea)
+
+        # 3. Remplissage des colonnes (pierre, terre, herbe/sable, eau).
+        for y in range(self.sy):
+            for x in range(self.sx):
+                h = heights[y * self.sx + x]
                 colonne = bytearray()
                 for z in range(h):
-                    if z < h - 3:
-                        colonne.append(_STONE)
-                    else:
-                        colonne.append(Block.DIRT)
+                    colonne.append(_STONE if z < h - 3 else Block.DIRT)
                 if h > sea + 1:
                     colonne[h - 1] = Block.GRASS
                 else:
                     colonne[h - 1] = Block.SAND
                 for _ in range(h, sea):
                     colonne.append(_WATER)
-
                 depart = y * self.sx + x
                 self.data[depart : depart + len(colonne) * self._stride : self._stride] = colonne
 
+        # 4. Arbres.
         self._planter_arbres(rng, sea)
+
+    def _creuser_lacs(self, heights: list[int], rng: random.Random, sea: int) -> None:
+        """Creuse quelques cuvettes pour garantir des lacs visibles."""
+        nombre = max(1, (self.sx * self.sy) // 12000)
+        for _ in range(nombre):
+            lx = rng.randrange(10, max(11, self.sx - 10))
+            ly = rng.randrange(10, max(11, self.sy - 10))
+            rayon = rng.randint(7, 14)
+            fond = max(2, sea - 3)
+            for dy in range(-rayon, rayon + 1):
+                for dx in range(-rayon, rayon + 1):
+                    d2 = (dx * dx + dy * dy) / (rayon * rayon)
+                    if d2 >= 1.0:
+                        continue
+                    x, y = lx + dx, ly + dy
+                    if not self.in_bounds(x, y, 0):
+                        continue
+                    i = y * self.sx + x
+                    h = heights[i]
+                    if h <= fond:
+                        continue
+                    facteur = 1.0 - math.sqrt(d2)  # 1 au centre, 0 au bord
+                    cible = int(round(h - (h - fond) * facteur * 1.6))
+                    heights[i] = max(2, min(h, cible))
 
     def _planter_arbres(self, rng: random.Random, sea: int) -> None:
         """Plante des arbres sur l'herbe, hors de l'eau et des bords."""
