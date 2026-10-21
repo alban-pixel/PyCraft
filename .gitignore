@@ -1,0 +1,22 @@
+# Environnement virtuel
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Pyxel
+*.pyxel-checkpoint
+
+# macOS
+.DS_Store
+
+# VS Code / PyCharm
+.vscode/
+.idea/
+
+# Outils agents (hors code du projet)
+.agents/
+skills-lock.json
