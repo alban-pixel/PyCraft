@@ -77,7 +77,7 @@ def draw_titre(width: int, height: int, seed: int) -> None:
     text_big(width // 2 - len(titre) * 4 * 3, height // 2 - 70, titre, config.TEXT_COLOR, 6)
     sous = "monde de blocs en 3D dans Pyxel"
     text_big(width // 2 - len(sous) * 4, height // 2 - 6, sous, config.SKY_HORIZON, 2)
-    start = "Appuie sur ENTREE pour jouer"
+    start = "ENTREE ou clic pour jouer"
     text_big(width // 2 - len(start) * 4, height // 2 + 34, start, config.SELECTED_COLOR, 2)
     seed_txt = f"seed {seed}"
     text_big(width // 2 - len(seed_txt) * 2, height // 2 + 56, seed_txt, 13, 1)

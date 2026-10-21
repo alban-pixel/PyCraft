@@ -93,3 +93,30 @@ def test_casser_un_bloc_ne_plante_pas_la_boucle(pyxel_headless, monkeypatch):
     monkeypatch.setattr(pyxel, "btnp", lambda touche: touche == pyxel.MOUSE_BUTTON_LEFT)
     main.update()  # ne doit pas lever
     assert main._etat["selection"] is not None, "le joueur doit viser un bloc"
+
+
+def test_le_clic_demarre_la_partie(pyxel_headless, monkeypatch):
+    """Au lancement la fenêtre n'a pas toujours le focus : le clic doit marcher."""
+    import pyxel
+
+    import main
+
+    etat = main.construire(320, 200, 0, 32, 8)
+    main._etat.update(etat)
+    main._etat["ecran"] = "titre"
+    monkeypatch.setattr(pyxel, "btnp", lambda touche: touche == pyxel.MOUSE_BUTTON_LEFT)
+    main.update()
+    assert main._etat["ecran"] == "jeu"
+
+
+def test_entree_demarre_la_partie(pyxel_headless, monkeypatch):
+    import pyxel
+
+    import main
+
+    etat = main.construire(320, 200, 0, 32, 8)
+    main._etat.update(etat)
+    main._etat["ecran"] = "titre"
+    monkeypatch.setattr(pyxel, "btnp", lambda touche: touche == pyxel.KEY_RETURN)
+    main.update()
+    assert main._etat["ecran"] == "jeu"

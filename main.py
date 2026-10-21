@@ -196,7 +196,16 @@ def update() -> None:
 
     maintenant = time.perf_counter()
     if etat["ecran"] == "titre":
-        if pyxel.btnp(pyxel.KEY_RETURN) or pyxel.btnp(pyxel.KEY_SPACE):
+        # Le clic est accepté en plus du clavier : au lancement depuis un
+        # terminal, la fenêtre n'a pas toujours le focus clavier, alors qu'un
+        # clic dans la fenêtre en donne un et arrive toujours.
+        demarrer = (
+            pyxel.btnp(pyxel.KEY_RETURN)
+            or pyxel.btnp(pyxel.KEY_KP_ENTER)
+            or pyxel.btnp(pyxel.KEY_SPACE)
+            or pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT)
+        )
+        if demarrer:
             etat["ecran"] = "jeu"
             etat["aide"] = True
             etat["aide_fin"] = maintenant + 5.0
