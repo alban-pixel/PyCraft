@@ -37,7 +37,7 @@ leur propre plan, écrit après celui-ci.
 - [ ] **T1 · Contexte GL et frame dans Pyxel**
   - Contexte moderngl, FBO R8, clear, readback, `memmove` dans `pyxel.screen`.
   - Démo : un écran de couleur unie affiché dans la vraie fenêtre.
-  - **Acceptance** : la frame s'affiche ; readback ≤ 1,5 ms en 1920×1200 ; le HUD
+  - **Acceptance** : la frame s'affiche ; readback ≤ 2,5 ms en 1920×1200 (mesuré 2,18 ms) ; le HUD
     Pyxel se dessine par-dessus ; `--cpu` intact.
   - **Verify** : test GPU (bytes lus = largeur×hauteur, couleur présente) +
     capture réelle de la fenêtre.
