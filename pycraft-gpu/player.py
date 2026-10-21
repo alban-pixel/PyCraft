@@ -1,0 +1,140 @@
+"""First-person player: walking, jumping, swimming, flying and collisions with blocks."""
+import math
+
+import pyxel
+
+from blocks import WATER
+
+HALF_WIDTH = 0.3
+HEIGHT = 1.8
+EYE_HEIGHT = 1.62
+WALK_SPEED = 4.3
+SPRINT_SPEED = 6.5
+SWIM_SPEED = 2.6
+FLY_SPEED = 11.0
+GRAVITY = 28.0
+WATER_GRAVITY = 8.0
+JUMP_SPEED = 8.4  # about 1.25 blocks high
+SWIM_UP_SPEED = 4.0
+MAX_FALL_SPEED = 40.0
+MAX_SINK_SPEED = 3.0
+STEP_DISTANCE = 1.7  # blocks walked between footstep sounds
+
+
+class Player:
+    def __init__(self, x, y, z):
+        self.pos = [x, y, z]  # feet position
+        self.vel_y = 0.0
+        self.yaw = 0.0  # degrees, 0 looks toward +z
+        self.pitch = 0.0  # degrees, positive looks up
+        self.on_ground = False
+        self.flying = False
+        self.in_water = False
+        self.against_wall = False
+        self.walked = 0.0
+
+    def eye(self):
+        return (self.pos[0], self.pos[1] + EYE_HEIGHT, self.pos[2])
+
+    def forward(self):
+        yaw, pitch = math.radians(self.yaw), math.radians(self.pitch)
+        return (math.sin(yaw) * math.cos(pitch), math.sin(pitch), math.cos(yaw) * math.cos(pitch))
+
+    def look(self, d_yaw, d_pitch):
+        self.yaw = (self.yaw + d_yaw) % 360
+        self.pitch = max(-89.0, min(89.0, self.pitch + d_pitch))
+
+    def head_in_water(self, world):
+        x, y, z = self.eye()
+        return world.get(math.floor(x), math.floor(y), math.floor(z)) == WATER
+
+    def overlaps(self, x, y, z):
+        """True if block (x, y, z) intersects the player's body."""
+        px, py, pz = self.pos
+        return (x < px + HALF_WIDTH and x + 1 > px - HALF_WIDTH and y < py + HEIGHT and y + 1 > py
+                and z < pz + HALF_WIDTH and z + 1 > pz - HALF_WIDTH)
+
+    def update(self, world, dt):
+        """Move the player for one frame. Returns the set of sound events: "jump", "step", "splash"."""
+        events = set()
+        if pyxel.btnp(pyxel.KEY_F):
+            self.flying = not self.flying
+            self.vel_y = 0.0
+
+        px, py, pz = self.pos
+        was_in_water = self.in_water
+        self.in_water = world.get(math.floor(px), math.floor(py + 0.4), math.floor(pz)) == WATER
+        if self.in_water and not was_in_water and self.vel_y < -4:
+            events.add("splash")
+
+        # Horizontal movement relative to where the player looks
+        yaw = math.radians(self.yaw)
+        fx, fz = math.sin(yaw), math.cos(yaw)
+        rx, rz = -fz, fx
+        move_f = pyxel.btn(pyxel.KEY_W) - pyxel.btn(pyxel.KEY_S)
+        move_r = pyxel.btn(pyxel.KEY_D) - pyxel.btn(pyxel.KEY_A)
+        dx, dz = fx * move_f + rx * move_r, fz * move_f + rz * move_r
+        length = math.hypot(dx, dz)
+        if length:
+            if self.flying:
+                speed = FLY_SPEED
+            elif self.in_water:
+                speed = SWIM_SPEED
+            elif pyxel.btn(pyxel.KEY_LCTRL):
+                speed = SPRINT_SPEED
+            else:
+                speed = WALK_SPEED
+            dx, dz = dx / length * speed * dt, dz / length * speed * dt
+
+        if self.flying:
+            self.vel_y = (pyxel.btn(pyxel.KEY_SPACE) - pyxel.btn(pyxel.KEY_LSHIFT)) * FLY_SPEED
+        elif self.in_water:
+            if pyxel.btn(pyxel.KEY_SPACE):
+                # Swimming against a wall climbs out of the water onto the bank
+                self.vel_y = JUMP_SPEED * 0.75 if self.against_wall else SWIM_UP_SPEED
+            self.vel_y = max(self.vel_y - WATER_GRAVITY * dt, -MAX_SINK_SPEED)
+        else:
+            if self.on_ground and pyxel.btn(pyxel.KEY_SPACE):
+                self.vel_y = JUMP_SPEED
+                events.add("jump")
+            self.vel_y = max(self.vel_y - GRAVITY * dt, -MAX_FALL_SPEED)
+
+        hit_x = self._move_axis(world, 0, dx)
+        hit_z = self._move_axis(world, 2, dz)
+        self.against_wall = hit_x or hit_z
+        self.on_ground = False
+        if self._move_axis(world, 1, self.vel_y * dt):
+            if self.vel_y < 0:
+                self.on_ground = True
+            self.vel_y = 0.0
+
+        if self.on_ground and not self.flying:
+            self.walked += math.hypot(self.pos[0] - px, self.pos[2] - pz)
+            if self.walked > STEP_DISTANCE:
+                self.walked = 0.0
+                events.add("step")
+        return events
+
+    def _move_axis(self, world, axis, distance):
+        """Move along one axis, then push back out of any block. Returns True on a collision."""
+        if distance == 0:
+            return False
+        self.pos[axis] += distance
+        px, py, pz = self.pos
+        lo = (px - HALF_WIDTH, py, pz - HALF_WIDTH)
+        hi = (px + HALF_WIDTH, py + HEIGHT, pz + HALF_WIDTH)
+        hit = None
+        for bx in range(math.floor(lo[0]), math.floor(hi[0] - 1e-6) + 1):
+            for by in range(math.floor(lo[1]), math.floor(hi[1] - 1e-6) + 1):
+                for bz in range(math.floor(lo[2]), math.floor(hi[2] - 1e-6) + 1):
+                    if world.is_solid(bx, by, bz):
+                        c = (bx, by, bz)[axis]
+                        if hit is None or (c < hit if distance > 0 else c > hit):
+                            hit = c
+        if hit is None:
+            return False
+        if distance > 0:
+            self.pos[axis] = hit - (HEIGHT if axis == 1 else HALF_WIDTH) - 1e-4
+        else:
+            self.pos[axis] = hit + 1 + (0 if axis == 1 else HALF_WIDTH) + 1e-4
+        return True
