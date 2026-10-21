@@ -53,6 +53,14 @@ PALETTE: tuple[tuple[int, int, int], ...] = tuple(
     ((c >> 16) & 0xFF, (c >> 8) & 0xFF, c & 0xFF) for c in PALETTE_HEX
 )
 
+# Motif de texture par indice de palette. 0 = uni (ciel, eau, blanc),
+# 1 = brins verticaux (herbe, feuillage), 2 = planches horizontales (bois),
+# 3 = éclats (pierre, terre, sable). Lu par terrain.frag.
+MATERIALS: tuple[int, ...] = (
+    0, 0, 3, 1, 3, 0, 3, 0,
+    0, 2, 3, 1, 0, 3, 1, 3,
+)
+
 
 class Block(IntEnum):
     """Types de blocs. La valeur entière est stockée dans le bytearray."""

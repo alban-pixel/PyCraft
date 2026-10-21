@@ -15,6 +15,7 @@ uniform sampler2D u_shadow;
 uniform mat4 u_light_mvp;
 uniform float u_shadow_on;
 uniform float u_daylight;
+uniform int u_material[16];
 
 out vec4 frag_color;
 
@@ -55,13 +56,29 @@ float facteur_ombre(vec3 world) {
 void main() {
     vec3 base = u_colors[int(v_color + 0.5)];
     vec3 n = normalize(v_normal);
-    // Texture procédurale : moucheture 8×8 par bloc, stable dans le monde.
-    vec2 tu = floor(uv_texture(n, v_world) * 8.0);
-    float grain = hash12(tu);
-    base *= 0.86 + 0.26 * grain;
+    // Texture procédurale : motif 8×8 par bloc, choisi par matériau.
+    vec2 uv = uv_texture(n, v_world);
+    vec2 cell = floor(uv * 16.0);
+    int mat = u_material[int(v_color + 0.5)];
+    float grain = hash12(cell + 1.7) - 0.5;   // bruit fin, toujours présent
+    bool dessus = abs(n.z) > 0.5;
+    float motif = 0.0;
+    if (mat == 1) {
+        // herbe : brins verticaux sur les côtés, grain sur le dessus
+        motif = dessus ? 0.0 : (hash12(vec2(cell.x, 5.0)) - 0.5);
+    } else if (mat == 2) {
+        // planches : toute la rangée partage le même ton
+        motif = hash12(vec2(5.0, cell.y)) - 0.5;
+    } else if (mat == 3) {
+        // éclats : le grain devient la structure
+        motif = grain * 1.6;
+    }
+    // Variation par bloc : deux blocs voisins ne se ressemblent pas.
+    float variation = hash12(floor(v_world).xy + 0.5);
+    base *= clamp(0.96 + 0.06 * variation + 0.15 * grain + 0.22 * motif, 0.55, 1.35);
     float diffuse = max(dot(n, u_sun), 0.0);
     float ciel = 0.5 + 0.5 * n.z;          // éclairage d'ambiance hémisphérique
-    float light = (0.30 + 0.40 * diffuse + 0.36 * ciel) * u_daylight;
+    float light = (0.28 + 0.38 * diffuse + 0.32 * ciel) * u_daylight;
     float ombre = facteur_ombre(v_world);
     vec3 color = base * light * v_ao * mix(0.45, 1.0, ombre);
 

@@ -138,6 +138,8 @@ class GlRenderer:
         self.lut_tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
         couleurs = np.array(config.PALETTE, dtype=np.float32) / 255.0
         self.terrain_prog["u_colors"].write(np.ascontiguousarray(couleurs).tobytes())
+        materiaux = np.array(config.MATERIALS, dtype=np.int32)
+        self.terrain_prog["u_material"].write(np.ascontiguousarray(materiaux).tobytes())
 
     # ------------------------------------------------------------------
     def _chunks_visibles(self, camera: Camera):

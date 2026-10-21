@@ -287,3 +287,65 @@ def test_pas_de_contour_sans_selection(pyxel_headless):
         assert (a != b).sum() == 0
     finally:
         renderer.close()
+
+
+def _rendu_motif(bloc, mur=False, largeur=320, hauteur=200):
+    """Image d'un sol (dessus) ou d'un mur (côtés) uniforme de `bloc`."""
+    from pycraft.gl.context import GlContext
+    from pycraft.gl.renderer_gl import GlRenderer
+
+    monde = World(sx=32, sy=32, sz=16, seed=0)
+    monde.data = bytearray(len(monde.data))
+    if mur:
+        for y in range(32):
+            for x in range(32):
+                for z in range(10):
+                    monde.set(x, y, 8, bloc)
+        camera = Camera(16, 6, 9.5, yaw=1.35, pitch=0.0, width=largeur, height=hauteur)
+    else:
+        for y in range(32):
+            for x in range(32):
+                for z in range(6):
+                    monde.set(x, y, z, bloc)
+        camera = Camera(16, 16, 22, yaw=0.0, pitch=-1.45, width=largeur, height=hauteur)
+
+    gl = GlContext(largeur, hauteur)
+    renderer = GlRenderer(
+        monde, ChunkMeshes(monde), largeur, hauteur,
+        view_distance=40, detail_radius=16, gl=gl,
+    )
+    try:
+        renderer.draw(camera, time=30.0)
+        return np.frombuffer(gl.read_indices(), np.uint8).copy()
+    finally:
+        renderer.close()
+
+
+def test_textures_par_materiau(pyxel_headless):
+    """Le motif dépend du matériau : couper la table doit changer l'image."""
+    import pycraft.config as cfg
+
+    defaut = {
+        "bois": _rendu_motif(Block.WOOD),
+        "pierre": _rendu_motif(Block.STONE),
+        "herbe_cote": _rendu_motif(Block.GRASS, mur=True),
+    }
+    assert len(set(defaut["herbe_cote"].tolist())) >= 4, "un mur d'herbe doit être texturé"
+
+    sauvegarde = cfg.MATERIALS
+    cfg.MATERIALS = (0,) * 16  # tous les blocs « unis » : plus aucun motif
+    try:
+        plat = {
+            "bois": _rendu_motif(Block.WOOD),
+            "pierre": _rendu_motif(Block.STONE),
+            "herbe_cote": _rendu_motif(Block.GRASS, mur=True),
+        }
+    finally:
+        cfg.MATERIALS = sauvegarde
+
+    ecart = {nom: float((defaut[nom] != plat[nom]).mean()) for nom in defaut}
+    assert ecart["herbe_cote"] > 0.02, "les brins doivent modifier les côtés de l'herbe"
+    assert ecart["bois"] > 0.15, "les planches doivent modifier le dessus du bois"
+    assert ecart["pierre"] > 0.15, "les éclats doivent modifier le dessus de la pierre"
+    # Deux matériaux ne doivent pas réagir de la même façon au même changement.
+    assert abs(ecart["bois"] - ecart["pierre"]) > 0.05, "bois et pierre partagent le même motif"
