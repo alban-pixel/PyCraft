@@ -120,3 +120,17 @@ def test_entree_demarre_la_partie(pyxel_headless, monkeypatch):
     monkeypatch.setattr(pyxel, "btnp", lambda touche: touche == pyxel.KEY_RETURN)
     main.update()
     assert main._etat["ecran"] == "jeu"
+
+
+def test_les_touches_de_deplacement_demarrent_aussi(pyxel_headless, monkeypatch):
+    """Réflexe naturel : appuyer sur ZQSD sur l'écran titre doit lancer le jeu."""
+    import pyxel
+
+    import main
+
+    etat = main.construire(320, 200, 0, 32, 8)
+    main._etat.update(etat)
+    main._etat["ecran"] = "titre"
+    monkeypatch.setattr(pyxel, "btnp", lambda touche: touche == pyxel.KEY_Z)
+    main.update()
+    assert main._etat["ecran"] == "jeu"

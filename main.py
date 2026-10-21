@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import time
+import traceback
 
 import pyxel
 
@@ -70,6 +71,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cpu", action="store_true", help="force le renderer CPU (sans OpenGL)")
     parser.add_argument("--no-shadows", action="store_true", help="désactive les ombres (GPU)")
     parser.add_argument("--weather", action="store_true", help="active la pluie (GPU)")
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="affiche l'état de la boucle chaque seconde (diagnostic)",
+    )
     parser.add_argument(
         "--retro",
         action="store_true",
@@ -154,6 +160,8 @@ def construire(
         "joueur": joueur,
         "selection": None,
         "souris": False,
+        "erreur": "",
+        "_debug_t": 0.0,
         "hotbar_index": 0,
         "seed": seed,
         "fps": 0.0,
@@ -186,6 +194,21 @@ def relancer(seed: int) -> None:
         pass
 
 
+# Touches acceptées sur l'écran titre : Entrée, mais aussi les touches de
+# déplacement (réflexe naturel) et le clic.
+TOUCHES_DE_DEMARRAGE = (
+    pyxel.KEY_RETURN,
+    pyxel.KEY_KP_ENTER,
+    pyxel.KEY_SPACE,
+    pyxel.KEY_Z,
+    pyxel.KEY_W,
+    pyxel.KEY_A,
+    pyxel.KEY_Q,
+    pyxel.KEY_S,
+    pyxel.KEY_D,
+)
+
+
 # ----------------------------------------------------------------------
 # Boucle
 # ----------------------------------------------------------------------
@@ -195,15 +218,20 @@ def update() -> None:
         return
 
     maintenant = time.perf_counter()
+    if etat.get("debug") and maintenant - etat["_debug_t"] > 1.0:
+        etat["_debug_t"] = maintenant
+        print(
+            f"[debug] frame={pyxel.frame_count} ecran={etat['ecran']} "
+            f"fps={etat.get('fps', 0):.0f} souris={etat['souris']} "
+            f"selection={etat.get('selection')}",
+            flush=True,
+        )
     if etat["ecran"] == "titre":
         # Le clic est accepté en plus du clavier : au lancement depuis un
         # terminal, la fenêtre n'a pas toujours le focus clavier, alors qu'un
         # clic dans la fenêtre en donne un et arrive toujours.
-        demarrer = (
-            pyxel.btnp(pyxel.KEY_RETURN)
-            or pyxel.btnp(pyxel.KEY_KP_ENTER)
-            or pyxel.btnp(pyxel.KEY_SPACE)
-            or pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT)
+        demarrer = pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT) or any(
+            pyxel.btnp(touche) for touche in TOUCHES_DE_DEMARRAGE
         )
         if demarrer:
             etat["ecran"] = "jeu"
@@ -367,8 +395,21 @@ def main(argv: list[str] | None = None) -> None:
     if _etat["weather"]:
         _etat["renderer"].rain = 1.0
     _etat["ecran"] = "titre"
+    _etat["debug"] = bool(args.debug)
     _etat["args"] = args
-    pyxel.run(update, draw)
+    def proteger(fonction):
+        """Une exception ne doit pas laisser la fenêtre figée sur la dernière image."""
+
+        def enveloppe() -> None:
+            try:
+                fonction()
+            except Exception:
+                traceback.print_exc()
+                raise SystemExit(1)
+
+        return enveloppe
+
+    pyxel.run(proteger(update), proteger(draw))
 
 
 if __name__ == "__main__":
