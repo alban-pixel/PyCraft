@@ -415,6 +415,8 @@ def test_resolution_interne_reduite(pyxel_headless):
     )
     try:
         assert renderer.scene_tex.size == (160, 100)
+        # Le tramage travaille à la résolution finale : on l'isole ici.
+        renderer.dither = False
         camera = Camera(16, 16, 8, yaw=0.6, pitch=-0.25, width=320, height=200)
         renderer.draw(camera, time=30.0)
         img = np.frombuffer(gl.read_indices(), np.uint8).reshape(200, 320)
@@ -457,5 +459,43 @@ def test_soleil_qui_bouge(pyxel_headless):
         sol_matin = matin[: 120 * 320].reshape(120, 320)
         sol_apres = apres_midi[: 120 * 320].reshape(120, 320)
         assert (sol_matin != sol_apres).mean() > 0.05, "les ombres ne tournent pas"
+    finally:
+        renderer.close()
+
+
+def _plus_longue_bande(colonne: np.ndarray) -> int:
+    """Longueur de la plus longue suite de pixels identiques consécutifs."""
+    meilleure = courante = 1
+    for i in range(1, len(colonne)):
+        courante = courante + 1 if colonne[i] == colonne[i - 1] else 1
+        meilleure = max(meilleure, courante)
+    return meilleure
+
+
+def test_tramage_du_ciel(pyxel_headless):
+    """Le tramage ordonné doit casser les bandes du dégradé de ciel."""
+    from pycraft.gl.context import GlContext
+    from pycraft.gl.renderer_gl import GlRenderer
+
+    monde = World(sx=32, sy=32, sz=16, seed=0)
+    monde.data = bytearray(len(monde.data))
+    gl = GlContext(320, 200)
+    renderer = GlRenderer(
+        monde, ChunkMeshes(monde), 320, 200, view_distance=40, detail_radius=16, gl=gl
+    )
+    try:
+        camera = Camera(16, 16, 20, yaw=0.4, pitch=0.55, width=320, height=200)
+        renderer.dither = False
+        renderer.draw(camera, time=30.0)
+        sans = np.frombuffer(gl.read_indices(), np.uint8).reshape(200, 320)
+        renderer.dither = True
+        renderer.draw(camera, time=30.0)
+        avec = np.frombuffer(gl.read_indices(), np.uint8).reshape(200, 320)
+
+        bande_sans = _plus_longue_bande(sans[:, 160])
+        bande_avec = _plus_longue_bande(avec[:, 160])
+        assert bande_sans > 12, "sans tramage le ciel doit présenter de longues bandes"
+        assert bande_avec < bande_sans / 2, "le tramage doit casser les bandes"
+        assert (sans != avec).mean() > 0.05
     finally:
         renderer.close()

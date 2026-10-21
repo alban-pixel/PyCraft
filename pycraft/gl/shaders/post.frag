@@ -7,6 +7,17 @@ uniform vec3 u_tint;
 uniform float u_vignette;
 uniform float u_rain;
 uniform float u_time;
+uniform float u_dither;
+
+// Matrice de Bayer récursive (bruit ordonné) : casse les bandes du dégradé
+// sans introduire de bruit haute fréquence.
+float bayer2(vec2 a) {
+    a = floor(a);
+    return fract(a.x / 2.0 + a.y * a.y * 0.75);
+}
+
+#define bayer4(a) (bayer2(0.5 * (a)) * 0.25 + bayer2(a))
+#define bayer8(a) (bayer4(0.5 * (a)) * 0.25 + bayer2(a))
 
 float hash_pluie(vec2 p) {
     return fract(sin(dot(p, vec2(41.7, 289.3))) * 43758.5453);
@@ -25,6 +36,10 @@ void main() {
         float goutte = step(0.955, hash_pluie(floor(p * vec2(1.0, 0.5)) + floor(u_time * 4.0)));
         color = mix(color, vec3(0.72, 0.80, 0.90), goutte * u_rain * 0.6);
     }
+
+    // Un demi-pas de quantification (LUT 5 bits) suffit à casser les bandes.
+    float grain = (bayer8(gl_FragCoord.xy) - 0.5) * u_dither / 16.0;
+    color += vec3(grain);
 
     int r = min(int(clamp(color.r, 0.0, 1.0) * 31.999), 31);
     int g = min(int(clamp(color.g, 0.0, 1.0) * 31.999), 31);

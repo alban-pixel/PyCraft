@@ -64,6 +64,7 @@ class GlRenderer:
         self._jour = 1.0
         self._temps = 0.0
         self.rain = 0.0
+        self.dither = True
         self._tint = (1.0, 1.0, 1.0)
         self._ciel_horizon = np.array(config.PALETTE[config.SKY_HORIZON], np.float32) / 255.0
         self._ciel_zenith = np.array(config.PALETTE[config.SKY_TOP], np.float32) / 255.0
@@ -389,6 +390,7 @@ class GlRenderer:
         self.post_prog["u_vignette"].value = 0.55
         self.post_prog["u_rain"].value = float(self.rain)
         self.post_prog["u_time"].value = float(self._temps)
+        self.post_prog["u_dither"].value = 1.0 if self.dither else 0.0
         self.post_vao.render()
 
     def invalidate(self, x: int, y: int) -> None:
