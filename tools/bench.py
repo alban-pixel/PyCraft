@@ -32,9 +32,16 @@ def main() -> None:
     parser.add_argument("--no-lod", action="store_true")
     parser.add_argument("--headless", action="store_true")
     parser.add_argument("--renderer", choices=["cpu", "gpu"], default="gpu")
+    parser.add_argument("--scale", type=float, default=1.0, help="résolution interne GPU")
     args = parser.parse_args()
 
     width, height = (int(v) for v in args.res.lower().split("x"))
+    # Le contexte GL doit exister AVANT pyxel.init (sinon fenêtre noire).
+    gl = None
+    if args.renderer == "gpu":
+        from pycraft.gl.context import GlContext
+
+        gl = GlContext(width, height)
     pyxel.init(width, height, title=f"PyCraft bench {width}x{height}", fps=1000, headless=args.headless)
 
     t0 = time.perf_counter()
@@ -42,15 +49,24 @@ def main() -> None:
     maillages = ChunkMeshes(monde)
     x, y, z = monde.spawn_point()
     camera = Camera(x, y, z + 1.55, yaw=0.6, pitch=-0.18, width=width, height=height)
-    renderer = Renderer(
-        monde,
-        maillages,
-        width,
-        height,
-        view_distance=args.dist,
-        detail_radius=float(args.detail) if not args.no_lod else float("inf"),
-        use_detail=True,
-    )
+    rayon = float(args.detail) if not args.no_lod else float("inf")
+    if gl is not None:
+        from pycraft.gl.renderer_gl import GlRenderer
+
+        renderer = GlRenderer(
+            monde, maillages, width, height,
+            view_distance=args.dist, detail_radius=rayon, gl=gl, scale=args.scale,
+        )
+    else:
+        renderer = Renderer(
+            monde,
+            maillages,
+            width,
+            height,
+            view_distance=args.dist,
+            detail_radius=rayon,
+            use_detail=True,
+        )
     chargement = (time.perf_counter() - t0) * 1000
 
     for _ in range(5):  # préchauffage
@@ -58,20 +74,28 @@ def main() -> None:
         renderer.draw(camera)
 
     temps: list[float] = []
+    lectures: list[float] = []
     for _ in range(args.frames):
         t = time.perf_counter()
         pyxel.cls(12)
         renderer.draw(camera)
         temps.append((time.perf_counter() - t) * 1000)
+        if gl is not None:
+            t = time.perf_counter()
+            gl.read_indices()
+            lectures.append((time.perf_counter() - t) * 1000)
 
     moyenne = statistics.mean(temps)
     p95 = sorted(temps)[int(len(temps) * 0.95) - 1]
-    print(f"renderer   : {args.renderer}")
+    print(f"renderer   : {args.renderer}  scale : {args.scale}")
     print(f"résolution : {width}x{height}  distance : {args.dist}  détail : {args.detail}")
     print(f"monde      : {montant_blocs(monde)} blocs, chargement {chargement:.0f} ms")
     print(f"rendu      : {renderer.quads} quads, {renderer.chunks_visibles} chunks visibles")
     print(f"frame      : moyenne {moyenne:.2f} ms, p95 {p95:.2f} ms, max {max(temps):.2f} ms")
+    if lectures:
+        print(f"readback   : {statistics.mean(lectures):.2f} ms")
     print(f"équivalent : {1000 / moyenne:.0f} fps max")
+    sys.stdout.flush()  # pyxel.quit() peut couper le tampon
     pyxel.quit()
 
 

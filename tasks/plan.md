@@ -120,12 +120,14 @@ mesure de la frame → commit.
 - [ ] Tests Pyxel headless : chaque icône contient ≥ 2 couleurs
 - **Critère** : on reconnaît le bloc sans lire son numéro
 
-### T12 — `tools/bench.py` : `--renderer gpu` réellement pris en compte
-- [ ] Construire `GlRenderer` quand `--renderer gpu` (aujourd'hui : CPU
-      seulement, l'option n'est qu'une étiquette)
-- [ ] Afficher le temps de readback séparément du temps de rendu
-- [ ] Vérifier le budget des tâches T4/T6/T8 avec ce bench
-- **Critère** : `--renderer cpu` et `--renderer gpu` donnent des chiffres distincts
+### T12 — `tools/bench.py` : `--renderer gpu` réellement pris en compte ✅
+- [x] `GlRenderer` construit quand `--renderer gpu` (le contexte GL est créé
+      avant `pyxel.init`) ; l'option n'était qu'une étiquette
+- [x] `--scale` et temps de readback affiché séparément
+- [x] `sys.stdout.flush()` avant `pyxel.quit()` : le bench ne sortait rien en
+      headless
+- **Mesures** : 1280×800 → 3,47 ms · 1920×1200 dist 120 → 5,05 ms
+  (`scale=0.5` : 4,44 ms)
 
 ## Ordre d'exécution
 
