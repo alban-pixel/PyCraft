@@ -31,6 +31,7 @@ def main() -> None:
     parser.add_argument("--frames", type=int, default=60)
     parser.add_argument("--no-lod", action="store_true")
     parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--renderer", choices=["cpu", "gpu"], default="gpu")
     args = parser.parse_args()
 
     width, height = (int(v) for v in args.res.lower().split("x"))
@@ -65,6 +66,7 @@ def main() -> None:
 
     moyenne = statistics.mean(temps)
     p95 = sorted(temps)[int(len(temps) * 0.95) - 1]
+    print(f"renderer   : {args.renderer}")
     print(f"résolution : {width}x{height}  distance : {args.dist}  détail : {args.detail}")
     print(f"monde      : {montant_blocs(monde)} blocs, chargement {chargement:.0f} ms")
     print(f"rendu      : {renderer.quads} quads, {renderer.chunks_visibles} chunks visibles")

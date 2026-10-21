@@ -124,7 +124,7 @@ class Renderer:
         self.chunks_visibles = 0
 
     # ------------------------------------------------------------------
-    def draw(self, camera: Camera, selection: tuple[int, int, int] | None = None) -> None:
+    def draw(self, camera: Camera, selection: tuple[int, int, int] | None = None, time: float = 0.0) -> None:
         self._draw_sky(camera)
         verts, colors = self._gather(camera)
         self.quads = 0
@@ -231,6 +231,10 @@ class Renderer:
             for k in range(1, len(pts) - 1):
                 tri(x0, y0, pts[k][0], pts[k][1], pts[k + 1][0], pts[k + 1][1], couleur)
             self.quads += 1
+
+    def invalidate(self, x: int, y: int) -> None:
+        """Invalidation du cache après modification d'un bloc."""
+        self.meshes.invalidate(x, y)
 
     # ------------------------------------------------------------------
     def _draw_selection(self, camera: Camera, bloc: tuple[int, int, int]) -> None:

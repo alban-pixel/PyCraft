@@ -45,3 +45,15 @@ def test_hotbar_centree():
     assert 0 < y0 < 800
     centre = (x0 + x2 + w) / 2
     assert abs(centre - 640) < 4
+
+
+def test_options_gpu():
+    args = main.parse_args(["--cpu", "--no-shadows"])
+    assert args.cpu is True
+    assert args.no_shadows is True
+
+
+def test_gpu_par_defaut():
+    args = main.parse_args([])
+    assert args.cpu is False
+    assert args.no_shadows is False

@@ -67,6 +67,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="désactive le LOD (tout en maillage détaillé, plus lent)",
     )
     parser.add_argument("--seed", type=int, default=0, help="graine du monde (défaut : 0)")
+    parser.add_argument("--cpu", action="store_true", help="force le renderer CPU (sans OpenGL)")
+    parser.add_argument("--no-shadows", action="store_true", help="désactive les ombres (GPU)")
     return parser.parse_args(argv)
 
 
@@ -86,6 +88,8 @@ def construire(
     distance: int,
     detail: int = 24,
     lod: bool = True,
+    gl=None,
+    shadows: bool = True,
 ) -> dict:
     """Construit le monde, la caméra, le joueur et le renderer."""
     monde = World(seed=seed)
@@ -95,15 +99,29 @@ def construire(
     camera = Camera(x, y, z + joueur.eye, yaw=0.6, pitch=-0.18, width=width, height=height)
     # --no-lod : un seul niveau de détail, le maillage détaillé partout.
     rayon_detail = float(detail) if lod else float("inf")
-    renderer = Renderer(
-        monde,
-        maillages,
-        width,
-        height,
-        view_distance=distance,
-        detail_radius=rayon_detail,
-        use_detail=True,
-    )
+    if gl is not None:
+        from pycraft.gl.renderer_gl import GlRenderer
+
+        renderer = GlRenderer(
+            monde,
+            maillages,
+            width,
+            height,
+            view_distance=distance,
+            detail_radius=rayon_detail,
+            gl=gl,
+            shadows=shadows,
+        )
+    else:
+        renderer = Renderer(
+            monde,
+            maillages,
+            width,
+            height,
+            view_distance=distance,
+            detail_radius=rayon_detail,
+            use_detail=True,
+        )
     maintenant = time.perf_counter()
     return {
         "monde": monde,
@@ -136,8 +154,13 @@ def relancer(seed: int) -> None:
         etat["renderer"].use_detail,
     )
     ecran = etat.get("ecran", "jeu")
+    ancien = etat["renderer"]
     etat.update(nouveau)
     etat["ecran"] = ecran
+    try:
+        ancien.close()
+    except Exception:
+        pass
 
 
 # ----------------------------------------------------------------------
@@ -199,9 +222,13 @@ def update() -> None:
 
     # Casser / poser
     if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT):
-        joueur.break_block(monde, maillages)
+        cible = joueur.raycast(monde)
+        if joueur.break_block(monde, maillages) and cible:
+            renderer.invalidate(cible[0][0], cible[0][1])
     if pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT):
-        joueur.place_block(monde, maillages, config.HOTBAR[etat["hotbar_index"]])
+        cible = joueur.raycast(monde)
+        if joueur.place_block(monde, maillages, config.HOTBAR[etat["hotbar_index"]]) and cible:
+            renderer.invalidate(cible[0][0], cible[0][1])
 
     x, y, z = joueur.eye_position()
     camera.set_position(x, y, z)
@@ -227,7 +254,11 @@ def draw() -> None:
         etat["fps"] = etat["fps"] * 0.9 + (1.0 / delta) * 0.1
 
     selection = etat.get("selection")
-    etat["renderer"].draw(etat["camera"], selection[0] if selection else None)
+    etat["renderer"].draw(
+        etat["camera"],
+        selection[0] if selection else None,
+        time=pyxel.frame_count / 60.0,
+    )
 
     hud.draw_crosshair(pyxel.width, pyxel.height)
     hud.draw_hotbar(pyxel.width, pyxel.height, etat["hotbar_index"])
@@ -247,6 +278,16 @@ def draw() -> None:
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     width, height = args.res
+    gl = None
+    if not args.cpu:
+        try:
+            from pycraft.gl.context import GlContext
+
+            # OBLIGATOIRE : le contexte GL doit être créé avant Pyxel.
+            gl = GlContext(width, height)
+        except Exception as exc:
+            print(f"OpenGL indisponible ({exc}) — bascule sur le renderer CPU.")
+            gl = None
     try:
         pyxel.init(
             width,
@@ -260,10 +301,23 @@ def main(argv: list[str] | None = None) -> None:
             f"Impossible d'ouvrir une fenêtre {width}x{height} : {exc}\n"
             "Réduis la résolution avec --res 1280x800."
         ) from exc
-    appliquer_palette()
-    _etat.update(
-        construire(width, height, args.seed, args.dist, args.detail, not args.no_lod)
-    )
+    if gl is None:
+        appliquer_palette()
+    try:
+        etat = construire(
+            width, height, args.seed, args.dist, args.detail, not args.no_lod,
+            gl=gl, shadows=not args.no_shadows,
+        )
+    except Exception as exc:
+        if gl is None:
+            raise
+        print(f"Renderer GPU en échec ({exc}) — bascule sur le renderer CPU.")
+        gl.close()
+        etat = construire(
+            width, height, args.seed, args.dist, args.detail, not args.no_lod,
+            gl=None,
+        )
+    _etat.update(etat)
     _etat["ecran"] = "titre"
     _etat["args"] = args
     pyxel.run(update, draw)
