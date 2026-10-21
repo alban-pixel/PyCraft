@@ -92,3 +92,16 @@ scalaires numpy coûte cher dans la boucle de dessin).
   configurés sur cette machine, ou tu pousses toi-même ?
 - Souris pour la caméra : Pyxel expose `mouse_x/mouse_y` mais le delta relatif
   reste à vérifier → si ça accroche, flèches uniquement.
+
+## Spike T1 — réglages verrouillés (21/10/2026)
+
+| Configuration | Mesure réelle | Cible | Verdict |
+|---|---|---|---|
+| 1280×800, distance 96, détail 16 | **3,57 ms** (280 fps max) | ≤ 16,7 ms | ✅ |
+| 1920×1200, distance 120, détail 24 | **5,53 ms** (181 fps max) | ≤ 33 ms | ✅ |
+| Génération + maillage greedy 256² | ~196 ms | ≤ 1 s | ✅ |
+
+- **Fissures T-junction** : supprimées par recouvrement de **0,02 bloc** des quads
+  fusionnés dans leur plan (voir `docs/images/spike_1280x800.png`).
+- **Décision** : rayon de détail = 16 blocs, distance de vue par défaut = 96.
+- Le maillage détail se construit paresseusement, chunk par chunk.
