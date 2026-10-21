@@ -162,6 +162,48 @@ class Player:
                 return (x, y, z), normale
         return None
 
+    # ------------------------------------------------------------------
+    def blocks_player_box(self, bx: int, by: int, bz: int) -> bool:
+        """Vrai si le cube (bx, by, bz) chevauche la boîte du joueur."""
+        r = self.radius
+        return (
+            bx + 1 > self.x - r
+            and bx < self.x + r
+            and by + 1 > self.y - r
+            and by < self.y + r
+            and bz + 1 > self.z
+            and bz < self.z + self.height
+        )
+
+    def break_block(self, world: World, meshes) -> bool:
+        """Casse le bloc visé. Renvoie False si rien n'est cassable."""
+        hit = self.raycast(world)
+        if hit is None:
+            return False
+        (x, y, z), _ = hit
+        if world.get(x, y, z) is config.Block.AIR:
+            return False
+        world.set(x, y, z, config.Block.AIR)
+        meshes.invalidate(x, y)
+        return True
+
+    def place_block(self, world: World, meshes, block: config.Block) -> bool:
+        """Pose un bloc sur la face visée, jamais dans le joueur."""
+        hit = self.raycast(world)
+        if hit is None:
+            return False
+        (x, y, z), (nx, ny, nz) = hit
+        tx, ty, tz = x + nx, y + ny, z + nz
+        if not world.in_bounds(tx, ty, tz):
+            return False
+        if world.get(tx, ty, tz) is not config.Block.AIR:
+            return False
+        if self.blocks_player_box(tx, ty, tz):
+            return False
+        world.set(tx, ty, tz, block)
+        meshes.invalidate(tx, ty)
+        return True
+
     def set_angles(self, yaw: float, pitch: float) -> None:
         limite = math.pi / 2 - 0.01
         self.yaw = yaw % (2 * math.pi)

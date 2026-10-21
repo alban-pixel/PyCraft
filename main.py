@@ -75,6 +75,7 @@ def construire(width: int, height: int, seed: int, distance: int) -> dict:
         "joueur": joueur,
         "selection": None,
         "souris": False,
+        "hotbar_index": 0,
     }
 
 
@@ -109,6 +110,16 @@ def update() -> None:
     x, y, z = joueur.eye_position()
     camera.set_position(x, y, z)
     camera.set_angles(joueur.yaw, joueur.pitch)
+    # Hotbar : 1 / 2 / 3
+    for i in range(len(config.HOTBAR)):
+        if pyxel.btnp(pyxel.KEY_1 + i):
+            etat["hotbar_index"] = i
+    # Casser / poser
+    if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT):
+        joueur.break_block(monde, etat["maillages"])
+    if pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT):
+        joueur.place_block(monde, etat["maillages"], config.HOTBAR[etat["hotbar_index"]])
+
     etat["selection"] = joueur.raycast(monde, 5.0)
 
 

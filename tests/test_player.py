@@ -150,3 +150,56 @@ def test_raycast_portee_par_defaut_cinq_blocs():
     p = joueur()
     p.set_angles(0.0, 0.0)
     assert p.raycast(w) is None
+
+
+# ----------------------------------------------------------------------
+# Casser / poser (T10)
+# ----------------------------------------------------------------------
+from pycraft.mesher import ChunkMeshes
+
+
+def test_casser_supprime_le_bloc_vise():
+    w = monde_plat()
+    mur_en_x(w)
+    p = joueur()
+    p.set_angles(0.0, 0.0)
+    cache = ChunkMeshes(w)
+    assert p.break_block(w, cache) is True
+    assert w.get(15, 10, 5) is Block.AIR
+
+
+def test_casser_sans_cible_echoue():
+    w = monde_plat()
+    p = joueur()
+    p.set_angles(0.0, math.pi / 2 - 0.01)  # vers le ciel
+    cache = ChunkMeshes(w)
+    assert p.break_block(w, cache) is False
+
+
+def test_poser_sur_la_face_visée():
+    w = monde_plat()
+    mur_en_x(w)
+    p = joueur()
+    p.set_angles(0.0, 0.0)
+    cache = ChunkMeshes(w)
+    assert p.place_block(w, cache, Block.GRASS) is True
+    assert w.get(14, 10, 5) is Block.GRASS
+
+
+def test_poser_dans_le_joueur_est_refuse():
+    w = monde_plat()
+    p = joueur()
+    p.set_angles(0.0, -math.pi / 2 + 0.01)  # vers ses pieds
+    cache = ChunkMeshes(w)
+    assert p.place_block(w, cache, Block.STONE) is False
+    assert w.get(10, 10, 4) is Block.AIR
+
+
+def test_poser_hors_des_bornes_est_refuse():
+    w = monde_plat(sx=8, sy=8)
+    w.set(0, 0, 4, Block.STONE)
+    p = joueur(x=1.5, y=1.5, z=4.0)
+    p.set_angles(math.pi, 0.0)  # regarde vers -X, vers le bord
+    cache = ChunkMeshes(w)
+    ok = p.place_block(w, cache, Block.STONE)
+    assert ok is False
