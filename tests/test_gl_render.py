@@ -499,3 +499,42 @@ def test_tramage_du_ciel(pyxel_headless):
         assert (sans != avec).mean() > 0.05
     finally:
         renderer.close()
+
+
+def test_eau_vagues_et_reflet_du_soleil(pyxel_headless):
+    """Les vagues font varier le Fresnel et allument un reflet de soleil."""
+    from pycraft.gl.context import GlContext
+    from pycraft.gl.palette import PALETTE
+    from pycraft.gl.renderer_gl import GlRenderer
+
+    monde = World(sx=48, sy=48, sz=16, seed=0)
+    monde.data = bytearray(len(monde.data))
+    for y in range(48):
+        for x in range(48):
+            for z in range(3):
+                monde.set(x, y, z, Block.STONE)
+    for y in range(4, 44):
+        for x in range(4, 44):
+            monde.set(x, y, 3, Block.WATER)
+
+    gl = GlContext(320, 200)
+    renderer = GlRenderer(
+        monde, ChunkMeshes(monde), 320, 200,
+        view_distance=60, detail_radius=20, gl=gl,
+    )
+    try:
+        renderer.dither = False  # on mesure la structure, pas le bruit de tramage
+        soleil = GlRenderer.sun_vector(52.0)
+        camera = Camera(
+            24, 24, 5.2, yaw=math.atan2(soleil[1], soleil[0]), pitch=-0.12,
+            width=320, height=200,
+        )
+        renderer.draw(camera, time=52.0)
+        img = np.frombuffer(gl.read_indices(), np.uint8).reshape(200, 320)
+        eau = img[120:190, 80:240]
+        lum = PALETTE[eau].astype(float).mean(axis=2)
+
+        assert len(set(eau.flatten().tolist())) >= 8, "l'eau doit onduler, pas être un aplat"
+        assert lum.max() / max(lum.mean(), 1e-6) > 1.40, "pas de reflet de soleil sur l'eau"
+    finally:
+        renderer.close()

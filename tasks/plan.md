@@ -88,11 +88,16 @@ mesure de la frame → commit.
       même couleur
 - **Critère** : plus de *banding* visible dans un ciel dégagé
 
-### T8 — Eau : normales animées + reflet
-- [ ] Normales perturbées par deux vagues sinus croisées
-- [ ] Reflet du ciel par Fresnel + couleur de ciel horaire
-- [ ] Test GPU : l'eau change plus qu'aujourd'hui entre `t=0` et `t=1.3`
-- **Critère** : l'eau reflète la couleur du ciel du moment
+### T8 — Eau : normales animées + reflet ✅
+- [x] Normales perturbées par deux vagues sinus croisées (fréquence ~4/bloc)
+- [x] Fresnel + couleur de ciel horaire + reflet spéculaire du soleil
+- [x] Eau opaque : en transparence, les ombres du fond se lisaient comme des
+      bandes diagonales à travers la palette
+- [x] **Bug corrigé** : la passe d'ombres réutilisait la clé de cache « opaque »
+      et y stockait le maillage complet, eau comprise — le shader de terrain
+      dessinait donc des quads d'eau. Clé `"shadow"` distincte
+- [x] Test GPU : l'eau a un reflet (max/moyenne 1,49) et ondule
+- **Mesure** : 2,78 ms à 1280×800 (moins de quads dessinés qu'avant)
 
 ### T9 — Particules
 - [ ] `Particles` : position, vitesse, durée de vie, couleur de bloc

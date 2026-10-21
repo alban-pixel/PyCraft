@@ -264,6 +264,7 @@ class GlRenderer:
         ciel = np.array(config.PALETTE[config.SKY_HORIZON], dtype=np.float32) / 255.0
         prog["u_water"].value = tuple(float(v) for v in eau)
         prog["u_sky"].value = tuple(float(v) for v in ciel)
+        prog["u_sun"].value = tuple(float(v) for v in self.sun_dir)
         self.ctx.depth_mask = False
         for cx, cy, vbo, nombre in self._eau:
             vao = self._water_vaos.get((cx, cy))
@@ -308,7 +309,10 @@ class GlRenderer:
             verts, colors = select_mesh(self.meshes, cx, cy, distance, self.detail_radius, True)
             if len(verts) == 0:
                 continue
-            vbo, _ = self.gpu.get(cx, cy, verts, colors)
+            # Kind distinct : sinon le VBO « opaque » mis en cache par la passe
+            # de scène (sans l'eau) serait écrasé par le maillage complet, et le
+            # terrain dessinerait des quads d'eau avec le shader de terrain.
+            vbo, _ = self.gpu.get(cx, cy, verts, colors, "shadow")
             vao = self._shadow_vaos.get((cx, cy))
             if vao is None:
                 vao = self.ctx.vertex_array(
