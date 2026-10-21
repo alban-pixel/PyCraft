@@ -1,209 +1,181 @@
-# Spec : PyCraft
+# Spec : PyCraft v2 — jeu complet, rendu GPU
 
-> Version 1 — 21 octobre 2026. Source : [docs/intent/pycraft.md](docs/intent/pycraft.md),
-> [docs/ideas/pycraft.md](docs/ideas/pycraft.md), [tasks/plan.md](tasks/plan.md).
-> Statut : **approuvée le 21 octobre 2026**.
+> Version 2 — 21 octobre 2026. Remplace la v1 (démo voxel, rendu CPU, créatif).
+> Statut : **en attente d'approbation**. Carte des capacités :
+> [CAPABILITIES.md](CAPABILITIES.md).
 
 ## Objective
 
-Construire **PyCraft** : un monde de blocs en vraie 3D, en vue première personne,
-où l'on se déplace, regarde autour de soi, casse et pose des blocs — rendu avec
-les primitives 2D de Pyxel.
+Transformer la démo voxel actuelle en **jeu complet** — survie **et** créatif —
+avec un rendu de type *shader pack* Minecraft : éclairage directionnel, eau
+animée, brouillard, cycle jour/nuit, textures procédurales.
 
-**Pour qui :** Alban (projet NSI) ; le professeur / jury découvre le jeu en
-quelques minutes de démonstration.
+Le rendu est calculé par le **GPU** (OpenGL 4.1 via moderngl), quantifié sur une
+palette indexée, puis affiché par Pyxel. L'esthétique reste **rétro** : pixels
+nets, palette maîtrisée, tramage assumé.
 
-**Pourquoi maintenant :** échéance à 2–4 semaines, aucune grille imposée. C'est
-l'effet visuel qui doit marquer, et le code doit pouvoir être expliqué à l'oral.
+**Pour qui :** Alban (projet NSI) ; le jury, qui doit voir un jeu fini et beau.
+**Pourquoi :** la démo actuelle est jouable mais visuellement pauvre ; on veut un
+rendu qui marque et un vrai contenu de jeu.
 
-**Succès global :** à l'ouverture, on voit un paysage de blocs en perspective,
-fluide, dans lequel on peut marcher, viser, casser et poser — sans artefact
-visible et sans ralentissement.
+**Succès global :** on peut survivre (vie, faim, dégâts), construire, affronter
+des mobs, sauvegarder sa partie, et le tout est beau et fluide.
 
-**Non-objectifs (assumés) :** survie (vie, faim), mobs, craft, inventaire complet,
-monde infini en streaming, multijoueur, sauvegarde, sons, packs de textures.
+> **Correction vérifiée** : Pyxel 2.9.9 annonce 16 couleurs, mais son framebuffer
+> est 8 bits et sa palette extensible à **256 entrées** (testé en fenêtre réelle :
+> 241 couleurs distinctes). Le rendu vise 256 couleurs, avec repli 16.
+
+## Périmètre
+
+Huit modules, détaillés dans [CAPABILITIES.md](CAPABILITIES.md) :
+
+| Module | Contenu |
+|---|---|
+| `gpu-render` | renderer GLSL, framebuffer indexé, eau, brouillard, ciel |
+| `render-fx` | jour/nuit, AO, tramage fin, post-traitement, HUD enrichi |
+| `world-sim` | blocs variés, structures, eau qui coule, horloge |
+| `survival` | vie, faim, dégâts, mort/respawn |
+| `inventory-craft` | inventaire 9 slots, items, craft |
+| `mobs` | spawn, IA, combat |
+| `persistence` | sauvegarde monde + joueur + inventaire |
+| `creative` | vol, palette de blocs, casse instantanée |
+
+Ordre : `gpu-render → render-fx → world-sim → survival → inventory-craft → mobs →
+persistence → creative`.
+
+**Hors périmètre :** multijoueur, serveur, redstone, villages PNJ, dimensions
+multiples (Nether/End), shaders de type ray tracing.
 
 ## Tech Stack
 
 | Élément | Version | Rôle |
 |---|---|---|
-| Python | 3.14.7 (venv local) | langage |
-| Pyxel | 2.9.9 | fenêtre, entrées, primitives 2D |
-| numpy | 2.5.4 | projection vectorisée, maillages |
-| pytest | à installer (`requirements-dev.txt`) | tests |
+| Python | 3.14.7 (venv) | langage |
+| Pyxel | 2.9.9 | fenêtre, entrées, HUD, framebuffer 8 bits |
+| moderngl | 5.13.0 | contexte OpenGL 4.1 hors écran (Metal sur macOS) |
+| numpy | 2.5.4 | matrices, maillages, readback |
+| pytest | 9.1.1 | tests |
 
-Cible : macOS arm64 (SDL2 + Metal). Aucune autre plateforme n'est supportée
-officiellement.
-
-**Contrainte fondatrice :** Pyxel ne sait dessiner qu'en 2D (`tri`, `rect`,
-`blt`, `text`) et n'expose ni shaders ni GPU programmable. La 3D est donc
-calculée à la main en Python, puis rasterisée par Pyxel.
+Fallback : renderer CPU existant (`--cpu`), 100 % Pyxel, déjà mesuré à 3,4 ms.
 
 ## Commands
 
-Toutes les commandes se lancent depuis la racine du projet, avec le venv local.
-
 ```bash
-# Installation (une fois)
+# Installation
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
 
-# Lancer le jeu (réglages par défaut : 1280x800, distance 96)
-.venv/bin/python main.py
+# Lancer
+.venv/bin/python main.py                     # GPU par défaut
+.venv/bin/python main.py --cpu               # renderer CPU (fallback)
+.venv/bin/python main.py --res 1920x1200 --dist 120 --seed 42
 
-# Lancer en haute qualité
-.venv/bin/python main.py --res 1920x1200 --dist 120
+# Tests
+.venv/bin/python -m pytest -q                # tests sans GPU
+.venv/bin/python -m pytest -q -m gpu         # intégration OpenGL (skippable)
 
-# Tests (suite complète)
-.venv/bin/python -m pytest -q
-
-# Tests d'un module
-.venv/bin/python -m pytest -q tests/test_world.py
-
-# Benchmark reproductible
-.venv/bin/python tools/bench.py --res 1280x800 --dist 96
+# Benchmark
+.venv/bin/python tools/bench.py --renderer gpu --res 1280x800 --dist 96
 ```
 
-Il n'y a **ni build ni lint** : projet Python interprété, sans outil de
-compilation. La vérification = tests + lancement réel du jeu.
+Pas de build ni de lint : projet Python interprété. Vérification = tests +
+lancement réel + bench.
 
 ## Project Structure
 
 ```
-main.py              # point d'entrée : boucle, entrées, état de jeu
+main.py                 # boucle, entrées, sélection renderer, état de jeu
 pycraft/
-  __init__.py
-  config.py          # constantes : résolution, FPS, distance, LOD, palette, types
-  world.py           # World en bytearray, get/set/solid, génération seedée
-  mesher.py          # maillage détail + greedy, cache par chunk
-  camera.py          # caméra, matrice, projection numpy, clipping plan proche
-  renderer.py        # culling, LOD, tri, ciel, brouillard, dessin
-  player.py          # déplacement, collisions AABB, raycast DDA, casser/poser
-  hud.py             # réticule, hotbar, aide, écran titre
-tests/
-  test_world.py
-  test_mesher.py
-  test_camera.py
-  test_renderer.py
-  test_player.py
-tools/
-  bench.py           # mesure fps (résolution x distance x LOD)
-docs/
-  intent/pycraft.md  # intention validée
-  ideas/pycraft.md   # direction et mesures
-  technique.md       # explication des algorithmes (projection, clipping, LOD)
-tasks/
-  plan.md            # plan d'implémentation
-  todo.md            # checklist de suivi
+  config.py             # constantes, palette 256, types de blocs, items
+  world.py              # monde bytearray, génération, blocs
+  mesher.py             # maillages détail + greedy, cache
+  camera.py             # caméra, projection, clipping
+  player.py             # déplacement, collisions, raycast, casser/poser
+  hud.py                # réticule, hotbar, aide, écran titre, stats
+  renderer.py           # renderer CPU (fallback)
+  gl/
+    context.py          # contexte moderngl, détection palette, close()
+    geometry.py         # packing chunk → VBO
+    renderer_gl.py      # GlRenderer
+    shaders/*.glsl
+  survival.py           # vie, faim, dégâts, respawn        (module survival)
+  inventory.py          # inventaire, items, craft           (module inventory-craft)
+  mobs.py               # IA, spawn, combat                  (module mobs)
+  persistence.py        # sauvegarde JSON + monde binaire    (module persistence)
+tests/                  # tests unitaires, un fichier par module
+tools/bench.py          # benchmark CPU / GPU
+docs/                   # technique, intention, idées
+CAPABILITIES.md         # carte des modules (index)
+SPEC-gpu-render.md      # spec du module 1
 ```
-
-Règle de dépendance : `world` et `mesher` n'importent **jamais** `pyxel` ;
-`renderer` et `hud` ne modifient **jamais** `World` ; `player` modifie `World`
-mais ne dessine rien.
 
 ## Code Style
 
-- Commentaires et docstrings **en français**, identifiants en anglais.
-- Type hints sur les fonctions publiques.
-- Fonctions pures privilégiées pour tout ce qui est testable (projection,
-  clipping, fusion de faces) ; les classes portent l'état.
-- Pas de numpy dans la boucle de dessin : les coordonnées écran sont converties
-  en listes Python avant les appels `pyxel.tri`.
+Mêmes conventions que la v1 : commentaires et docstrings en français,
+identifiants en anglais, types sur les fonctions publiques, fonctions pures
+testables, aucun numpy scalaire dans une boucle de dessin Python.
+
+Pour le GPU : GLSL en anglais, uniforms nommés, aucune constante magique dans les
+shaders, et **jamais** de création de contexte OpenGL à l'import.
 
 ```python
-def clip_near(poly: list[tuple[float, float, float]], near: float) -> list[tuple[float, float, float]]:
-    """Découpe un polygone 3D contre le plan z = near.
-
-    Retourne une liste vide si le polygone est entièrement derrière la caméra.
-    """
-    if all(p[2] >= near for p in poly):
-        return poly
-    if all(p[2] < near for p in poly):
-        return []
+def quantize(couleur: np.ndarray, palette: np.ndarray) -> np.ndarray:
+    """Indice de la couleur de palette la plus proche, par pixel."""
     ...
 ```
 
-Conventions : constantes en `MAJUSCULES`, types de blocs en `IntEnum`,
-chunks indexés par `(cx, cy)`.
-
 ## Testing Strategy
 
-- **Framework :** pytest. Les tests vivent dans `tests/`, un fichier par module.
-- **Tests unitaires (majoritaires, « small ») :** logique pure, sans fenêtre
-  Pyxel — `world`, `mesher`, `camera`, `player`, fonctions de `renderer`.
-  Ils doivent tourner en moins de 2 s.
-- **Tests de rendu :** les fonctions pures (projection, clipping, tri, choix de
-  couleur) sont testées ; le rendu complet est vérifié par **capture d'écran
-  relue manuellement** aux checkpoints, pas par test automatique.
-- **Tests de performance :** hors suite pytest par défaut
-  (marqueur `@pytest.mark.slow`), exécutés via `tools/bench.py`.
-- **Couverture attendue :** chaque module contenant de la logique a des tests ;
-  pas d'objectif de pourcentage imposé.
-- **Règle TDD :** tout nouveau comportement arrive avec un test qui échoue
-  d'abord, sauf configuration pure.
-
-## Performance Budget
-
-Mesures de référence (fenêtre réelle, Mac arm64, monde 256×256×32) :
-
-| Configuration | Cible | Mesuré en prototype |
-|---|---|---|
-| 1280×800, distance 96, LOD | **≥ 60 fps** (≤ 16,7 ms) | 3,35 ms |
-| 1920×1200, distance 120, LOD | **≥ 30 fps** (≤ 33 ms) | 5,21 ms |
-| Rebuild d'un chunk après casser/poser | **≤ 5 ms** | — |
-| Génération + maillage au démarrage | **≤ 1 s** | ~170 ms |
-
-Contraintes connues : le coût dominant est le nombre d'appels `pyxel.tri`
-(~0,6 µs) et la collecte Python ; la résolution est presque gratuite (+0,7 ms de
-320×200 à 1280×800). Le threading est **exclu** (GIL, mesuré sans gain).
+- **Sans GPU (par défaut)** : logique pure (monde, maillages, caméra, joueur,
+  survie, inventaire, sauvegarde), matrices et packing du renderer, quantification
+  de palette. Doit tourner en < 5 s.
+- **GPU (`@pytest.mark.gpu`)** : ouverture de contexte, rendu d'une scène de
+  contrôle, readback non uniforme. Skippé si le contexte échoue.
+- **Visuel** : captures PNG comparées à la main aux checkpoints.
+- **Performance** : `tools/bench.py`, cible ≤ 8 ms/frame à 1280×800 pour le GPU et
+  ≤ 8 ms pour le CPU.
+- **Règle TDD** : tout comportement nouveau arrive avec un test qui échoue d'abord.
 
 ## Boundaries
 
 **Toujours :**
+- Garder `--cpu` fonctionnel et testé.
 - Lancer `pytest` avant chaque commit.
-- Garder `world`/`mesher` indépendants de Pyxel.
-- Commenter en français ; typer les fonctions publiques.
+- Détecter la palette étendue au démarrage et replier en 16 couleurs sinon.
+- Libérer les ressources GPU (`close()`).
 - Mesurer avant d'affirmer une performance.
-- Committer une tâche à la fois, avec un message descriptif.
 
 **Demander avant :**
-- Ajouter une dépendance (numpy, pytest et pyxel sont déjà approuvés).
-- Changer la résolution, la distance ou le LOD par défaut.
-- Changer la taille du monde ou des chunks.
-- Modifier `docs/SPEC.md` (c'est ce document).
-- Toucher à la configuration git/GitHub.
+- Ajouter une dépendance au-delà de moderngl/numpy/pytest.
+- Changer l'ordre ou le périmètre des modules.
+- Modifier `SPEC.md`, `CAPABILITIES.md` ou une spec de module.
+- Introduire une shadow map ou un upscale de résolution interne.
 
 **Jamais :**
-- Committer `.venv/`, des secrets, ou `git add -A`.
-- Supprimer ou désactiver un test pour faire passer la suite.
-- Utiliser `git push --force` ou réécrire l'historique.
-- Ajouter du gameplay hors périmètre (survie, mobs, craft, inventaire).
-- Lancer du rendering dans des threads.
-- Introduire un accès numpy scalaire dans la boucle `pyxel.tri`.
+- Créer un contexte GL à l'import.
+- Rendre la suite de tests dépendante du GPU.
+- Casser ou supprimer le renderer CPU.
+- Ajouter du gameplay hors périmètre (redstone, Nether, villages).
+- Committer `.venv/`, des secrets, ou utiliser `git add -A`.
 
 ## Success Criteria
 
-1. `python main.py` ouvre une fenêtre **1280×800**, monde 256×256×32 généré,
-   et tient **≥ 60 fps en moyenne sur 60 s** de déplacement continu.
-2. `--res 1920x1200 --dist 120` tient **≥ 30 fps** sur la même séquence.
-3. Le monde est **déterministe** : même seed ⇒ même monde, bloc pour bloc.
-4. On se déplace en 1ʳᵉ personne (ZQSD + flèches/souris) ; **impossible de
-   traverser un mur** ; la caméra reste dans les bornes.
-5. La visée par raycast (portée 5 blocs) **surligne** le bloc ciblé et renvoie
-   `None` si rien n'est à portée.
-6. Casser (clic gauche) et poser (clic droit, 3 blocs en hotbar) mettent à jour
-   le rendu **en une frame** ; jamais de bloc dans le volume du joueur.
-7. Aucun artefact visible : pas de triangle géant au clipping, pas de fissure
-   entre quads fusionnés, pas de couture nette entre LOD détail et fusionné.
-8. La suite `pytest -q` est **verte** ; chaque module testable a ses tests.
-9. `README.md` (installation, commandes, captures) et `docs/technique.md`
-   (projection, clipping, greedy meshing, LOD, chiffres) sont à jour.
+1. Le jeu se lance par défaut en GPU et affiche un monde avec ciel dégradé, eau
+   animée, brouillard et éclairage lisible.
+2. **1280×800 : ≤ 8 ms/frame** (rendu + readback + blit), p95 mesuré.
+3. `--cpu` fonctionne toujours et reste ≤ 8 ms.
+4. La survie est jouable : vie, faim, dégâts, mort et respawn.
+5. L'inventaire et le craft fonctionnent (9 slots, au moins 6 recettes).
+6. Au moins 2 types de mobs avec une IA simple et du combat.
+7. La sauvegarde recharge le monde, le joueur et l'inventaire à l'identique.
+8. Le mode créatif (vol, casse instantanée, palette de blocs) est accessible.
+9. La palette 256 est détectée ; en cas d'échec, le jeu tourne en 16 couleurs.
+10. `pytest -q` est vert sans GPU ; les tests GPU passent ou sont skippés.
 
-## Décisions actées
+## Open Questions
 
-1. **Résolution par défaut : 1280×800** ; 1920×1200 disponible via `--res 1920x1200`.
-2. **Caméra : clavier + souris.** Souris = delta calculé sur la position
-   (`pyxel.mouse(True)`, `mouse_x` / `mouse_y`) ; les flèches restent un secours.
-3. **Pas de date de rendu fixe** : rythme libre, une tâche à la fois.
-4. **Git** : branche `deepseek` pour le développement, push périodique sur
-   `origin` (`alban-pixel/PyCraft`) à chaque étape terminée.
+- **Shadow map** : dans `render-fx` (recommandé) ou jamais ?
+- **Palette 256** : fixe et dessinée à la main, ou générée depuis une image de
+  référence puis figée ?
+- **Profondeur de la survie** : faim simulée en continu ou seulement visuelle ?
+- **Sauvegarde** : un seul emplacement ou plusieurs slots ?
