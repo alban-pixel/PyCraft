@@ -1,179 +1,134 @@
-# Implementation Plan — module `gpu-render`
+# Implementation Plan — module `render-fx`
 
-> Module 1/9 de [CAPABILITIES.md](../CAPABILITIES.md). Spec :
-> [SPEC-gpu-render.md](../SPEC-gpu-render.md).
-> Le plan v1 (rendu CPU) est archivé : [docs/archive/plan-v1-cpu.md](../docs/archive/plan-v1-cpu.md).
+> Module 2/9 de [CAPABILITIES.md](../CAPABILITIES.md).
+> Spec : [SPEC-render-fx.md](../SPEC-render-fx.md).
+> Plans précédents archivés : [v1 CPU](../docs/archive/plan-v1-cpu.md),
+> [v2 gpu-render](../docs/archive/plan-v2-gpu-render.md).
 
 ## Overview
 
-Remplacer le renderer CPU par un renderer **OpenGL 4.1** (moderngl) qui rend la
-scène voxel avec shaders et ombres, quantifie sur une palette **256 couleurs**
-et écrit la frame dans le framebuffer de Pyxel. Le renderer CPU reste le fallback
-(`--cpu`).
+Élever le rendu du « ça marche » au « ça impressionne », **sans quitter la
+palette 256**. Douze tâches (T1 déjà livrée), chacune livrable et mesurable seule : aucune ne
+dépend d'une autre sauf mention explicite.
 
-Ce plan couvre **uniquement ce module**. Les modules `render-fx`, `world-sim`,
-`audio`, `survival`, `inventory-craft`, `mobs`, `persistence`, `creative` auront
-leur propre plan, écrit après celui-ci.
+Chaque tâche suit le cycle : test GPU rouge → implémentation → suite complète →
+mesure de la frame → commit.
 
 ## Architecture Decisions
 
-- **moderngl + OpenGL 4.1 hors écran** (Metal sur macOS) : mesuré, contexte
-  fonctionnel, readback 1,9 ms en 1920×1200.
-- **Framebuffer R8** (1 octet/pixel) : le shader de post-traitement sort
-  directement un **indice de palette** ; pas de conversion RGB côté Python.
-- **Palette 256 étendue au démarrage**, avec LUT 32³ pour la quantification et
-  **repli 16 couleurs** si l'extension n'est pas honorée (non documentée).
-- **Un VBO par chunk**, construit depuis `ChunkMeshes`, invalidé par
-  `invalidate(x, y)` ; LOD détail/fusionné conservé.
-- **Six passes** : shadow map, ciel, terrain, eau, météo, post.
-- **Aucun appel GL à l'import** ; les tests GPU sont marqués `@pytest.mark.gpu`.
-- **Interface commune** avec le renderer CPU : `draw(camera, selection)`,
-  `invalidate(x, y)`, `close()`, `quads`, `chunks_visibles`.
+- **Résolution interne `scale`** : le renderer rend dans un FBO `width*scale`,
+  puis upscale nearest vers la taille finale. Le HUD Pyxel est dessiné
+  **après**, donc jamais pixelisé par l'upscale.
+- **AO dans le mesher**, pas dans le shader : le format de sommet contient déjà
+  `in_ao` ; ajouter l'occlusion de contact au calcul CPU coûte 0 ms GPU.
+- **Motifs par matériau dans le fragment shader**, sélectionnés par une
+  uniform `int u_material[16]` : aucun atlas de texture à charger, tout reste
+  procédural et reproductible.
+- **Particules = nuage de points GPU** (un VBO de N particules, mis à jour côté
+  CPU) : quelques centaines de points, coût négligeable.
+- **Main / bloc tenu** : géométrie écrite à chaque image dans un petit VBO
+  (cube + bras), rendue avec la matrice de projection seule (espace écran).
+- **`--no-fx`** coupe post-traitement, tramage et particules : sert de référence
+  de comparaison et de plan de secours si les perfs dérapent.
+- **Le renderer CPU n'évolue pas** au-delà du partage de helpers ; `--cpu`
+  reste le fallback de référence et ses tests sont la garde de non-régression.
 
-## Task List
+## Tasks
 
-### Phase 1 — Fondations (risque maximal d'abord)
+### T1 — Contour du bloc visé en GPU ✅
+- [x] `pycraft/cube.py` : arêtes partagées CPU/GPU
+- [x] shaders `lignes.vert/frag`, passe `gl.LINES` après l'eau
+- [x] 2 tests GPU (contour présent, aucune ligne sans sélection)
+- **Commit** : `f945496`
 
-- [ ] **T1 · Contexte GL et frame dans Pyxel**
-  - Contexte moderngl, FBO R8, clear, readback, `memmove` dans `pyxel.screen`.
-  - Démo : un écran de couleur unie affiché dans la vraie fenêtre.
-  - **Acceptance** : la frame s'affiche ; readback ≤ 2,5 ms en 1920×1200 (mesuré 2,18 ms) ; le HUD
-    Pyxel se dessine par-dessus ; `--cpu` intact.
-  - **Verify** : test GPU (bytes lus = largeur×hauteur, couleur présente) +
-    capture réelle de la fenêtre.
-  - **Files** : `pycraft/gl/__init__.py`, `pycraft/gl/context.py`, `requirements.txt`, `tests/test_gl_context.py`.
-  - **Scope** : M.
+### T2 — Textures par type de bloc
+- [ ] `u_material[16]` : un identifiant de motif par index de couleur
+- [ ] Motifs : herbe (brins verticaux), pierre (éclats), terre (grains),
+      planches (lignes horizontales), sable (points), briques (appareil)
+- [ ] Variation par bloc (hash sur les coordonnées de bloc) pour éviter le
+      copier-coller visuel entre blocs voisins
+- [ ] Test GPU : herbe et pierre → distributions de couleurs différentes
+- **Critère** : deux matériaux ne partagent pas le même motif
 
-- [ ] **T2 · Palette 256 et quantification**
-  - Palette du jeu (rampes ciel/herbe/terre/pierre/eau…), LUT 32³, `quantize`.
-  - Détection de l'extension, repli 16.
-  - **Acceptance** : `quantize` = plus proche voisin exact sur 10 000 couleurs
-    aléatoires ; détection renvoie 256 ici ; repli testé en simulation.
-  - **Verify** : `pytest -q tests/test_gl_palette.py`.
-  - **Files** : `pycraft/gl/palette.py`, `tests/test_gl_palette.py`.
-  - **Scope** : S.
+### T3 — Ombres complètes
+- [ ] La shadow map inclut les chunks **hors champ** dans le rayon de la
+      matrice de lumière (pas seulement `_chunks_visibles`)
+- [ ] Centrer la shadow map sur la zone visible, pas sur la caméra
+- [ ] Test GPU : une tour derrière la caméra projette une ombre devant elle
+- **Critère** : plus de zone éclairée au pied d'un mur hors champ
 
-- [ ] **T3 · Matrices et packing géométrie**
-  - `view_matrix` / `projection_matrix` depuis `Camera` ; packing des quads en
-    interleaved float32 (position, face, bloc, ao) ; cache d'invalidation.
-  - **Acceptance** : un point projeté par la matrice tombe au même écran que
-    `Camera.project` (± 0,5 px) ; 1 quad isolé produit 6 faces packées aux bonnes
-    valeurs ; `invalidate` vide le cache.
-  - **Verify** : `pytest -q tests/test_gl_math.py tests/test_gl_geometry.py`.
-  - **Files** : `pycraft/gl/math.py`, `pycraft/gl/geometry.py`, tests associés.
-  - **Scope** : M.
+### T4 — Résolution interne réduite + upscale
+- [ ] `scale` dans `GlRenderer`, FBO à `width*scale`
+- [ ] Passe d'upscale nearest vers le FBO final (pas de flou)
+- [ ] `--scale N` dans `main.py` et `bench.py`
+- [ ] Test GPU : `scale=0.5` → chaque 2×2 de l'image finale est uniforme
+- **Critère** : `scale=0.5` divise le temps de frame par ~4
 
-### Checkpoint : Fondations
+### T5 — Lumière horaire
+- [ ] 6 paliers (aube, matin, midi, après-midi, crépuscule, nuit) interpolés
+- [ ] `u_horizon` / `u_zenith` / brouillard / teinte pilotés par le palier
+- [ ] Test GPU : ciel de 6 h ≠ ciel de midi ≠ ciel de 18 h
+- **Critère** : le brouillard suit la couleur du ciel à toute heure
 
-- [ ] Frame GPU affichée dans Pyxel.
-- [ ] Palette 256 + quantification exactes.
-- [ ] Géométrie packée et matrices validées.
-- [ ] Revue humaine avant le premier vrai rendu.
+### T6 — AO de contact
+- [ ] Occlusion de contact dans `mesher.build_detail` (arêtes et coins)
+- [ ] Poids plus fort sur les arêtes intérieures que sur les faces
+- [ ] Test GPU : un coin intérieur est plus sombre qu'une face plane
+- **Critère** : 0 ms GPU ajoutée (mesurée)
 
----
+### T7 — Tramage fin
+- [ ] Bayer 8×8 sur le ciel, le brouillard et les dégradés du post
+- [ ] Test GPU : le ciel ne contient pas de bande de plus de N pixels d'une
+      même couleur
+- **Critère** : plus de *banding* visible dans un ciel dégagé
 
-### Phase 2 — Cœur visuel
+### T8 — Eau : normales animées + reflet
+- [ ] Normales perturbées par deux vagues sinus croisées
+- [ ] Reflet du ciel par Fresnel + couleur de ciel horaire
+- [ ] Test GPU : l'eau change plus qu'aujourd'hui entre `t=0` et `t=1.3`
+- **Critère** : l'eau reflète la couleur du ciel du moment
 
-- [ ] **T4 · Terrain pass**
-  - Shaders terrain, boucle de rendu des chunks, illumination simple, sortie
-    palette.
-  - **Acceptance** : le monde s'affiche via GPU en 1920×1200 ; frame ≤ 6 ms
-    (rendu + readback + blit) ; ciel au-dessus, terrain en dessous.
-  - **Verify** : test GPU (pixels ciel/terrain) + capture ; `bench --renderer gpu`.
-  - **Files** : `pycraft/gl/renderer_gl.py`, `shaders/terrain.*`, `shaders/common.glsl`, `tests/test_gl_render.py`.
-  - **Scope** : L.
+### T9 — Particules
+- [ ] `Particles` : position, vitesse, durée de vie, couleur de bloc
+- [ ] Émission à la casse et à la pose ; gravité simple
+- [ ] Rendu en `gl.POINTS` dans le FBO de scène
+- [ ] Test GPU : casser un bloc change la frame suivante hors du bloc
+- **Critère** : visible à l'œil, ≤ 0,3 ms de GPU
 
-- [ ] **T5 · Ciel complet**
-  - Dégradé horizon/zénith, soleil + halo, étoiles, nuages procéduraux.
-  - **Acceptance** : ≥ 8 indices de palette distincts dans le ciel ; soleil
-    présent à la position attendue ; nuit = étoiles visibles.
-  - **Verify** : test GPU (comptage d'indices) + captures jour/nuit.
-  - **Files** : `shaders/sky.*`, `renderer_gl.py`, `tests/test_gl_render.py`.
-  - **Scope** : M.
+### T10 — Main / bloc tenu
+- [ ] Cube + bras en bas à droite, matrice écran
+- [ ] Couleur = bloc sélectionné dans la hotbar
+- [ ] Léger balancement à la marche et au clic
+- [ ] Test GPU : changer de slot change la couleur du bloc tenu
+- **Critère** : le bloc tenu est identifiable sans le HUD
 
-- [ ] **T6 · Ombres portées**
-  - Depth FBO 2048², passe shadow, PCF 3×3, biais.
-  - **Acceptance** : un bloc isolé projette une ombre visible ; pas d'acné sur
-    une surface plane ; coût ≤ 2 ms.
-  - **Verify** : test GPU comparant le sol à l'ombre et au soleil.
-  - **Files** : `shaders/shadow.*`, `renderer_gl.py`, `tests/test_gl_render.py`.
-  - **Scope** : L.
+### T11 — HUD : icônes et écran titre vivant
+- [ ] Icônes de blocs dessinées (motif 8×8) au lieu d'aplats
+- [ ] Barre de sélection animée
+- [ ] Écran titre : le monde tourne en fond, logo et ombre portée
+- [ ] Tests Pyxel headless : chaque icône contient ≥ 2 couleurs
+- **Critère** : on reconnaît le bloc sans lire son numéro
 
-### Checkpoint : Cœur visuel
+### T12 — `tools/bench.py` : `--renderer gpu` réellement pris en compte
+- [ ] Construire `GlRenderer` quand `--renderer gpu` (aujourd'hui : CPU
+      seulement, l'option n'est qu'une étiquette)
+- [ ] Afficher le temps de readback séparément du temps de rendu
+- [ ] Vérifier le budget des tâches T4/T6/T8 avec ce bench
+- **Critère** : `--renderer cpu` et `--renderer gpu` donnent des chiffres distincts
 
-- [ ] Terrain, ciel et ombres rendus par le GPU.
-- [ ] 1920×1200 ≤ 6 ms.
-- [ ] Captures validées à la main.
-- [ ] Revue humaine.
+## Ordre d'exécution
 
----
+```
+T2 → T3 → T4 → T5 → T6 → T7 → T8 → T9 → T10 → T11 → T12
+```
 
-### Phase 3 — Eau, ambiance, intégration
+T12 en dernier pour mesurer tout le reste avec un bench fiable ; en cas de
+dérapage de perf, le bench sert d'arbitre.
 
-- [ ] **T7 · Eau animée**
-  - Séparation des faces d'eau dans le packing ; shader vagues + Fresnel +
-    transparence tramée + teinte sous-marine.
-  - **Acceptance** : vagues en mouvement ; transparence sans artefact ; teinte
-    quand la caméra est sous l'eau ; coût ≤ 1,5 ms.
-  - **Verify** : test GPU (pixels d'eau différents à t et t+1) + captures.
-  - **Files** : `shaders/water.*`, `geometry.py`, `renderer_gl.py`, tests.
-  - **Scope** : L.
+## Definition of Done
 
-- [ ] **T8 · Brouillard et textures procédurales**
-  - Fog distance + hauteur, couleur du ciel ; textures par bloc/face (hash).
-  - **Acceptance** : le lointain se fond dans le ciel sans coupure ; les blocs
-    sont texturés de près ; pas de bandes franches.
-  - **Verify** : test GPU (couleur lointaine ≈ ciel) + captures.
-  - **Files** : `shaders/terrain.*`, `shaders/common.glsl`.
-  - **Scope** : M.
-
-- [ ] **T9 · Post-traitement et palette jour/nuit**
-  - Vignette, courbe de contraste, tramage optionnel ; interpolation de la
-    palette sur un cycle de 60 s.
-  - **Acceptance** : la palette change progressivement ; la vignette est visible ;
-    coût ≤ 1 ms.
-  - **Verify** : tests purs (interpolation de palette) + captures jour/nuit.
-  - **Files** : `shaders/post.*`, `palette.py`, `renderer_gl.py`, tests.
-  - **Scope** : M.
-
-- [ ] **T10 · Intégration, fallback et bench**
-  - `--gpu/--cpu`, bascule automatique sur erreur GL, `requirements.txt`
-    (moderngl), `tools/bench.py --renderer gpu`, README.
-  - **Acceptance** : GPU par défaut ; erreur GL → message + fallback CPU ;
-    `--cpu` passe les tests ; bench rapporte les deux.
-  - **Verify** : `pytest -q`, `bench --renderer cpu` et `gpu`.
-  - **Files** : `main.py`, `tools/bench.py`, `requirements.txt`, `README.md`.
-  - **Scope** : M.
-
-- [ ] **T11 · Météo (pluie)**
-  - Passe météo (particules), activable/désactivable.
-  - **Acceptance** : pluie visible en extérieur, absente sous un toit ; coût ≤ 2 ms.
-  - **Verify** : test GPU (pixels de pluie) + capture.
-  - **Files** : `shaders/weather.*`, `renderer_gl.py`.
-  - **Scope** : M.
-
-### Checkpoint : Module livrable
-
-- [ ] Tous les critères de `SPEC-gpu-render.md` validés.
-- [ ] `--cpu` intact, `pytest -q` vert.
-- [ ] Réglages par défaut documentés.
-- [ ] Revue humaine + push.
-
-## Risks and Mitigations
-
-| Risque | Impact | Mitigation |
-|---|---|---|
-| Contexte GL indisponible | High | T1 en premier ; fallback CPU automatique |
-| Erreur de compilation GLSL | High | Validation au démarrage, log du shader |
-| Frame écrite mais non affichée | High | T1 vérifie la fenêtre réelle, pas seulement le buffer |
-| Acné d'ombre / peter-panning | Med | Biais + normal offset réglés en T6 |
-| Artefacts de transparence d'eau | Med | Eau après l'opaque, sans écriture de profondeur |
-| Palette non étendue | Med | LUT de repli 16, testé en T2 |
-| Budget de frame dépassé | Med | Effets à interrupteurs, bench à chaque checkpoint |
-| Dérive du périmètre | Med | Ce plan ne couvre que `gpu-render` |
-
-## Open Questions
-
-- Ombres : 2048² fixe ou cascades 1024²/2048² ?
-- Textures : procédurales (hash) ou atlas 256×256 ?
-- Pluie : particules GPU ou écran-space ?
+- [ ] `pytest -q` et `pytest -q -m gpu` verts
+- [ ] budget tenu à 1280×800 et 1920×1200
+- [ ] `--cpu` affiche toujours une scène correcte
+- [ ] `--no-fx` et `--scale` documentés dans le README
+- [ ] captures avant/après dans `docs/images/`
