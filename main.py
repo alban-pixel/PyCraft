@@ -71,6 +71,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--no-shadows", action="store_true", help="désactive les ombres (GPU)")
     parser.add_argument("--weather", action="store_true", help="active la pluie (GPU)")
     parser.add_argument(
+        "--retro",
+        action="store_true",
+        help="rendu 8 bits : 16 couleurs, basse résolution et lignes de balayage",
+    )
+    parser.add_argument(
+        "--no-scanlines",
+        action="store_true",
+        help="désactive les lignes de balayage du mode rétro",
+    )
+    parser.add_argument(
         "--scale",
         type=float,
         default=1.0,
@@ -98,6 +108,8 @@ def construire(
     gl=None,
     shadows: bool = True,
     scale: float = 1.0,
+    retro: bool = False,
+    scanlines: bool = True,
 ) -> dict:
     """Construit le monde, la caméra, le joueur et le renderer."""
     monde = World(seed=seed)
@@ -121,6 +133,8 @@ def construire(
             shadows=shadows,
             scale=scale,
         )
+        renderer.retro = retro
+        renderer.scanlines = scanlines
     else:
         renderer = Renderer(
             monde,
@@ -204,6 +218,7 @@ def update() -> None:
     monde: World = etat["monde"]
     maillages: ChunkMeshes = etat["maillages"]
     camera: Camera = etat["camera"]
+    renderer = etat["renderer"]
     dt = 1.0 / config.DEFAULT_FPS
 
     if not etat["souris"]:
@@ -317,12 +332,17 @@ def main(argv: list[str] | None = None) -> None:
             f"Impossible d'ouvrir une fenêtre {width}x{height} : {exc}\n"
             "Réduis la résolution avec --res 1280x800."
         ) from exc
+    scale = args.scale
+    if args.retro and scale == 1.0:
+        # ~320 px de large : la résolution d'une console 8 bits.
+        scale = min(1.0, 320.0 / width)
     if gl is None:
         appliquer_palette()
     try:
         etat = construire(
             width, height, args.seed, args.dist, args.detail, not args.no_lod,
-            gl=gl, shadows=not args.no_shadows, scale=args.scale,
+            gl=gl, shadows=not args.no_shadows, scale=scale,
+            retro=args.retro, scanlines=not args.no_scanlines,
         )
     except Exception as exc:
         if gl is None:

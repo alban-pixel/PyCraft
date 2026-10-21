@@ -61,3 +61,35 @@ def test_gpu_par_defaut():
 
 def test_option_meteo():
     assert main.parse_args(["--weather"]).weather is True
+
+
+def _etat_de_jeu(pyxel_headless):
+    import main
+
+    etat = main.construire(320, 200, 0, 32, 8)
+    main._etat.update(etat)
+    main._etat["ecran"] = "jeu"
+    main._etat["souris"] = True
+    main._etat["aide"] = False
+    main._etat["stats"] = False
+    return main
+
+
+def test_la_meteo_ne_plante_pas_la_boucle(pyxel_headless):
+    """La branche météo lisait `renderer` sans l'avoir défini (NameError)."""
+    main = _etat_de_jeu(pyxel_headless)
+    main._etat["weather"] = True
+    main.update()  # ne doit pas lever
+
+
+def test_casser_un_bloc_ne_plante_pas_la_boucle(pyxel_headless, monkeypatch):
+    """Le clic gauche utilisait `renderer` hors de portée (NameError)."""
+    import pyxel
+
+    main = _etat_de_jeu(pyxel_headless)
+    main._etat["weather"] = False
+    joueur = main._etat["joueur"]
+    joueur.pitch = -1.2  # regarde le sol, à portée
+    monkeypatch.setattr(pyxel, "btnp", lambda touche: touche == pyxel.MOUSE_BUTTON_LEFT)
+    main.update()  # ne doit pas lever
+    assert main._etat["selection"] is not None, "le joueur doit viser un bloc"
