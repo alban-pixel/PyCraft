@@ -54,6 +54,10 @@ class GlRenderer:
         self.quads = 0
         self.chunks_visibles = 0
         self._light_mvp = np.eye(4, dtype=np.float64)
+        self._jour = 1.0
+        self._tint = (1.0, 1.0, 1.0)
+        self._ciel_horizon = np.array(config.PALETTE[config.SKY_HORIZON], np.float32) / 255.0
+        self._ciel_zenith = np.array(config.PALETTE[config.SKY_TOP], np.float32) / 255.0
 
         self.palette_size = 16
         try:
@@ -170,6 +174,7 @@ class GlRenderer:
         prog["u_fog_start"].value = self.view_distance * 0.65
         prog["u_fog_end"].value = self.view_distance
         prog["u_shadow_on"].value = 1.0 if self.shadows else 0.0
+        prog["u_daylight"].value = 0.35 + 0.65 * self._jour
         prog["u_light_mvp"].write(as_uniform(self._light_mvp))
         self.shadow_tex.use(2)
         prog["u_shadow"].value = 2
@@ -246,6 +251,23 @@ class GlRenderer:
                 self._shadow_vaos[(cx, cy)] = vao
             vao.render()
 
+    @staticmethod
+    def daylight(time: float) -> float:
+        """0 = nuit, 1 = plein jour (période de 120 s)."""
+        return max(0.0, min(1.0, 0.5 + 0.55 * math.sin(time * math.pi / 60.0)))
+
+    def _ambiance(self, time: float) -> None:
+        jour = self.daylight(time)
+        self._jour = jour
+        jour_h = np.array(config.PALETTE[config.SKY_HORIZON], dtype=np.float32) / 255.0
+        jour_z = np.array(config.PALETTE[config.SKY_TOP], dtype=np.float32) / 255.0
+        nuit_h = np.array([0.05, 0.07, 0.16], dtype=np.float32)
+        nuit_z = np.array([0.01, 0.02, 0.06], dtype=np.float32)
+        self._ciel_horizon = nuit_h + (jour_h - nuit_h) * jour
+        self._ciel_zenith = nuit_z + (jour_z - nuit_z) * jour
+        tint = np.array([0.55, 0.62, 0.90], dtype=np.float32)
+        self._tint = tint + (np.ones(3, dtype=np.float32) - tint) * jour
+
     def _dessiner_ciel(self, camera: Camera, time: float) -> None:
         self.ctx.disable(moderngl.DEPTH_TEST)
         prog = self.sky_prog
@@ -255,12 +277,11 @@ class GlRenderer:
         prog["u_res"].value = (float(self.width), float(self.height))
         prog["u_focal"].value = float(camera.focal)
         prog["u_sun"].value = tuple(float(v) for v in self.sun_dir)
-        hor = np.array(config.PALETTE[config.SKY_HORIZON], dtype=np.float32) / 255.0
-        zen = np.array(config.PALETTE[config.SKY_TOP], dtype=np.float32) / 255.0
-        prog["u_horizon"].value = tuple(float(v) for v in hor)
-        prog["u_zenith"].value = tuple(float(v) for v in zen)
+        self._ambiance(time)
+        prog["u_horizon"].value = tuple(float(v) for v in self._ciel_horizon)
+        prog["u_zenith"].value = tuple(float(v) for v in self._ciel_zenith)
         prog["u_time"].value = float(time)
-        prog["u_night"].value = 0.0
+        prog["u_night"].value = float(1.0 - self._jour)
         self.sky_vao.render()
 
     def _post_traitement(self) -> None:
@@ -270,6 +291,8 @@ class GlRenderer:
         self.lut_tex.use(1)
         self.post_prog["u_scene"].value = 0
         self.post_prog["u_lut"].value = 1
+        self.post_prog["u_tint"].value = tuple(float(v) for v in self._tint)
+        self.post_prog["u_vignette"].value = 0.55
         self.post_vao.render()
 
     def invalidate(self, x: int, y: int) -> None:

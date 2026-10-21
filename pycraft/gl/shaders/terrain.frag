@@ -14,6 +14,7 @@ uniform float u_fog_end;
 uniform sampler2D u_shadow;
 uniform mat4 u_light_mvp;
 uniform float u_shadow_on;
+uniform float u_daylight;
 
 out vec4 frag_color;
 
@@ -60,7 +61,7 @@ void main() {
     base *= 0.86 + 0.26 * grain;
     float diffuse = max(dot(n, u_sun), 0.0);
     float ciel = 0.5 + 0.5 * n.z;          // éclairage d'ambiance hémisphérique
-    float light = 0.30 + 0.40 * diffuse + 0.36 * ciel;
+    float light = (0.30 + 0.40 * diffuse + 0.36 * ciel) * u_daylight;
     float ombre = facteur_ombre(v_world);
     vec3 color = base * light * v_ao * mix(0.45, 1.0, ombre);
 

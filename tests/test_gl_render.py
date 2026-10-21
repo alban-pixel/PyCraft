@@ -171,3 +171,28 @@ def test_textures_procedurales(pyxel_headless):
         assert len(set(data)) >= 4, "le sol doit être texturé, pas uni"
     finally:
         renderer.close()
+
+
+def test_cycle_jour_nuit(pyxel_headless):
+    from pycraft.gl.context import GlContext
+    from pycraft.gl.palette import PALETTE
+    from pycraft.gl.renderer_gl import GlRenderer
+
+    monde = World(sx=32, sy=32, sz=16, seed=0)
+    monde.data = bytearray(len(monde.data))
+    for y in range(32):
+        for x in range(32):
+            for z in range(4):
+                monde.set(x, y, z, Block.GRASS)
+    gl = GlContext(320, 200)
+    renderer = GlRenderer(monde, ChunkMeshes(monde), 320, 200, view_distance=40, detail_radius=16, gl=gl)
+    try:
+        camera = Camera(16, 16, 8, yaw=0.6, pitch=-0.2, width=320, height=200)
+        renderer.draw(camera, time=30.0)  # plein jour
+        jour = np.frombuffer(gl.read_indices(), dtype=np.uint8).copy()
+        renderer.draw(camera, time=110.0)  # nuit
+        nuit = np.frombuffer(gl.read_indices(), dtype=np.uint8).copy()
+        assert (jour != nuit).sum() > 500
+        assert PALETTE[nuit].astype(float).mean() < PALETTE[jour].astype(float).mean()
+    finally:
+        renderer.close()
