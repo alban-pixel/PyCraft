@@ -11,7 +11,7 @@ import numpy as np
 from pycraft import config
 from pycraft.camera import Camera
 from pycraft.gl.context import GlContext
-from pycraft.gl.geometry import GpuMeshes
+from pycraft.gl.geometry import GpuMeshes, split_water
 from pycraft.gl.math import as_uniform, light_matrix, mvp_matrix
 from pycraft.gl.palette import build_lut, install_palette, lut_as_texture
 from pycraft.mesher import CHUNK, ChunkMeshes, select_mesh
@@ -98,6 +98,10 @@ class GlRenderer:
             vertex_shader=_lire("shadow.vert"),
             fragment_shader=_lire("shadow.frag"),
         )
+        self.water_prog = self.ctx.program(
+            vertex_shader=_lire("water.vert"),
+            fragment_shader=_lire("water.frag"),
+        )
         self.post_prog = self.ctx.program(
             vertex_shader=_lire("post.vert"),
             fragment_shader=_lire("post.frag"),
@@ -108,6 +112,7 @@ class GlRenderer:
         self.sky_vao = self.ctx.vertex_array(self.sky_prog, [(self._ecran_vbo, "2f", "in_pos")])
         self._vaos: dict[tuple[int, int], object] = {}
         self._shadow_vaos: dict[tuple[int, int], object] = {}
+        self._water_vaos: dict[tuple[int, int], object] = {}
 
     def _construire_palette(self) -> None:
         self.lut = build_lut(bits=5)
@@ -171,24 +176,54 @@ class GlRenderer:
 
         self.quads = 0
         vus = 0
+        self._eau: list[tuple[int, int]] = []
         for cx, cy, distance in self._chunks_visibles(camera):
             verts, colors = select_mesh(
                 self.meshes, cx, cy, distance, self.detail_radius, True
             )
             if len(verts) == 0:
                 continue
-            vbo, nombre = self.gpu.get(cx, cy, verts, colors)
-            vao = self._vaos.get((cx, cy))
+            opaques_v, opaques_c, eau_v, eau_c = split_water(verts, colors)
+            if len(opaques_v):
+                vbo, nombre = self.gpu.get(cx, cy, opaques_v, opaques_c, "opaque")
+                vao = self._vaos.get((cx, cy))
+                if vao is None:
+                    vao = self.ctx.vertex_array(
+                        prog,
+                        [(vbo, "3f 3f 1f 1f", "in_pos", "in_normal", "in_color", "in_ao")],
+                    )
+                    self._vaos[(cx, cy)] = vao
+                vao.render()
+                self.quads += nombre // 6
+                vus += 1
+            if len(eau_v):
+                vbo_eau, nombre_eau = self.gpu.get(cx, cy, eau_v, eau_c, "water")
+                self._eau.append((cx, cy, vbo_eau, nombre_eau))
+        self.chunks_visibles = vus
+        self._dessiner_eau(camera, time)
+
+    def _dessiner_eau(self, camera: Camera, time: float) -> None:
+        if not self._eau:
+            return
+        prog = self.water_prog
+        prog["u_mvp"].write(as_uniform(mvp_matrix(camera)))
+        prog["u_time"].value = float(time)
+        prog["u_camera"].value = tuple(float(v) for v in camera.pos)
+        eau = np.array(config.PALETTE[config.BLOCK_COLORS[config.Block.WATER][0]], dtype=np.float32) / 255.0
+        ciel = np.array(config.PALETTE[config.SKY_HORIZON], dtype=np.float32) / 255.0
+        prog["u_water"].value = tuple(float(v) for v in eau)
+        prog["u_sky"].value = tuple(float(v) for v in ciel)
+        self.ctx.depth_mask = False
+        for cx, cy, vbo, nombre in self._eau:
+            vao = self._water_vaos.get((cx, cy))
             if vao is None:
                 vao = self.ctx.vertex_array(
-                    prog,
-                    [(vbo, "3f 3f 1f 1f", "in_pos", "in_normal", "in_color", "in_ao")],
+                    prog, [(vbo, "3f 3f 1x4 1f", "in_pos", "in_normal", "in_ao")]
                 )
-                self._vaos[(cx, cy)] = vao
+                self._water_vaos[(cx, cy)] = vao
             vao.render()
             self.quads += nombre // 6
-            vus += 1
-        self.chunks_visibles = vus
+        self.ctx.depth_mask = True
 
     def _dessiner_ombres(self, camera: Camera) -> None:
         cible = camera.pos + camera.fwd * 20.0
@@ -243,6 +278,9 @@ class GlRenderer:
             vao.release()
         for vao in self._shadow_vaos.values():
             vao.release()
+        for vao in self._water_vaos.values():
+            vao.release()
+        self._water_vaos.clear()
         self._vaos.clear()
         self._shadow_vaos.clear()
 
@@ -251,6 +289,9 @@ class GlRenderer:
             vao.release()
         for vao in self._shadow_vaos.values():
             vao.release()
+        for vao in self._water_vaos.values():
+            vao.release()
+        self._water_vaos.clear()
         self._vaos.clear()
         self._shadow_vaos.clear()
         self.post_vao.release()
@@ -263,5 +304,6 @@ class GlRenderer:
         self._ecran_vbo.release()
         self.terrain_prog.release()
         self.sky_prog.release()
+        self.water_prog.release()
         self.post_prog.release()
         self.gl.close()

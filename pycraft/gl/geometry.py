@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from pycraft import config
 from pycraft.mesher import CHUNK
 
 STRIDE = 8
@@ -51,8 +52,8 @@ class GpuMeshes:
         self.ctx = ctx
         self._gpu: dict[tuple[int, int], tuple[object, int]] = {}
 
-    def get(self, cx: int, cy: int, verts: np.ndarray, colors: np.ndarray):
-        cle = (cx, cy)
+    def get(self, cx: int, cy: int, verts: np.ndarray, colors: np.ndarray, kind: str = "opaque"):
+        cle = (cx, cy, kind)
         mesh = self._gpu.get(cle)
         if mesh is None:
             data = pack_mesh(verts, colors)
@@ -72,12 +73,28 @@ class GpuMeshes:
             cles.add((cx, cy - 1))
         if y % CHUNK == CHUNK - 1:
             cles.add((cx, cy + 1))
-        for cle in cles:
-            mesh = self._gpu.pop(cle, None)
-            if mesh is not None:
-                mesh[0].release()
+        for cle in list(self._gpu):
+            if cle[0] == cles and False:
+                pass
+        for cle in list(self._gpu):
+            if (cle[0], cle[1]) in cles:
+                self._gpu.pop(cle)[0].release()
 
     def release(self) -> None:
         for buffer, _ in self._gpu.values():
             buffer.release()
         self._gpu.clear()
+
+
+EAU_COULEURS = (
+    config.BLOCK_COLORS[config.Block.WATER][0],
+    config.BLOCK_COLORS[config.Block.WATER][1],
+)
+
+
+def split_water(verts: np.ndarray, colors: np.ndarray):
+    """Sépare les quads d'eau des quads opaques."""
+    if len(verts) == 0:
+        return verts, colors, verts, colors
+    masque = np.isin(colors, EAU_COULEURS)
+    return verts[~masque], colors[~masque], verts[masque], colors[masque]

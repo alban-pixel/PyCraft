@@ -123,3 +123,30 @@ def test_ombres_portees_assombrissent_le_sol(pyxel_headless):
         assert lum_avec < lum_sans, "les ombres doivent assombrir"
     finally:
         renderer.close()
+
+
+def test_eau_animee(pyxel_headless):
+    from pycraft.gl.context import GlContext
+    from pycraft.gl.renderer_gl import GlRenderer
+
+    monde = World(sx=32, sy=32, sz=16, seed=0)
+    monde.data = bytearray(len(monde.data))
+    for y in range(32):
+        for x in range(32):
+            for z in range(3):
+                monde.set(x, y, z, Block.STONE)
+    for y in range(10, 22):
+        for x in range(10, 22):
+            monde.set(x, y, 3, Block.WATER)
+
+    gl = GlContext(320, 200)
+    renderer = GlRenderer(monde, ChunkMeshes(monde), 320, 200, view_distance=40, detail_radius=16, gl=gl)
+    try:
+        camera = Camera(16, 14, 10, yaw=0.9, pitch=-0.35, width=320, height=200)
+        renderer.draw(camera, time=0.0)
+        t0 = np.frombuffer(gl.read_indices(), dtype=np.uint8).copy()
+        renderer.draw(camera, time=1.3)
+        t1 = np.frombuffer(gl.read_indices(), dtype=np.uint8).copy()
+        assert (t0 != t1).sum() > 50, "l'eau doit onduler avec le temps"
+    finally:
+        renderer.close()
