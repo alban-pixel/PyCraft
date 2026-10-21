@@ -12,7 +12,7 @@ from pycraft import config
 from pycraft.camera import Camera
 from pycraft.gl.context import GlContext
 from pycraft.gl.geometry import GpuMeshes
-from pycraft.gl.math import as_uniform, mvp_matrix
+from pycraft.gl.math import as_uniform, light_matrix, mvp_matrix
 from pycraft.gl.palette import build_lut, install_palette, lut_as_texture
 from pycraft.mesher import CHUNK, ChunkMeshes, select_mesh
 from pycraft.world import World
@@ -36,6 +36,7 @@ class GlRenderer:
         view_distance: float = config.DEFAULT_VIEW_DISTANCE,
         detail_radius: float = config.DEFAULT_DETAIL_RADIUS,
         gl: GlContext | None = None,
+        shadows: bool = True,
     ) -> None:
         self.world = world
         self.meshes = meshes
@@ -44,10 +45,15 @@ class GlRenderer:
         self.view_distance = float(view_distance)
         self.detail_radius = float(detail_radius)
         self.gl = gl if gl is not None else GlContext(width, height)
+        self.shadows = bool(shadows)
+        # Soleil derrière la caméra : les ombres tombent vers elle et restent visibles.
+        self.sun_dir = np.array([0.45, 0.65, 0.60], dtype=np.float64)
+        self.sun_dir /= np.linalg.norm(self.sun_dir)
         self.ctx = self.gl.ctx
         self.gpu = GpuMeshes(self.ctx)
         self.quads = 0
         self.chunks_visibles = 0
+        self._light_mvp = np.eye(4, dtype=np.float64)
 
         self.palette_size = 16
         try:
@@ -70,6 +76,14 @@ class GlRenderer:
         self.scene_fbo = self.ctx.framebuffer(
             color_attachments=[self.scene_tex], depth_attachment=self.depth
         )
+        # Shadow map en couleur R32F : gl_FragCoord.z est écrit explicitement,
+        # ce qui évite les subtilités de sampling des textures de profondeur.
+        self.shadow_tex = self.ctx.texture((2048, 2048), 1, dtype="f4")
+        self.shadow_tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
+        self._shadow_depth = self.ctx.depth_renderbuffer((2048, 2048))
+        self.shadow_fbo = self.ctx.framebuffer(
+            color_attachments=[self.shadow_tex], depth_attachment=self._shadow_depth
+        )
 
     def _construire_programmes(self) -> None:
         self.sky_prog = self.ctx.program(
@@ -80,6 +94,10 @@ class GlRenderer:
             vertex_shader=_lire("terrain.vert"),
             fragment_shader=_lire("terrain.frag"),
         )
+        self.shadow_prog = self.ctx.program(
+            vertex_shader=_lire("shadow.vert"),
+            fragment_shader=_lire("shadow.frag"),
+        )
         self.post_prog = self.ctx.program(
             vertex_shader=_lire("post.vert"),
             fragment_shader=_lire("post.frag"),
@@ -89,6 +107,7 @@ class GlRenderer:
         self.post_vao = self.ctx.vertex_array(self.post_prog, [(self._ecran_vbo, "2f", "in_pos")])
         self.sky_vao = self.ctx.vertex_array(self.sky_prog, [(self._ecran_vbo, "2f", "in_pos")])
         self._vaos: dict[tuple[int, int], object] = {}
+        self._shadow_vaos: dict[tuple[int, int], object] = {}
 
     def _construire_palette(self) -> None:
         self.lut = build_lut(bits=5)
@@ -133,17 +152,22 @@ class GlRenderer:
         self.scene_fbo.use()
         self.scene_fbo.clear(float(ciel[0]), float(ciel[1]), float(ciel[2]), 1.0)
         self._dessiner_ciel(camera, time)
+        if self.shadows:
+            self._dessiner_ombres(camera)
+        self.scene_fbo.use()
         self.ctx.enable(moderngl.DEPTH_TEST)
 
         prog = self.terrain_prog
         prog["u_mvp"].write(as_uniform(mvp_matrix(camera)))
-        soleil = np.array([0.45, 0.65, 0.60], dtype=np.float32)
-        soleil /= np.linalg.norm(soleil)
-        prog["u_sun"].value = tuple(float(v) for v in soleil)
+        prog["u_sun"].value = tuple(float(v) for v in self.sun_dir)
         prog["u_camera"].value = tuple(float(v) for v in camera.pos)
         prog["u_sky"].value = tuple(float(v) for v in ciel)
         prog["u_fog_start"].value = self.view_distance * 0.65
         prog["u_fog_end"].value = self.view_distance
+        prog["u_shadow_on"].value = 1.0 if self.shadows else 0.0
+        prog["u_light_mvp"].write(as_uniform(self._light_mvp))
+        self.shadow_tex.use(2)
+        prog["u_shadow"].value = 2
 
         self.quads = 0
         vus = 0
@@ -166,6 +190,27 @@ class GlRenderer:
             vus += 1
         self.chunks_visibles = vus
 
+    def _dessiner_ombres(self, camera: Camera) -> None:
+        cible = camera.pos + camera.fwd * 20.0
+        self._light_mvp = light_matrix(cible, self.sun_dir)
+        self.shadow_fbo.use()
+        self.shadow_fbo.clear(1.0, 0.0, 0.0, 1.0)
+        self.ctx.enable(moderngl.DEPTH_TEST)
+        prog = self.shadow_prog
+        prog["u_light_mvp"].write(as_uniform(self._light_mvp))
+        for cx, cy, distance in self._chunks_visibles(camera):
+            verts, colors = select_mesh(self.meshes, cx, cy, distance, self.detail_radius, True)
+            if len(verts) == 0:
+                continue
+            vbo, _ = self.gpu.get(cx, cy, verts, colors)
+            vao = self._shadow_vaos.get((cx, cy))
+            if vao is None:
+                vao = self.ctx.vertex_array(
+                    prog, [(vbo, "3f 3x4 1x4 1x4", "in_pos")]
+                )
+                self._shadow_vaos[(cx, cy)] = vao
+            vao.render()
+
     def _dessiner_ciel(self, camera: Camera, time: float) -> None:
         self.ctx.disable(moderngl.DEPTH_TEST)
         prog = self.sky_prog
@@ -174,9 +219,7 @@ class GlRenderer:
         prog["u_fwd"].value = tuple(float(v) for v in camera.fwd)
         prog["u_res"].value = (float(self.width), float(self.height))
         prog["u_focal"].value = float(camera.focal)
-        soleil = np.array([0.45, 0.65, 0.60], dtype=np.float32)
-        soleil /= np.linalg.norm(soleil)
-        prog["u_sun"].value = tuple(float(v) for v in soleil)
+        prog["u_sun"].value = tuple(float(v) for v in self.sun_dir)
         hor = np.array(config.PALETTE[config.SKY_HORIZON], dtype=np.float32) / 255.0
         zen = np.array(config.PALETTE[config.SKY_TOP], dtype=np.float32) / 255.0
         prog["u_horizon"].value = tuple(float(v) for v in hor)
@@ -198,12 +241,18 @@ class GlRenderer:
         self.gpu.invalidate(x, y)
         for vao in self._vaos.values():
             vao.release()
+        for vao in self._shadow_vaos.values():
+            vao.release()
         self._vaos.clear()
+        self._shadow_vaos.clear()
 
     def close(self) -> None:
         for vao in self._vaos.values():
             vao.release()
+        for vao in self._shadow_vaos.values():
+            vao.release()
         self._vaos.clear()
+        self._shadow_vaos.clear()
         self.post_vao.release()
         self.sky_vao.release()
         self.gpu.release()

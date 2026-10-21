@@ -89,3 +89,37 @@ def test_ciel_degrade_etoiles_et_soleil(pyxel_headless):
         assert haut != bas, "zénith et horizon doivent différer"
     finally:
         renderer.close()
+
+
+def test_ombres_portees_assombrissent_le_sol(pyxel_headless):
+    from pycraft.gl.context import GlContext
+    from pycraft.gl.palette import PALETTE
+    from pycraft.gl.renderer_gl import GlRenderer
+
+    monde = World(sx=32, sy=32, sz=16, seed=0)
+    monde.data = bytearray(len(monde.data))
+    for y in range(32):
+        for x in range(32):
+            for z in range(4):
+                monde.set(x, y, z, Block.STONE)
+    for z in range(4, 14):  # tour qui projette une ombre
+        monde.set(18, 17, z, Block.STONE)
+
+    gl = GlContext(320, 200)
+    renderer = GlRenderer(monde, ChunkMeshes(monde), 320, 200, view_distance=40, detail_radius=16, gl=gl)
+    try:
+        camera = Camera(16, 16, 9, yaw=0.85, pitch=-0.35, width=320, height=200)
+        renderer.shadows = True
+        renderer.draw(camera)
+        avec = np.frombuffer(gl.read_indices(), dtype=np.uint8).copy()
+        renderer.shadows = False
+        renderer.draw(camera)
+        sans = np.frombuffer(gl.read_indices(), dtype=np.uint8).copy()
+
+        diff = np.abs(avec.astype(int) - sans.astype(int))
+        assert diff.sum() > 100, "les ombres doivent changer l'image"
+        lum_avec = PALETTE[avec].astype(float).mean()
+        lum_sans = PALETTE[sans].astype(float).mean()
+        assert lum_avec < lum_sans, "les ombres doivent assombrir"
+    finally:
+        renderer.close()

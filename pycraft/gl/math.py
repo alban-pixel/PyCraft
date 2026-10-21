@@ -61,3 +61,41 @@ def project_with_matrix(camera: Camera, point: tuple[float, float, float]) -> tu
     sx = (ndc[0] + 1.0) / 2.0 * camera.width
     sy = (1.0 - (ndc[1] + 1.0) / 2.0) * camera.height
     return float(sx), float(sy), float(clip[3])
+
+
+def look_at_view(eye: np.ndarray, target: np.ndarray, up=(0.0, 0.0, 1.0)) -> np.ndarray:
+    """Vue « regarde vers target », même convention que Camera (z = avant)."""
+    f = np.asarray(target, dtype=np.float64) - eye
+    f = f / np.linalg.norm(f)
+    up_v = np.asarray(up, dtype=np.float64)
+    s = np.cross(f, up_v)
+    if np.linalg.norm(s) < 1e-6:
+        s = np.cross(f, np.array([0.0, 1.0, 0.0]))
+    s = s / np.linalg.norm(s)
+    u = np.cross(s, f)
+    mat = np.eye(4, dtype=np.float64)
+    mat[0, :3] = s
+    mat[1, :3] = u
+    mat[2, :3] = f
+    mat[:3, 3] = (-s @ eye, -u @ eye, -f @ eye)
+    return mat
+
+
+def ortho_matrix(radius: float, near: float, far: float) -> np.ndarray:
+    """Projection orthographique carrée ; profondeur croissante de near à far."""
+    m = np.zeros((4, 4), dtype=np.float64)
+    m[0, 0] = 1.0 / radius
+    m[1, 1] = 1.0 / radius
+    m[2, 2] = 2.0 / (far - near)
+    m[2, 3] = -(far + near) / (far - near)
+    m[3, 3] = 1.0
+    return m
+
+
+def light_matrix(
+    target: np.ndarray, sun: np.ndarray, radius: float = 70.0, distance: float = 140.0
+) -> np.ndarray:
+    """Matrice monde → clip de la lumière (soleil directionnel)."""
+    sun = np.asarray(sun, dtype=np.float64)
+    eye = np.asarray(target, dtype=np.float64) + sun * distance
+    return ortho_matrix(radius, 1.0, distance + radius * 2.0) @ look_at_view(eye, target)
