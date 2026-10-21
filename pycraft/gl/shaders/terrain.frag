@@ -65,7 +65,7 @@ void main() {
     float motif = 0.0;
     if (mat == 1) {
         // herbe : brins verticaux sur les côtés, grain sur le dessus
-        motif = dessus ? 0.0 : (hash12(vec2(cell.x, 5.0)) - 0.5);
+        motif = dessus ? 0.0 : (hash12(vec2(cell.x, 5.0)) - 0.5) * 1.6;
     } else if (mat == 2) {
         // planches : toute la rangée partage le même ton
         motif = hash12(vec2(5.0, cell.y)) - 0.5;

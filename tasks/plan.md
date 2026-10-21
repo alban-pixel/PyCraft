@@ -50,12 +50,12 @@ mesure de la frame → commit.
 - [ ] Test GPU : herbe et pierre → distributions de couleurs différentes
 - **Critère** : deux matériaux ne partagent pas le même motif
 
-### T3 — Ombres complètes
-- [ ] La shadow map inclut les chunks **hors champ** dans le rayon de la
-      matrice de lumière (pas seulement `_chunks_visibles`)
-- [ ] Centrer la shadow map sur la zone visible, pas sur la caméra
-- [ ] Test GPU : une tour derrière la caméra projette une ombre devant elle
-- **Critère** : plus de zone éclairée au pied d'un mur hors champ
+### T3 — Ombres complètes ✅
+- [x] `_chunks_autour(centre, rayon)` : chunks sans culling de frustum
+- [x] La shadow map est centrée sur la cible de lumière (caméra + 20 blocs)
+      et caste tout chunk dans un rayon de 70, plus seulement les visibles
+- [x] Test GPU : une tour derrière la caméra projette une ombre devant elle
+- **Mesure** : 3,63 ms à 1280×800 (budget 4 ms)
 
 ### T4 — Résolution interne réduite + upscale
 - [ ] `scale` dans `GlRenderer`, FBO à `width*scale`

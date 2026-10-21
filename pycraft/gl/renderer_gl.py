@@ -164,6 +164,22 @@ class GlRenderer:
                         continue
                 yield cx, cy, distance
 
+    def _chunks_autour(self, centre, rayon: float):
+        """Chunks dans un rayon autour d'un point, sans culling de frustum.
+
+        Sert aux ombres : un casteur situé derrière la caméra doit projeter son
+        ombre devant elle, même s'il n'est pas visible à l'écran.
+        """
+        x_min = max(0, int((centre[0] - rayon) // CHUNK))
+        x_max = min((self.world.sx - 1) // CHUNK, int((centre[0] + rayon) // CHUNK))
+        y_min = max(0, int((centre[1] - rayon) // CHUNK))
+        y_max = min((self.world.sy - 1) // CHUNK, int((centre[1] + rayon) // CHUNK))
+        for cy in range(y_min, y_max + 1):
+            for cx in range(x_min, x_max + 1):
+                dx = cx * CHUNK + CHUNK / 2 - centre[0]
+                dy = cy * CHUNK + CHUNK / 2 - centre[1]
+                yield cx, cy, math.hypot(dx, dy)
+
     # ------------------------------------------------------------------
     def draw(self, camera: Camera, selection=None, time: float = 0.0) -> None:
         self._temps = time
@@ -275,7 +291,8 @@ class GlRenderer:
         self.ctx.enable(moderngl.DEPTH_TEST)
         prog = self.shadow_prog
         prog["u_light_mvp"].write(as_uniform(self._light_mvp))
-        for cx, cy, distance in self._chunks_visibles(camera):
+        rayon = min(self.view_distance, 70.0)
+        for cx, cy, distance in self._chunks_autour(cible, rayon):
             verts, colors = select_mesh(self.meshes, cx, cy, distance, self.detail_radius, True)
             if len(verts) == 0:
                 continue

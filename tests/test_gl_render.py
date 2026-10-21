@@ -301,7 +301,7 @@ def _rendu_motif(bloc, mur=False, largeur=320, hauteur=200):
             for x in range(32):
                 for z in range(10):
                     monde.set(x, y, 8, bloc)
-        camera = Camera(16, 6, 9.5, yaw=1.35, pitch=0.0, width=largeur, height=hauteur)
+        camera = Camera(16, 6, 5.0, yaw=math.pi / 2, pitch=0.0, width=largeur, height=hauteur)
     else:
         for y in range(32):
             for x in range(32):
@@ -349,3 +349,44 @@ def test_textures_par_materiau(pyxel_headless):
     assert ecart["pierre"] > 0.15, "les éclats doivent modifier le dessus de la pierre"
     # Deux matériaux ne doivent pas réagir de la même façon au même changement.
     assert abs(ecart["bois"] - ecart["pierre"]) > 0.05, "bois et pierre partagent le même motif"
+
+
+def test_ombre_d_un_casteur_hors_champ(pyxel_headless):
+    """Une tour derrière la caméra doit projeter son ombre devant elle."""
+    from pycraft.gl.context import GlContext
+    from pycraft.gl.palette import PALETTE
+    from pycraft.gl.renderer_gl import GlRenderer
+
+    monde = World(sx=48, sy=48, sz=16, seed=0)
+    monde.data = bytearray(len(monde.data))
+    for y in range(48):
+        for x in range(48):
+            for z in range(2):
+                monde.set(x, y, z, Block.STONE)
+    # Tour derrière la caméra : jamais dans le frustum de la caméra.
+    for z in range(2, 14):
+        for dy in (0, 1):
+            for dx in (0, 1):
+                monde.set(33 + dx, 33 + dy, z, Block.STONE)
+
+    gl = GlContext(320, 200)
+    renderer = GlRenderer(
+        monde, ChunkMeshes(monde), 320, 200, view_distance=48, detail_radius=100, gl=gl
+    )
+    try:
+        # La caméra regarde vers -x,-y : la tour à (33,33) est derrière elle,
+        # mais son ombre tombe vers (28,28), donc devant la caméra.
+        camera = Camera(28, 28, 6, yaw=math.pi + 0.9, pitch=-0.45,
+                        width=320, height=200)
+        renderer.shadows = True
+        renderer.draw(camera, time=30.0)
+        avec = np.frombuffer(gl.read_indices(), np.uint8).copy()
+        renderer.shadows = False
+        renderer.draw(camera, time=30.0)
+        sans = np.frombuffer(gl.read_indices(), np.uint8).copy()
+
+        changes = int((avec != sans).sum())
+        assert changes > 200, "l'ombre d'une tour hors champ doit être visible"
+        assert PALETTE[avec].astype(float).mean() < PALETTE[sans].astype(float).mean()
+    finally:
+        renderer.close()
