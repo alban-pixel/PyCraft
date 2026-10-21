@@ -6,7 +6,15 @@ Le rendu 3D est calculé par le **GPU** (OpenGL 4.1 via moderngl) : ombres port�
 eau animée, ciel dégradé, brouillard, cycle jour/nuit et pluie. Le résultat est
 quantifié sur une palette de **256 couleurs** puis affiché par
 [Pyxel](https://github.com/kitao/pyxel), qui gère la fenêtre, les entrées, le HUD
-et le son. Un renderer **CPU** reste disponible en secours (`--cpu`).
+et le son.
+
+> **Limite connue (macOS, Pyxel 2.9.9)** : le renderer GPU (moderngl/OpenGL)
+> produit des frames correctes — les tests et les captures le vérifient — mais
+> la fenêtre Pyxel cesse de se rafraîchir dès qu'il dessine. Le jeu utilise donc
+> le renderer **CPU** par défaut ; `--gpu` permet de comparer. La cause est
+> isolée : créer un framebuffer sur le contexte OpenGL fait cesser la
+> présentation de la fenêtre, et un contexte créé après `pyxel.init` ne peut
+> plus créer de buffers.
 
 On marche, on regarde autour de soi, on **casse** et on **pose** des blocs dans un
 monde généré de 256×256 blocs.
@@ -50,7 +58,8 @@ python3 -m venv .venv
 | `--detail N` | `24` | rayon du maillage détaillé (LOD) |
 | `--no-lod` | — | tout en maillage détaillé (plus joli, plus lent) |
 | `--seed N` | `0` | graine du monde |
-| `--cpu` | — | force le renderer CPU (sans OpenGL) |
+| `--cpu` | — | renderer CPU (défaut) |
+| `--gpu` | — | force le renderer GPU (rendu correct mais fenêtre figée sur macOS, voir plus bas) |
 | `--no-shadows` | — | désactive les ombres portées |
 | `--weather` | — | active la pluie |
 | `--scale` | `1.0` | résolution interne du rendu GPU (0.25 à 1.0) : plus bas = plus rétro et plus rapide, agrandi en nearest |

@@ -53,10 +53,16 @@ def test_options_gpu():
     assert args.no_shadows is True
 
 
-def test_gpu_par_defaut():
+def test_cpu_par_defaut():
+    """Le renderer CPU est le défaut : le GPU ne s'affiche pas sur macOS."""
     args = main.parse_args([])
     assert args.cpu is False
+    assert args.gpu is False
     assert args.no_shadows is False
+
+
+def test_option_gpu():
+    assert main.parse_args(["--gpu"]).gpu is True
 
 
 def test_option_meteo():

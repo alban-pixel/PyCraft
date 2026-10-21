@@ -68,7 +68,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="désactive le LOD (tout en maillage détaillé, plus lent)",
     )
     parser.add_argument("--seed", type=int, default=0, help="graine du monde (défaut : 0)")
-    parser.add_argument("--cpu", action="store_true", help="force le renderer CPU (sans OpenGL)")
+    parser.add_argument(
+        "--cpu",
+        action="store_true",
+        help="renderer CPU (par défaut ; le renderer GPU ne s'affiche pas sur macOS)",
+    )
+    parser.add_argument(
+        "--gpu",
+        action="store_true",
+        help="force le renderer GPU (rendu correct, mais fenêtre figée sur macOS)",
+    )
     parser.add_argument("--no-shadows", action="store_true", help="désactive les ombres (GPU)")
     parser.add_argument("--weather", action="store_true", help="active la pluie (GPU)")
     parser.add_argument(
@@ -347,7 +356,7 @@ def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     width, height = args.res
     gl = None
-    if not args.cpu:
+    if args.gpu:
         try:
             from pycraft.gl.context import GlContext
 
