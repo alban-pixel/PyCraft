@@ -118,7 +118,7 @@ def construire(
         "stats": False,
         "aide": True,
         "aide_manuel": False,
-        "aide_fin": maintenant + 8.0,
+        "aide_fin": maintenant + 5.0,
     }
 
 
@@ -151,7 +151,7 @@ def update() -> None:
         if pyxel.btnp(pyxel.KEY_RETURN) or pyxel.btnp(pyxel.KEY_SPACE):
             etat["ecran"] = "jeu"
             etat["aide"] = True
-            etat["aide_fin"] = maintenant + 8.0
+            etat["aide_fin"] = maintenant + 5.0
         return
 
     if pyxel.btnp(pyxel.KEY_R):
@@ -162,7 +162,7 @@ def update() -> None:
     if pyxel.btnp(pyxel.KEY_H):
         etat["aide"] = not etat["aide"]
         etat["aide_manuel"] = etat["aide"]
-        etat["aide_fin"] = maintenant + 8.0
+        etat["aide_fin"] = maintenant + 5.0
     if etat["aide"] and not etat["aide_manuel"] and maintenant > etat["aide_fin"]:
         etat["aide"] = False
 

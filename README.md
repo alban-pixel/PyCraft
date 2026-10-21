@@ -1,10 +1,12 @@
 # PyCraft
 
-Un monde de blocs en 3D, en vue première personne, rendu avec les primitives
-**2D** de [Pyxel](https://github.com/kitao/pyxel) — projet NSI.
+Un monde de blocs en **vraie 3D**, en vue première personne, rendu avec les
+primitives **2D** de [Pyxel](https://github.com/kitao/pyxel) — projet NSI.
 
-> État : en construction. Le monde et le rendu arrivent tâche par tâche
-> (voir [tasks/plan.md](tasks/plan.md)).
+On marche, on regarde autour de soi, on **casse** et on **pose** des blocs dans un
+monde généré de 256×256 blocs.
+
+![PyCraft en jeu](docs/images/pycraft_hud.png)
 
 ## Installation
 
@@ -17,8 +19,22 @@ python3 -m venv .venv
 
 ```bash
 .venv/bin/python main.py
-.venv/bin/python main.py --res 1920x1200 --dist 120
+.venv/bin/python main.py --res 1920x1200 --dist 120 --seed 42
 ```
+
+## Commandes
+
+| Touche | Action |
+|---|---|
+| ZQSD | se déplacer |
+| Souris / flèches | regarder autour |
+| Clic gauche | casser le bloc visé |
+| Clic droit | poser le bloc actif |
+| 1 / 2 / 3 | choisir herbe / pierre / bois |
+| `R` | nouveau monde (graine + 1) |
+| `H` | aide |
+| `F3` | fps, quads, chunks, graine |
+| `Échap` | quitter |
 
 ## Options
 
@@ -30,40 +46,56 @@ python3 -m venv .venv
 | `--no-lod` | — | tout en maillage détaillé (plus joli, plus lent) |
 | `--seed N` | `0` | graine du monde |
 
-## Benchmark
+## Tests et benchmark
 
 ```bash
+.venv/bin/python -m pytest -q
 .venv/bin/python tools/bench.py --res 1280x800 --dist 96
-.venv/bin/python tools/bench.py --res 1920x1200 --dist 120 --frames 120
 ```
 
-Mesures sur Mac arm64 (monde 256×256×32) :
+Mesures sur Mac arm64 (monde 256×256×32, fenêtre réelle) :
 
 | Configuration | Frame moyenne | p95 | fps max |
 |---|---|---|---|
 | 1280×800, distance 96 | **3,44 ms** | 3,46 ms | 291 |
 | 1920×1200, distance 120 | **5,29 ms** | 5,56 ms | 189 |
 
-## Tests
+## Comment ça marche
 
-```bash
-.venv/bin/python -m pytest -q
-```
+Pyxel ne sait dessiner que des triangles, des rectangles et des sprites en 2D.
+La 3D est donc entièrement calculée en Python :
+
+1. **Monde** : un `bytearray` de 256×256×32, découpé en chunks de 16×16.
+2. **Maillage** : chaque chunk garde la liste de ses faces visibles, en cache.
+   Deux niveaux de détail : une face par bloc près de la caméra, faces
+   fusionnées (*greedy meshing*) au loin.
+3. **Projection** : chaque face est transformée dans l'espace caméra (numpy),
+   découpée au plan proche, puis projetée à l'écran.
+4. **Tri du peintre** : les faces sont dessinées de la plus lointaine à la plus
+   proche, en `pyxel.tri`.
+
+Détails, formules et choix de performance : [docs/technique.md](docs/technique.md).
 
 ## Structure
 
 ```
-main.py          → point d'entrée (arguments, boucle Pyxel)
-pycraft/         → monde, maillage, caméra, rendu, joueur, HUD
-tests/           → tests unitaires (sans fenêtre)
-tools/           → benchmark
-docs/            → intention, idées, documentation technique
-SPEC.md          → spécification approuvée
+main.py          → point d'entrée (arguments, boucle Pyxel, entrées)
+pycraft/
+  config.py      → constantes, palette, types de blocs
+  world.py       → monde voxel (bytearray), génération, lacs, arbres
+  mesher.py      → maillages détail + greedy, cache par chunk
+  camera.py      → caméra, projection, clipping du plan proche
+  renderer.py    → ciel, brouillard, tri et dessin
+  player.py      → déplacement, collisions, raycast, casser/poser
+  hud.py         → réticule, hotbar, aide, écran titre, stats
+tests/           → 85 tests unitaires (sans fenêtre)
+tools/bench.py   → benchmark reproductible
 ```
 
 ## Documents
 
-- [SPEC.md](SPEC.md) — spécification (objectif, commandes, critères de succès)
+- [SPEC.md](SPEC.md) — spécification approuvée
+- [docs/technique.md](docs/technique.md) — comment la 3D est calculée
 - [docs/intent/pycraft.md](docs/intent/pycraft.md) — intention du projet
 - [docs/ideas/pycraft.md](docs/ideas/pycraft.md) — direction technique et mesures
-- [tasks/plan.md](tasks/plan.md) — plan d'implémentation
+- [tasks/plan.md](tasks/plan.md) · [tasks/todo.md](tasks/todo.md) — plan et suivi
