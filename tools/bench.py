@@ -47,8 +47,8 @@ def main() -> None:
         width,
         height,
         view_distance=args.dist,
-        detail_radius=args.detail,
-        use_detail=not args.no_lod,
+        detail_radius=float(args.detail) if not args.no_lod else float("inf"),
+        use_detail=True,
     )
     chargement = (time.perf_counter() - t0) * 1000
 

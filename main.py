@@ -93,14 +93,16 @@ def construire(
     x, y, z = monde.spawn_point()
     joueur = Player(x, y, z, yaw=0.6, pitch=-0.18)
     camera = Camera(x, y, z + joueur.eye, yaw=0.6, pitch=-0.18, width=width, height=height)
+    # --no-lod : un seul niveau de détail, le maillage détaillé partout.
+    rayon_detail = float(detail) if lod else float("inf")
     renderer = Renderer(
         monde,
         maillages,
         width,
         height,
         view_distance=distance,
-        detail_radius=detail,
-        use_detail=lod,
+        detail_radius=rayon_detail,
+        use_detail=True,
     )
     maintenant = time.perf_counter()
     return {
