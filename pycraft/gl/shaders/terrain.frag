@@ -17,6 +17,17 @@ uniform float u_shadow_on;
 
 out vec4 frag_color;
 
+float hash12(vec2 p) {
+    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+vec2 uv_texture(vec3 n, vec3 p) {
+    vec3 a = abs(n);
+    if (a.z > 0.5) return p.xy;
+    if (a.x > 0.5) return p.yz;
+    return p.xz;
+}
+
 float facteur_ombre(vec3 world) {
     if (u_shadow_on < 0.5) {
         return 1.0;
@@ -43,6 +54,10 @@ float facteur_ombre(vec3 world) {
 void main() {
     vec3 base = u_colors[int(v_color + 0.5)];
     vec3 n = normalize(v_normal);
+    // Texture procédurale : moucheture 8×8 par bloc, stable dans le monde.
+    vec2 tu = floor(uv_texture(n, v_world) * 8.0);
+    float grain = hash12(tu);
+    base *= 0.86 + 0.26 * grain;
     float diffuse = max(dot(n, u_sun), 0.0);
     float ciel = 0.5 + 0.5 * n.z;          // éclairage d'ambiance hémisphérique
     float light = 0.30 + 0.40 * diffuse + 0.36 * ciel;

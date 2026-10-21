@@ -150,3 +150,24 @@ def test_eau_animee(pyxel_headless):
         assert (t0 != t1).sum() > 50, "l'eau doit onduler avec le temps"
     finally:
         renderer.close()
+
+
+def test_textures_procedurales(pyxel_headless):
+    from pycraft.gl.context import GlContext
+    from pycraft.gl.renderer_gl import GlRenderer
+
+    monde = World(sx=16, sy=16, sz=8, seed=0)
+    monde.data = bytearray(len(monde.data))
+    for y in range(16):
+        for x in range(16):
+            for z in range(4):
+                monde.set(x, y, z, Block.STONE)
+    gl = GlContext(320, 200)
+    renderer = GlRenderer(monde, ChunkMeshes(monde), 320, 200, view_distance=20, detail_radius=8, gl=gl)
+    try:
+        camera = Camera(8, 8, 6, yaw=0.0, pitch=-0.6, width=320, height=200)
+        renderer.draw(camera)
+        data = gl.read_indices()
+        assert len(set(data)) >= 4, "le sol doit être texturé, pas uni"
+    finally:
+        renderer.close()
