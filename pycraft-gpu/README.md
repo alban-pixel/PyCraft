@@ -21,6 +21,7 @@ a real graphics card driver.
 - Walking, sprinting, jumping, swimming and flying
 - An 8-minute day and night cycle, with a sun, a moon and sunsets
 - A title screen, a pause menu and a block inventory
+- Settings: resolution, frame rate and music
 - Saving: the game saves when you leave through the menu, and every 2 minutes
 - Sound effects and generated background music
 
@@ -38,13 +39,31 @@ a real graphics card driver.
 | Right click | Place block |
 | 1-9 / mouse wheel | Choose a hotbar slot |
 | E | All blocks: click one to put it in the selected slot |
-| Esc | Pause menu (music on/off, save and quit) |
+| Esc | Pause menu (settings, save and quit) |
 | Tab | Release / capture the mouse |
 | F3 | FPS, position, time and seed |
 | H | Show / hide help |
 
 The save file is in Pyxel's user data folder (`pyxel.user_data_dir("PyCraft", "PyCraft GPU")`).
 Closing the window with its X button keeps only the last automatic save.
+
+## Settings
+
+Open **Settings** from the title screen or the pause menu. Click a setting (or press Right) for its
+next value, right-click it (or press Left) for the previous one. Changes apply right away and are
+saved in `settings.json`, next to the save file.
+
+| Setting | Values |
+|---|---|
+| Resolution | 320x180 (default), 384x216, 480x270, 640x360, 800x450, 960x540 |
+| Frame rate | 30, 60 (default), 75, 120, 144, 165, 240 FPS |
+| Music | on / off |
+
+A higher resolution makes the 3D view sharper. The HUD and menus keep the same size in pixels, so
+they look smaller. The mouse turns the same amount for the same hand movement at every resolution.
+
+The frame rate is the number of frames the game draws per second. It's useful above 60 only if
+your screen's refresh rate (set in your system's display settings) is that high too.
 
 ## How it works
 
@@ -68,6 +87,11 @@ color cube used by the 3D view, then 24 greys. Transparency uses dithering: leav
 their see-through pixels, and water skips every other pixel in a checkerboard.
 
 When a block changes, only its chunk (and a neighbor chunk if it is on the border) is rebuilt.
+
+Pyxel's frame rate can't change once its window is open, so the game starts Pyxel with a very high
+one and paces the frames itself (`App.run`, with `pyxel.flip`). Movement uses the real time between
+frames, so the game runs at the same speed at any frame rate. The resolution changes with
+`pyxel.resize`, and the renderer then makes a new off-screen image of the same size.
 
 ## Limits
 

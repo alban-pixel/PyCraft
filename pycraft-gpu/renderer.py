@@ -159,8 +159,8 @@ class Renderer:
     def __init__(self, ctx, world, atlas, width, height, fov=70):
         """ctx must be created before pyxel.init, so Pyxel's own OpenGL context ends up current."""
         self.ctx = ctx
-        self.size = (width, height)
-        self.projection = perspective(fov, width / height, 0.05, 300)
+        self.fov = fov
+        self.fbo = None
         self.chunks = {}
         # Lighting and sky, changed by the game every frame (see set_environment)
         self.light = 1.0
@@ -175,14 +175,24 @@ class Renderer:
             self.texture = ctx.texture((atlas.shape[1], atlas.shape[0]), 4, atlas.tobytes())
             self.texture.filter = (moderngl.NEAREST, moderngl.NEAREST)
             self.program["atlas"] = 0
-            color = ctx.texture((width, height), 1, dtype="f1")
-            depth = ctx.depth_renderbuffer((width, height))
-            self.fbo = ctx.framebuffer(color_attachments=[color], depth_attachment=depth)
             sky_quad = ctx.buffer(np.array([-1, -1, 1, -1, -1, 1, 1, 1], dtype="f4").tobytes())
             self.sky_vao = ctx.vertex_array(self.sky_program, [(sky_quad, "2f", "in_pos")])
             self.outline_vbo = ctx.buffer(reserve=24 * 3 * 4)
             self.outline_vao = ctx.vertex_array(self.outline_program, [(self.outline_vbo, "3f", "in_pos")])
+        self.resize(width, height)
         self.set_world(world)
+
+    def resize(self, width, height):
+        """Draw frames of a new size (when the resolution setting changes)."""
+        self.size = (width, height)
+        self.projection = perspective(self.fov, width / height, 0.05, 300)
+        with self.ctx:
+            if self.fbo:
+                for obj in (*self.fbo.color_attachments, self.fbo.depth_attachment, self.fbo):
+                    obj.release()
+            color = self.ctx.texture((width, height), 1, dtype="f1")
+            depth = self.ctx.depth_renderbuffer((width, height))
+            self.fbo = self.ctx.framebuffer(color_attachments=[color], depth_attachment=depth)
 
     def set_world(self, world):
         """Use a new world (after loading or generating one) and build all of its chunks."""
