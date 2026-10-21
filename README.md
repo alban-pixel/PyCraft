@@ -1,66 +1,45 @@
-# NSI-Game
+# PyCraft
 
-Base de projet Python pour un jeu vidéo rétro avec **[Pyxel](https://github.com/kitao/pyxel)**.
+Un monde de blocs en 3D, en vue première personne, rendu avec les primitives
+**2D** de [Pyxel](https://github.com/kitao/pyxel) — projet NSI.
 
-## Prérequis
-
-- Python 3.10+ (testé avec Python 3.14)
-- Un environnement virtuel `.venv` déjà créé à la racine du projet
+> État : en construction. Le monde et le rendu arrivent tâche par tâche
+> (voir [tasks/plan.md](tasks/plan.md)).
 
 ## Installation
 
 ```bash
-# Depuis la racine du projet
-source .venv/bin/activate          # macOS / Linux
-pip install -r requirements.txt    # installe pyxel
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt -r requirements-dev.txt
 ```
 
-*(Windows : `.venv\Scripts\activate` puis `pip install -r requirements.txt`)*
-
-## Lancer le jeu
+## Lancer
 
 ```bash
-source .venv/bin/activate
-python main.py
+.venv/bin/python main.py
+.venv/bin/python main.py --res 1920x1200 --dist 120
 ```
 
-Sans activer le venv, on peut aussi faire : `.venv/bin/python main.py`
+## Tests
 
-## Commandes
-
-| Touche                  | Action              |
-| ----------------------- | ------------------- |
-| Flèches / ZQSD / WASD   | Déplacer le vaisseau|
-| Espace                  | Tirer               |
-| R                       | Recommencer         |
-| Échap                   | Quitter             |
-
-## Structure du projet
-
-```
-NSI-Game/
-├── .venv/            # environnement virtuel (non versionné)
-├── main.py           # point d'entrée + jeu
-├── requirements.txt  # dépendances (pyxel)
-├── .gitignore
-└── README.md
+```bash
+.venv/bin/python -m pytest -q
 ```
 
-## Comment ça marche
+## Structure
 
-Pyxel fonctionne avec deux fonctions appelées automatiquement à chaque image (30 FPS ici) :
+```
+main.py          → point d'entrée (arguments, boucle Pyxel)
+pycraft/         → monde, maillage, caméra, rendu, joueur, HUD
+tests/           → tests unitaires (sans fenêtre)
+tools/           → benchmark
+docs/            → intention, idées, documentation technique
+SPEC.md          → spécification approuvée
+```
 
-- `update()` : la **logique** (lecture des touches, déplacement, collisions)
-- `draw()` : l'**affichage** (dessin des formes)
+## Documents
 
-Dans `main.py` :
-
-- `Jeu` contient l'état de la partie (vaisseau, tirs, étoiles, score).
-- `Etoile` et `Tir` sont des petites classes d'objets du jeu.
-- La classe `Jeu` est prête à être enrichie (ennemis, collision tir–ennemi via `pyxel.pget`, score).
-
-## Idées pour aller plus loin
-
-- Ajouter des ennemis qui descendent et détecter les collisions avec les tirs.
-- Ajouter des sons avec `pyxel.sounds` et `pyxel.play`.
-- Créer des sprites dans l'éditeur Pyxel et les afficher avec `pyxel.blt`.
+- [SPEC.md](SPEC.md) — spécification (objectif, commandes, critères de succès)
+- [docs/intent/pycraft.md](docs/intent/pycraft.md) — intention du projet
+- [docs/ideas/pycraft.md](docs/ideas/pycraft.md) — direction technique et mesures
+- [tasks/plan.md](tasks/plan.md) — plan d'implémentation
