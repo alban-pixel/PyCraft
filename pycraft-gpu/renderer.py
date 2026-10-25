@@ -646,13 +646,15 @@ class Renderer:
         near_vp = perspective(self.fov, aspect, 0.05, 6000) @ view
         cam = tuple(float(c) for c in eye)
         fog_color, fog_density, fog_start, fog_end = self.fog
-        for p in (self.program, self.lod_program):
-            p["light"] = self.light
-            p["fog_color"] = fog_color
-            p["fog_density"] = fog_density
-            p["fog_start"] = fog_start
-            p["fog_end"] = fog_end
+        # Every OpenGL call, setting shader values included, must happen inside `with self.ctx`:
+        # outside it, Pyxel's own context is the current one (with a window; not in headless tests)
         with self.ctx:
+            for p in (self.program, self.lod_program):
+                p["light"] = self.light
+                p["fog_color"] = fog_color
+                p["fog_density"] = fog_density
+                p["fog_start"] = fog_start
+                p["fog_end"] = fog_end
             if self.chunks.ready_changed:
                 self.chunks.ready_texture.write(self.chunks.ready.tobytes())
                 self.chunks.ready_changed = False
