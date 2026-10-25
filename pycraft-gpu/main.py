@@ -1,4 +1,5 @@
 """PyCraft GPU: a Minecraft-like game. OpenGL draws the 3D world, Pyxel shows it and runs everything else."""
+import ctypes
 import json
 import math
 import os
@@ -13,18 +14,20 @@ import pyxel
 from blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, PLACEABLE, T_WATER, TILE, TINT_ALPHA,
                     UNBREAKABLE, WATER, build_atlas)
 from player import Player
-from renderer import Renderer
+from renderer import FIXED_COLORS, Renderer, oklab_to_srgb, srgb_to_oklab
 from terrain import SEA_LEVEL
+from ui import Ui
 from world import World
 
 BASE_WIDTH, BASE_HEIGHT = 320, 180  # the menus and the mouse speed are designed for this size
-RESOLUTIONS = [(320, 180), (384, 216), (480, 270), (640, 360), (800, 450), (960, 540)]
+RESOLUTIONS = [(320, 180), (384, 216), (480, 270), (640, 360), (800, 450), (960, 540), (1280, 720), (1600, 900),
+               (1920, 1080), (2560, 1440)]
 FRAME_RATES = [30, 60, 75, 120, 144, 165, 240]
 RENDER_DISTANCES = [4, 6, 8, 10, 12]  # in chunks of 16 blocks; the distant terrain goes on beyond
-DEFAULT_SETTINGS = {"resolution": (320, 180), "fps": 60, "render_distance": 8, "music": True}
+DEFAULT_SETTINGS = {"resolution": (1280, 720), "fps": 60, "render_distance": 8, "fancy": True, "music": True}
 SAVE_FILE = "world2.npz"  # "world.npz" holds a world of the older, smaller version: left alone
 LOADING_RADIUS = 2  # chunks around the player that must be ready before playing
-HAZE = 1 / 7000  # share of light lost per block of distance: far mountains fade into the sky
+HAZE = 1 / 4500  # share of light lost per block of distance: far mountains fade into the sky
 FOG_START, FOG_END = 6000.0, 8000.0  # where the distant terrain ends
 MAX_DT = 1 / 30  # longest time step: slower frames slow the game down instead of making the player skip
 REACH = 6.0
@@ -41,6 +44,13 @@ NIGHT_ZENITH, NIGHT_HORIZON = (0.01, 0.01, 0.06), (0.06, 0.08, 0.18)
 SUNSET = (1.0, 0.55, 0.3)
 UNDERWATER_FOG = (0.08, 0.2, 0.5)
 ICON_GREEN, ICON_BLUE = (0.5, 0.72, 0.33), (0.25, 0.45, 0.95)  # grass/leaves and water in the inventory
+# Light (RGB): direct light from the sun or the moon, and the light of the whole sky
+NOON_LIGHT, SUNSET_LIGHT, MOON_LIGHT = (0.56, 0.54, 0.48), (0.6, 0.36, 0.2), (0.1, 0.12, 0.17)
+DAY_SKY_LIGHT, NIGHT_SKY_LIGHT, SUNSET_SKY_LIGHT = (0.52, 0.56, 0.63), (0.17, 0.19, 0.28), (0.58, 0.46, 0.44)
+SUN_GLOW = (1.0, 0.7, 0.4)
+SUN_TILT = 0.5  # the sun's path leans to one side (63 degrees up at most), so walls facing it get light
+CLOUD_COVER = 0.56  # share of the sky without clouds (about)
+DIM = 0.5  # brightness of the world behind the menus
 
 # Sound numbers; sound effects play on channel 3, music on channels 0-2
 SND_BREAK, SND_PLACE, SND_JUMP, SND_STEP, SND_SPLASH, SND_CLICK = range(6)
@@ -53,29 +63,40 @@ HELP = [
 ]
 
 
-def make_palette():
-    """Pyxel's 16 default colors, then a 6x6x6 RGB cube (used by the 3D view), then 24 greys."""
-    cube = [(r * 51) << 16 | (g * 51) << 8 | (b * 51) for r in range(6) for g in range(6) for b in range(6)]
-    greys = [v << 16 | v << 8 | v for v in np.linspace(10, 245, 24).astype(int)]
-    return list(pyxel.colors)[:16] + cube + greys
-
-
-def atlas_to_indices(atlas):
-    """Nearest color-cube index for every pixel (0 where transparent), for pyxel.blt icons.
-    Texels that take the biome color get a typical green (blue for water)."""
-    rgb = atlas[..., :3].astype(float)
+def icon_palette(atlas):
+    """The block icons for pyxel.blt: 48 colors that suit them (k-means of the atlas' colors) and
+    every pixel as the index of its nearest one, 16-63 (0 where transparent). Texels that take the
+    biome color get a typical green (blue for water)."""
+    rgb = atlas[..., :3].astype(float) / 255
     tint = np.broadcast_to(np.array(ICON_GREEN), rgb.shape).copy()
     ty, tx = divmod(T_WATER, ATLAS_TILES)
     tint[ty * TILE:(ty + 1) * TILE, tx * TILE:(tx + 1) * TILE] = ICON_BLUE
     rgb = np.where((atlas[..., 3] == TINT_ALPHA)[..., None], rgb * tint, rgb)
-    levels = np.rint(rgb / 51).astype(np.uint8)
-    indices = 16 + levels[..., 0] * 36 + levels[..., 1] * 6 + levels[..., 2]
-    indices[atlas[..., 3] < 128] = 0
-    return indices
+    seen = atlas[..., 3] >= 128
+    count = FIXED_COLORS - 16
+    unique, weight = np.unique(np.rint(rgb[seen] * 255).astype(np.uint8), axis=0, return_counts=True)
+    lab = srgb_to_oklab(unique / 255)
+    centers = lab[np.random.default_rng(1).choice(len(lab), count, replace=False)]
+    for _ in range(15):
+        nearest = np.argmin(((lab[:, None] - centers[None]) ** 2).sum(-1), axis=1)
+        for k in range(count):
+            members = nearest == k
+            if members.any():
+                centers[k] = np.average(lab[members], axis=0, weights=weight[members])
+    colors = np.rint(oklab_to_srgb(centers) * 255).astype(np.uint8)
+    pixels = srgb_to_oklab(rgb.reshape(-1, 3))
+    nearest = np.argmin(((pixels[:, None] - srgb_to_oklab(colors / 255)[None]) ** 2).sum(-1), axis=1)
+    indices = (16 + nearest).reshape(seen.shape).astype(np.uint8)
+    indices[~seen] = 0
+    return [int(r) << 16 | int(g) << 8 | int(b) for r, g, b in colors], indices
 
 
 def mix(a, b, t):
-    return tuple(x + (y - x) * t for x, y in zip(a, b))
+    return tuple(float(x + (y - x) * t) for x, y in zip(a, b))
+
+
+def scale(color, k):
+    return tuple(float(c * k) for c in color)
 
 
 def smoothstep(lo, hi, x):
@@ -83,17 +104,32 @@ def smoothstep(lo, hi, x):
     return t * t * (3 - 2 * t)
 
 
-def sky_at(time_of_day):
-    """Light level, sky colors and sun direction. 0 = sunrise, 0.25 = noon, 0.5 = sunset, 0.75 = midnight."""
+def environment(time_of_day):
+    """Light and sky for a time of day (0 = sunrise, 0.25 = noon, 0.5 = sunset, 0.75 = midnight),
+    as values for Renderer.set_environment, and how much it is day (0-1)."""
     angle = time_of_day * 2 * math.pi
     sun_height = math.sin(angle)
     day = smoothstep(-0.2, 0.25, sun_height)
+    low_sun = math.exp(-(sun_height / 0.18) ** 2)  # 1 at sunrise and sunset
     zenith = mix(NIGHT_ZENITH, DAY_ZENITH, day)
-    horizon = mix(NIGHT_HORIZON, DAY_HORIZON, day)
-    horizon = mix(horizon, SUNSET, 0.8 * math.exp(-(sun_height / 0.18) ** 2))
-    sun = np.array([math.cos(angle), sun_height, 0.25])
-    sun_dir = tuple(float(c) for c in sun / np.linalg.norm(sun))
-    return 0.38 + 0.62 * day, zenith, horizon, sun_dir
+    horizon = mix(mix(NIGHT_HORIZON, DAY_HORIZON, day), SUNSET, 0.8 * low_sun)
+    sun = np.array([math.cos(angle), sun_height, SUN_TILT])
+    sun /= np.linalg.norm(sun)
+    # Direct light from the sun by day, from the moon by night, and none while either is at the horizon
+    if sun_height >= 0:
+        light_dir = sun
+        color = mix(SUNSET_LIGHT, NOON_LIGHT, smoothstep(0.0, 0.45, sun_height))
+        light = scale(color, smoothstep(0.0, 0.1, sun_height))
+    else:
+        light_dir = -sun
+        light = scale(MOON_LIGHT, smoothstep(0.0, 0.1, -sun_height))
+    sky_light = mix(mix(NIGHT_SKY_LIGHT, DAY_SKY_LIGHT, day), SUNSET_SKY_LIGHT, 0.35 * low_sun * day)
+    return {
+        "light_dir": tuple(float(c) for c in light_dir), "light_color": light, "sky_light": sky_light,
+        "zenith": zenith, "horizon": horizon, "sun_dir": tuple(float(c) for c in sun),
+        "sun_glow": scale(SUN_GLOW, day * (0.35 + 0.65 * low_sun)),
+        "night": 1.0 - smoothstep(-0.35, -0.05, sun_height), "cloud_cover": CLOUD_COVER,
+    }, day
 
 
 class App:
@@ -101,6 +137,13 @@ class App:
         # The terrain is built by a background thread: let Python switch between the threads often,
         # so the game's own frame never waits long for its turn
         sys.setswitchinterval(0.001)
+        if sys.platform == "win32" and not headless:
+            # Use the screen's real pixels: on a high-DPI screen, Windows would otherwise draw the
+            # window at a lower resolution and stretch it, blurred. (Before any window is made.)
+            try:
+                ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))  # per monitor, v2
+            except (AttributeError, OSError):
+                pass
         # Create our OpenGL context before Pyxel's, so Pyxel's context stays the current one.
         # The renderer switches to ours only while it draws.
         ctx = moderngl.create_standalone_context()
@@ -109,11 +152,12 @@ class App:
         # (capture_sec=0: no screen recording, whose buffer would be sized for 1000 frames per second)
         pyxel.init(BASE_WIDTH, BASE_HEIGHT, title="PyCraft", fps=1000, quit_key=pyxel.KEY_NONE,
                    capture_sec=0, headless=headless)
-        pyxel.colors[:] = make_palette()
+        pyxel.mouse(False)  # the UI draws its own pointer, at its own scale
         self.headless = headless
+        self.ui = Ui()
 
         atlas = build_atlas()
-        icons = atlas_to_indices(atlas)
+        icon_colors, icons = icon_palette(atlas)
         bank = np.frombuffer(pyxel.images[0].data_ptr(), dtype=np.uint8, count=256 * 256).reshape(256, 256)
         bank[:icons.shape[0], :icons.shape[1]] = icons
         pyxel.images[1].cls(0)
@@ -139,8 +183,13 @@ class App:
         self.player = Player(*self.spawn)
         # The title screen looks around from above the spawn, or where the saved game left off
         self.title_spot = self.save_data["player"][:3].tolist() if self.save_data else self.spawn
-        self.renderer = Renderer(ctx, self.world, atlas, BASE_WIDTH, BASE_HEIGHT)
+        # Palette: Pyxel's 16 colors (HUD), 48 for the icons, and 192 that adapt to the 3D view
+        self.renderer = Renderer(ctx, self.world, atlas, BASE_WIDTH, BASE_HEIGHT,
+                                 list(pyxel.colors)[:16] + icon_colors)
+        self.palette_version = None
+        self.use_palette()
         self.renderer.render_distance = self.settings["render_distance"]
+        self.renderer.set_fancy(self.settings["fancy"])
         self.set_resolution(*self.settings["resolution"])
 
         self.state = "title"
@@ -162,7 +211,6 @@ class App:
         self.dt = 1 / self.settings["fps"]  # seconds since the last frame, measured by run()
         self.fps = 0.0
         self.start_time = self.last_draw = time.perf_counter()
-        pyxel.mouse(True)
         self.start_music()
 
     def run(self):
@@ -203,8 +251,9 @@ class App:
             settings["fps"] = saved["fps"]
         if saved.get("render_distance") in RENDER_DISTANCES:
             settings["render_distance"] = saved["render_distance"]
-        if isinstance(saved.get("music"), bool):
-            settings["music"] = saved["music"]
+        for key in ("fancy", "music"):
+            if isinstance(saved.get(key), bool):
+                settings[key] = saved[key]
         return settings
 
     def save_settings(self):
@@ -215,13 +264,20 @@ class App:
         if (pyxel.width, pyxel.height) != (width, height):
             pyxel.resize(width, height)
         self.renderer.resize(width, height)
+        self.ui.set_screen_size(width, height)
         # The screen's pixels move to a new buffer when its size changes
         self.screen = np.frombuffer(pyxel.screen.data_ptr(), dtype=np.uint8, count=width * height)
         self.screen = self.screen.reshape(height, width)
         self.last_mouse = (pyxel.mouse_x, pyxel.mouse_y)
 
+    def use_palette(self):
+        """Give Pyxel the palette the renderer drew the last frame for (it adapts to the view)."""
+        if self.renderer.palette.version != self.palette_version:
+            pyxel.colors[:] = self.renderer.palette.colors
+            self.palette_version = self.renderer.palette.version
+
     def change_resolution(self, step):
-        on_button = self.button_at(pyxel.mouse_x, pyxel.mouse_y, len(self.menu_items())) == self.menu_index
+        on_button = self.button_at(self.ui.mouse_x, self.ui.mouse_y, len(self.menu_items())) == self.menu_index
         i = RESOLUTIONS.index(self.settings["resolution"])
         self.settings["resolution"] = RESOLUTIONS[(i + step) % len(RESOLUTIONS)]
         self.save_settings()
@@ -237,6 +293,11 @@ class App:
         i = RENDER_DISTANCES.index(self.settings["render_distance"])
         self.settings["render_distance"] = RENDER_DISTANCES[(i + step) % len(RENDER_DISTANCES)]
         self.renderer.render_distance = self.settings["render_distance"]
+        self.save_settings()
+
+    def toggle_graphics(self):
+        self.settings["fancy"] = not self.settings["fancy"]
+        self.renderer.set_fancy(self.settings["fancy"])
         self.save_settings()
 
     def frames(self, seconds):
@@ -330,12 +391,10 @@ class App:
             self.capture_mouse()
         else:
             self.mouse_captured = False
-            pyxel.mouse(True)
 
     def capture_mouse(self):
         self.mouse_captured = True
         if not self.headless:
-            pyxel.mouse(False)
             pyxel.set_mouse_pos(pyxel.width / 2, pyxel.height / 2)
         self.last_mouse = (pyxel.mouse_x, pyxel.mouse_y)
 
@@ -379,6 +438,7 @@ class App:
                 (f"Resolution: {width} x {height}", self.change_resolution),
                 (f"Frame rate: {self.settings['fps']} FPS", self.change_fps),
                 (f"Render distance: {self.settings['render_distance']}", self.change_render_distance),
+                ("Graphics: " + ("fancy" if self.settings["fancy"] else "fast"), lambda step: self.toggle_graphics()),
                 ("Music: " + ("on" if self.settings["music"] else "off"), lambda step: self.toggle_music()),
                 ("Done", lambda step: self.close_settings()),
             ]
@@ -427,15 +487,16 @@ class App:
 
     def update_menu(self):
         items = self.menu_items()
+        ui = self.ui
         if self.warp_to_button:
             self.warp_to_button = False
             if not self.headless:
                 x, y, w, h = self.button_rect(self.menu_index)
-                pyxel.set_mouse_pos(x + w / 2, y + h / 2)
-        hovered = self.button_at(pyxel.mouse_x, pyxel.mouse_y, len(items))
-        if hovered is not None and (pyxel.mouse_x, pyxel.mouse_y) != self.last_mouse:
+                pyxel.set_mouse_pos(*ui.to_screen(x + w // 2, y + h // 2))
+        hovered = self.button_at(ui.mouse_x, ui.mouse_y, len(items))
+        if hovered is not None and (ui.mouse_x, ui.mouse_y) != self.last_mouse:
             self.menu_index = hovered
-        self.last_mouse = (pyxel.mouse_x, pyxel.mouse_y)
+        self.last_mouse = (ui.mouse_x, ui.mouse_y)
         if pyxel.btnp(pyxel.KEY_DOWN) or pyxel.btnp(pyxel.KEY_S):
             self.menu_index = (self.menu_index + 1) % len(items)
         if pyxel.btnp(pyxel.KEY_UP) or pyxel.btnp(pyxel.KEY_W):
@@ -462,10 +523,14 @@ class App:
             else:
                 items[chosen][1]()
 
-    @staticmethod
-    def button_rect(i):
+    def menu_top(self):
+        """UI y of the first button: below the middle, or higher up for a long menu."""
+        count = len(self.menu_items())
+        return self.ui.height // 2 + 2 if count <= 4 else (self.ui.height - count * 16) // 2 + 12
+
+    def button_rect(self, i):
         w, h = 120, 13
-        return (pyxel.width - w) // 2, pyxel.height // 2 + 2 + i * 17, w, h
+        return (self.ui.width - w) // 2, self.menu_top() + i * 16, w, h
 
     def button_at(self, mx, my, count):
         for i in range(count):
@@ -474,11 +539,10 @@ class App:
                 return i
         return None
 
-    @staticmethod
-    def inventory_slot(i):
+    def inventory_slot(self, i):
         cols, size = INVENTORY_COLUMNS, TILE + 6
-        x0 = (pyxel.width - cols * size) // 2
-        return x0 + (i % cols) * size, pyxel.height // 2 - 40 + (i // cols) * size, size
+        x0 = (self.ui.width - cols * size) // 2
+        return x0 + (i % cols) * size, self.ui.height // 2 - 40 + (i // cols) * size, size
 
     def update_inventory(self):
         if pyxel.btnp(pyxel.KEY_E) or pyxel.btnp(pyxel.KEY_ESCAPE):
@@ -488,7 +552,7 @@ class App:
         if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT):
             for i, block in enumerate(PLACEABLE):
                 x, y, size = self.inventory_slot(i)
-                if x <= pyxel.mouse_x < x + size and y <= pyxel.mouse_y < y + size:
+                if x <= self.ui.mouse_x < x + size and y <= self.ui.mouse_y < y + size:
                     self.hotbar[self.selected] = block
                     self.sfx(SND_CLICK)
 
@@ -518,7 +582,6 @@ class App:
         if pyxel.btnp(pyxel.KEY_TAB):
             if self.mouse_captured:
                 self.mouse_captured = False
-                pyxel.mouse(True)
             else:
                 self.capture_mouse()
         if pyxel.btnp(pyxel.KEY_H):
@@ -585,99 +648,98 @@ class App:
         now = time.perf_counter()
         self.fps = self.fps * 0.9 + 0.1 / max(now - self.last_draw, 1e-6)
         self.last_draw = now
+        ui = self.ui
 
         if self.state == "generating":
             pyxel.cls(0)
-            self.center_text(pyxel.height // 2 - 3, "Finding a place to start...", 7)
+            self.center_text(ui.height // 2 - 3, "Finding a place to start...", 7)
             return
 
         self.draw_world()
         if self.state == "title":
             self.draw_title()
         elif self.state == "loading":
-            self.dim_screen()
             done = self.renderer.progress(self.player.eye(), LOADING_RADIUS)
-            self.center_text(pyxel.height // 2 - 3, f"Generating terrain... {done * 100:.0f}%", 7)
+            self.center_text(ui.height // 2 - 3, f"Generating terrain... {done * 100:.0f}%", 7)
         elif self.state in ("paused", "settings"):
-            self.dim_screen()
-            self.center_text(pyxel.height // 2 - 24, "Game paused" if self.state == "paused" else "Settings", 7)
+            top = self.menu_top()
+            self.center_text(top - 24, "Game paused" if self.state == "paused" else "Settings", 7)
             self.draw_menu()
             if self.state == "settings":
-                self.center_text(pyxel.height // 2 - 13, "Click or LEFT/RIGHT to change, ESC to go back", 13)
+                self.center_text(top - 13, "Click or LEFT/RIGHT to change, ESC to go back", 13)
         else:
             self.draw_hud()
             if self.state == "inventory":
                 self.draw_inventory()
+        if not self.mouse_captured and self.state != "loading":
+            ui.cursor()
 
     def draw_world(self):
         eye, forward = self.camera()
         if self.on_title():
-            light, zenith, horizon, sun_dir = sky_at(0.12)
+            env, day = environment(0.12)
             target = None
         else:
-            light, zenith, horizon, sun_dir = sky_at(self.time_of_day)
+            env, day = environment(self.time_of_day)
             target = self.target[0] if self.target and self.state == "playing" else None
-        if not self.on_title() and self.player.head_in_water(self.world):
-            fog = (tuple(c * light for c in UNDERWATER_FOG), 0.0, 0.0, 9.0)
+        underwater = not self.on_title() and self.player.head_in_water(self.world)
+        if underwater:
+            fog = (scale(UNDERWATER_FOG, 0.38 + 0.62 * day), 0.0, 0.0, 9.0)
         else:
-            fog = (horizon, HAZE, FOG_START, FOG_END)
-        self.renderer.set_environment(light, zenith, horizon, sun_dir, *fog)
+            fog = (env["horizon"], HAZE, FOG_START, FOG_END)
+        self.renderer.set_environment(**env, fog_color=fog[0], fog_density=fog[1], fog_start=fog[2], fog_end=fog[3])
+        self.renderer.underwater = underwater
+        self.renderer.dim = DIM if self.state in ("loading", "paused", "settings", "inventory") else 1.0
         self.renderer.render(self.screen, eye, forward, target)
+        self.use_palette()
 
     def draw_title(self):
-        cx, h = pyxel.width // 2, pyxel.height
-        scale = 5 * h // BASE_HEIGHT  # the logo grows with the resolution
-        y = h * 48 // BASE_HEIGHT - 3  # blt scales the 28x6 logo around its center
-        shadow = scale * 3 // 5
+        ui = self.ui
+        cx, h = ui.width // 2, ui.height
+        logo = 5 * h // BASE_HEIGHT  # the logo grows with the resolution
+        y = h * 48 // BASE_HEIGHT - 3 - 3 * (logo - 1)  # top of the scaled 28x6 logo
+        x = cx - 14 * logo
+        shadow = logo * 3 // 5
         pyxel.pal(7, 0)
-        pyxel.blt(cx - 14 + shadow, y + shadow, 1, 0, 0, 28, 6, colkey=0, scale=scale)
+        ui.blt(x + shadow, y + shadow, 1, 0, 0, 28, 6, 0, scale=logo)
         pyxel.pal()
-        pyxel.blt(cx - 14, y, 1, 0, 0, 28, 6, colkey=0, scale=scale)
+        ui.blt(x, y, 1, 0, 0, 28, 6, 0, scale=logo)
         self.center_text(h // 2 - 24, "A Minecraft-like game made with Pyxel", 7, shadow=True)
         self.draw_menu()
         self.shadow_text(2, h - 8, f"Seed {self.world.seed}", 13)
 
     def draw_menu(self):
+        ui = self.ui
         items = self.menu_items()
         for i, (label, _) in enumerate(items):
             x, y, w, h = self.button_rect(i)
             selected = i == self.menu_index
             pyxel.dither(0.75)
-            pyxel.rect(x, y, w, h, 5 if selected else 1)
+            ui.rect(x, y, w, h, 5 if selected else 1)
             pyxel.dither(1.0)
-            pyxel.rectb(x, y, w, h, 7 if selected else 13)
+            ui.rectb(x, y, w, h, 7 if selected else 13)
             if self.state == "settings" and selected and i < len(items) - 1:  # arrows on a setting
-                pyxel.text(x + 4, y + 4, "<", 10)
-                pyxel.text(x + w - 7, y + 4, ">", 10)
+                ui.text(x + 4, y + 4, "<", 10)
+                ui.text(x + w - 7, y + 4, ">", 10)
             self.center_text(y + 4, label, 10 if selected else 7)
 
-    @staticmethod
-    def dim_screen():
-        pyxel.dither(0.5)
-        pyxel.rect(0, 0, pyxel.width, pyxel.height, 0)
-        pyxel.dither(1.0)
-
     def draw_hud(self):
-        w, h = pyxel.width, pyxel.height
-        if self.player.head_in_water(self.world):
-            pyxel.dither(0.3)
-            pyxel.rect(0, 0, w, h, 5)
-            pyxel.dither(1.0)
-
+        ui = self.ui
+        w, h = ui.width, ui.height
         cx, cy = w // 2, h // 2
-        pyxel.line(cx - 4, cy, cx + 4, cy, 7)
-        pyxel.line(cx, cy - 4, cx, cy + 4, 7)
+        ui.hline(cx - 4, cx + 4, cy, 7)
+        ui.vline(cx, cy - 4, cy + 4, 7)
 
         # Hotbar
         slot = TILE + 4
         x0 = (w - slot * len(self.hotbar)) // 2
         y0 = h - slot - 3
         pyxel.dither(0.5)
-        pyxel.rect(x0 - 1, y0 - 1, slot * len(self.hotbar) + 2, slot + 2, 0)
+        ui.rect(x0 - 1, y0 - 1, slot * len(self.hotbar) + 2, slot + 2, 0)
         pyxel.dither(1.0)
         for i, block in enumerate(self.hotbar):
             self.draw_icon(x0 + i * slot + 2, y0 + 2, block)
-            pyxel.rectb(x0 + i * slot, y0, slot, slot, 7 if i == self.selected else 13)
+            ui.rectb(x0 + i * slot, y0, slot, slot, 7 if i == self.selected else 13)
         self.center_text(y0 - 8, BLOCK_NAMES[self.hotbar[self.selected]], 7, shadow=True)
         if self.message and self.play_time - self.message_time < 2.5:
             self.center_text(y0 - 16, self.message, 10, shadow=True)
@@ -688,7 +750,8 @@ class App:
             hours = int((self.time_of_day * 24 + 6) % 24)
             biome = self.world.biome_at(math.floor(px), math.floor(pz))
             chunks = self.renderer.chunks
-            lines = [f"FPS {self.fps:4.0f} / {self.settings['fps']}  {w}x{h}",
+            lines = [f"FPS {self.fps:4.0f} / {self.settings['fps']}  {pyxel.width}x{pyxel.height}"
+                     + ("" if self.settings["fancy"] else "  fast graphics"),
                      f"XYZ {px:7.1f} {py:6.1f} {pz:7.1f}  Altitude {py - SEA_LEVEL - 1:5.0f}",
                      f"Biome {biome}",
                      f"Chunks {self.renderer.drawn} drawn / {len(chunks.meshes)} built",
@@ -704,41 +767,39 @@ class App:
             self.center_text(cy + 10, "Click to capture the mouse", 10, shadow=True)
 
     def draw_inventory(self):
-        self.dim_screen()
+        ui = self.ui
         size = TILE + 6
         rows = math.ceil(len(PLACEABLE) / INVENTORY_COLUMNS)
         x, y, _ = self.inventory_slot(0)
-        pyxel.rect(x - 4, y - 14, INVENTORY_COLUMNS * size + 8, rows * size + 18, 1)
-        pyxel.rectb(x - 4, y - 14, INVENTORY_COLUMNS * size + 8, rows * size + 18, 13)
+        ui.rect(x - 4, y - 14, INVENTORY_COLUMNS * size + 8, rows * size + 18, 1)
+        ui.rectb(x - 4, y - 14, INVENTORY_COLUMNS * size + 8, rows * size + 18, 13)
         self.center_text(y - 10, "Click a block to put it in the selected slot", 7)
         hovered = None
         for i, block in enumerate(PLACEABLE):
             x, y, size = self.inventory_slot(i)
-            over = x <= pyxel.mouse_x < x + size and y <= pyxel.mouse_y < y + size
+            over = x <= ui.mouse_x < x + size and y <= ui.mouse_y < y + size
             if over:
                 hovered = block
-            pyxel.rectb(x, y, size, size, 7 if over else 5)
+            ui.rectb(x, y, size, size, 7 if over else 5)
             self.draw_icon(x + 3, y + 3, block)
         if hovered is not None:
             self.center_text(y + size + 8, BLOCK_NAMES[hovered], 10, shadow=True)
 
-    @staticmethod
-    def draw_icon(x, y, block):
+    def draw_icon(self, x, y, block):
         tile = BLOCK_TILES[block][0]
         u, v = (tile % ATLAS_TILES) * TILE, (tile // ATLAS_TILES) * TILE
-        pyxel.blt(x, y, 0, u, v, TILE, TILE, colkey=0)
+        self.ui.blt(x, y, 0, u, v, TILE, TILE, 0)
 
     def center_text(self, y, s, col, shadow=False):
-        x = (pyxel.width - len(s) * 4) // 2
+        x = (self.ui.width - len(s) * 4) // 2
         if shadow:
             self.shadow_text(x, y, s, col)
         else:
-            pyxel.text(x, y, s, col)
+            self.ui.text(x, y, s, col)
 
-    @staticmethod
-    def shadow_text(x, y, s, col):
-        pyxel.text(x + 1, y + 1, s, 0)
-        pyxel.text(x, y, s, col)
+    def shadow_text(self, x, y, s, col):
+        self.ui.text(x + 1, y + 1, s, 0)
+        self.ui.text(x, y, s, col)
 
 
 if __name__ == "__main__":
