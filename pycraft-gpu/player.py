@@ -12,6 +12,7 @@ WALK_SPEED = 4.3
 SPRINT_SPEED = 6.5
 SWIM_SPEED = 2.6
 FLY_SPEED = 11.0
+FAST_FLY_SPEED = 42.0  # flying with Ctrl held: the mountains are big
 GRAVITY = 28.0
 WATER_GRAVITY = 8.0
 JUMP_SPEED = 8.4  # about 1.25 blocks high
@@ -75,9 +76,10 @@ class Player:
         move_r = pyxel.btn(pyxel.KEY_D) - pyxel.btn(pyxel.KEY_A)
         dx, dz = fx * move_f + rx * move_r, fz * move_f + rz * move_r
         length = math.hypot(dx, dz)
+        fly_speed = FAST_FLY_SPEED if pyxel.btn(pyxel.KEY_LCTRL) else FLY_SPEED
         if length:
             if self.flying:
-                speed = FLY_SPEED
+                speed = fly_speed
             elif self.in_water:
                 speed = SWIM_SPEED
             elif pyxel.btn(pyxel.KEY_LCTRL):
@@ -87,7 +89,7 @@ class Player:
             dx, dz = dx / length * speed * dt, dz / length * speed * dt
 
         if self.flying:
-            self.vel_y = (pyxel.btn(pyxel.KEY_SPACE) - pyxel.btn(pyxel.KEY_LSHIFT)) * FLY_SPEED
+            self.vel_y = (pyxel.btn(pyxel.KEY_SPACE) - pyxel.btn(pyxel.KEY_LSHIFT)) * fly_speed
         elif self.in_water:
             if pyxel.btn(pyxel.KEY_SPACE):
                 # Swimming against a wall climbs out of the water onto the bank

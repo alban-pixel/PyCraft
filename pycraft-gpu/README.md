@@ -1,8 +1,9 @@
 # PyCraft
 
-A Minecraft-like game in creative mode. The 3D world is drawn by the graphics card (OpenGL through
-`moderngl`), and each finished frame is copied into Pyxel's screen. Pyxel runs the window, keyboard,
-mouse, menus, HUD, sound effects and music.
+A Minecraft-like game in creative mode, in an endless world 4096 blocks high, with mountain ranges
+that rise more than 3,000 blocks above the sea. The 3D world is drawn by the graphics card (OpenGL
+through `moderngl`), and each finished frame is copied into Pyxel's screen. Pyxel runs the window,
+keyboard, mouse, menus, HUD, sound effects and music.
 
 ## Run it
 
@@ -16,12 +17,22 @@ a real graphics card driver.
 
 ## What's in the game
 
-- A 128 x 64 x 128 world: hills, beaches, lakes, trees, caves, coal and iron ore, bedrock at the bottom
-- 13 blocks to build with, including glass and water
-- Walking, sprinting, jumping, swimming and flying
+- An endless world, 4096 blocks high, with the sea at height 512
+- Continents and oceans; long mountain ranges up to about 3,500 blocks above the sea, with tree
+  lines, snow lines and glaciers on the highest peaks; rivers in their own valleys; lakes; hills,
+  beaches, steep rocky coasts and badlands mesas
+- 18 biomes from the climate (temperature and humidity, colder higher up): ocean, deep ocean, frozen
+  ocean, beach, desert, badlands, savanna, jungle, plains, forest, birch forest, swamp, taiga, snowy
+  taiga, snowy tundra, alpine meadow, snowy peaks, glacier. Grass, leaves and water change color
+  smoothly from one biome to the next
+- Oak, birch, spruce, jungle and acacia trees, swamp oaks and cacti
+- Caves (tunnels near the surface, big caverns deeper down) and coal, iron, gold and diamond ore
+- The terrain far away, up to about 8 km, is drawn too, so you see the mountains from a long way off
+- 37 blocks to build with
+- Walking, sprinting, jumping, swimming and flying (and flying fast)
 - An 8-minute day and night cycle, with a sun, a moon and sunsets
 - A title screen, a pause menu and a block inventory
-- Settings: resolution, frame rate and music
+- Settings: resolution, frame rate, render distance and music
 - Saving: the game saves when you leave through the menu, and every 2 minutes
 - Sound effects and generated background music
 
@@ -32,7 +43,7 @@ a real graphics card driver.
 | Mouse / arrow keys | Look around |
 | WASD | Move |
 | Space | Jump, swim up (against a wall: climb out of water), fly up |
-| Left Ctrl | Sprint |
+| Left Ctrl | Sprint; while flying: fly fast (42 blocks per second) |
 | Left Shift | Fly down |
 | F | Toggle flying |
 | Left click | Break block (hold to repeat) |
@@ -41,11 +52,13 @@ a real graphics card driver.
 | E | All blocks: click one to put it in the selected slot |
 | Esc | Pause menu (settings, save and quit) |
 | Tab | Release / capture the mouse |
-| F3 | FPS, position, time and seed |
+| F3 | FPS, position, altitude, biome, chunks and seed |
 | H | Show / hide help |
 
-The save file is in Pyxel's user data folder (`pyxel.user_data_dir("PyCraft", "PyCraft GPU")`).
-Closing the window with its X button keeps only the last automatic save.
+The save file, `world2.npz`, is in Pyxel's user data folder
+(`pyxel.user_data_dir("PyCraft", "PyCraft GPU")`). Only the blocks you changed are saved: the rest
+of the world comes back from the seed. Closing the window with its X button keeps only the last
+automatic save. A `world.npz` from the earlier, smaller version of the game is left alone.
 
 ## Settings
 
@@ -57,6 +70,7 @@ saved in `settings.json`, next to the save file.
 |---|---|
 | Resolution | 320x180 (default), 384x216, 480x270, 640x360, 800x450, 960x540 |
 | Frame rate | 30, 60 (default), 75, 120, 144, 165, 240 FPS |
+| Render distance | 4, 6, 8 (default), 10, 12 chunks of 16 blocks drawn as blocks; the distant terrain goes on beyond |
 | Music | on / off |
 
 A higher resolution makes the 3D view sharper. The HUD and menus keep the same size in pixels, so
@@ -68,10 +82,16 @@ your screen's refresh rate (set in your system's display settings) is that high 
 ## How it works
 
 ```
-world.py     World = 3D NumPy array of block ids, terrain from pyxel.noise, caves, water, trees
+noise.py     Perlin noise for whole NumPy arrays of points at once
    |
-renderer.py  For each 16x16 chunk, NumPy finds every visible block face and builds triangles.
-   |         OpenGL draws the sky, then the blocks, with textures, shading and fog.
+terrain.py   The terrain at any (x, z): height, water, biome, climate. Then the blocks of each
+   |         16x16 column and 16x16x16 section: rock layers, surface, water, caves, ores, trees
+   |
+world.py     The world: sections made the first time they are needed, block access, saving
+   |
+builder.py   Worker processes that generate the terrain and find every visible block face
+   |
+renderer.py  OpenGL draws the sky, the distant terrain, then the blocks near the camera.
    |         The shaders output Pyxel palette numbers directly (with dithering), one byte per pixel.
    v
 pyxel.screen  The frame is copied into Pyxel's screen, then Pyxel draws the HUD and menus on top.
@@ -82,11 +102,51 @@ pyxel.screen  The frame is copied into Pyxel's screen, then Pyxel draws the HUD 
 - `player.py`: walking, jumping, swimming, flying, and collisions with blocks
 - `main.py`: the Pyxel app: screens, input, breaking and placing, day/night, saving, sound and HUD
 
+### The terrain
+
+Everything is built from smooth noise, in layers:
+
+1. **Continents.** A very smooth noise decides where the land and the oceans are, and gives a base
+   height: deep ocean, shelf, coast, lowlands, inland plateaus.
+2. **Mountain ranges.** They follow the line where another very smooth noise crosses zero, so they
+   form long chains. A spine rises toward that line, and "ridged" noise adds sharp crests, side
+   ridges and valleys on top. Each finer layer of the ridged noise is weighted by the one before,
+   so crests get detail while the valleys between them stay smooth, a bit like eroded rock.
+3. **Hills and bumps** on top, stronger in some regions than others.
+4. **Rivers** follow the zero line of a third noise. The distance to the line (the noise divided
+   by the length of its gradient) carves a channel 3 to 12 blocks wide and a valley around it,
+   wider where the land is higher. The water lies at the base height, so the banks always hold it.
+   Rivers stay out of the mountain ranges, which keeps the ranges whole.
+5. **Lakes** fill round basins in flat land; **badlands** turn their relief into stepped mesas.
+6. **Climate.** Temperature and humidity are two more smooth noises. Temperature drops with
+   altitude, so mountains get forests, then alpine meadows, then snow, then glaciers. The biome
+   comes from the climate, and the surface from the biome and the slope: steep ground is bare rock.
+
+The large, smooth layers are only computed every 8 blocks and blended in between, which makes
+generating a column about 3 times faster.
+
+### Drawing it
+
+Near the camera, each 16x16 column gets one mesh, made of the visible faces of its sections.
+Building meshes takes far longer than a frame, so three worker processes do it in parallel (each
+with its own copy of the world: Python threads would wait for each other). The game asks them for
+the nearest columns first, uploads what they send back, and rebuilds a section itself right away
+when you change a block. Each column counts its changes, so a mesh built from older blocks is
+thrown away and asked for again.
+
+Farther away, the terrain is drawn as a smooth height map at six levels of detail, each twice as
+coarse and twice as wide as the one before (4 to 128 blocks between points, up to 8 km away). The
+heights and colors are kept in textures that wrap around, so when the camera moves only the new
+edge is sampled. Each level leaves a hole where a finer level (or the blocks) is drawn. Steep slopes
+show as rock, and distant terrain fades into a blue haze.
+
+Everything is drawn relative to the camera, which keeps the numbers small and precise anywhere in
+the endless world. The distant terrain and the blocks each get their own depth range, so both stay
+precise.
+
 The palette is extended to 256 colors: Pyxel's 16 default colors (used by the HUD), then a 6x6x6 RGB
 color cube used by the 3D view, then 24 greys. Transparency uses dithering: leaves and glass skip
 their see-through pixels, and water skips every other pixel in a checkerboard.
-
-When a block changes, only its chunk (and a neighbor chunk if it is on the border) is rebuilt.
 
 Pyxel's frame rate can't change once its window is open, so the game starts Pyxel with a very high
 one and paces the frames itself (`App.run`, with `pyxel.flip`). Movement uses the real time between
@@ -97,4 +157,8 @@ frames, so the game runs at the same speed at any frame rate. The resolution cha
 
 - Water doesn't flow: it stays where it was generated or placed
 - No survival mode (health, hunger, mobs, crafting)
-- The world has a fixed size, with invisible walls at the edges
+- Caves aren't darker than the surface
+- The distant terrain is a smooth surface: it shows the shape of the land and its colors, not
+  single blocks or trees
+- Flying fast, you can outrun the block meshes for a moment: the distant terrain fills in until
+  they catch up

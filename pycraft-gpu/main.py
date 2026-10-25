@@ -3,24 +3,32 @@ import json
 import math
 import os
 import random
+import sys
 import time
 
 import moderngl
 import numpy as np
 import pyxel
 
-from blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, PLACEABLE, TILE, UNBREAKABLE, WATER,
-                    build_atlas)
+from blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, PLACEABLE, T_WATER, TILE, TINT_ALPHA,
+                    UNBREAKABLE, WATER, build_atlas)
 from player import Player
 from renderer import Renderer
+from terrain import SEA_LEVEL
 from world import World
 
 BASE_WIDTH, BASE_HEIGHT = 320, 180  # the menus and the mouse speed are designed for this size
 RESOLUTIONS = [(320, 180), (384, 216), (480, 270), (640, 360), (800, 450), (960, 540)]
 FRAME_RATES = [30, 60, 75, 120, 144, 165, 240]
-DEFAULT_SETTINGS = {"resolution": (320, 180), "fps": 60, "music": True}
+RENDER_DISTANCES = [4, 6, 8, 10, 12]  # in chunks of 16 blocks; the distant terrain goes on beyond
+DEFAULT_SETTINGS = {"resolution": (320, 180), "fps": 60, "render_distance": 8, "music": True}
+SAVE_FILE = "world2.npz"  # "world.npz" holds a world of the older, smaller version: left alone
+LOADING_RADIUS = 2  # chunks around the player that must be ready before playing
+HAZE = 1 / 7000  # share of light lost per block of distance: far mountains fade into the sky
+FOG_START, FOG_END = 6000.0, 8000.0  # where the distant terrain ends
 MAX_DT = 1 / 30  # longest time step: slower frames slow the game down instead of making the player skip
 REACH = 6.0
+INVENTORY_COLUMNS = 13
 MOUSE_SENSITIVITY = 0.45  # degrees per pixel at 320x180
 KEY_LOOK_SPEED = 120.0  # degrees per second with the arrow keys
 DAY_SECONDS = 8 * 60  # one full day and night
@@ -32,6 +40,7 @@ DAY_ZENITH, DAY_HORIZON = (0.38, 0.6, 1.0), (0.68, 0.84, 1.0)
 NIGHT_ZENITH, NIGHT_HORIZON = (0.01, 0.01, 0.06), (0.06, 0.08, 0.18)
 SUNSET = (1.0, 0.55, 0.3)
 UNDERWATER_FOG = (0.08, 0.2, 0.5)
+ICON_GREEN, ICON_BLUE = (0.5, 0.72, 0.33), (0.25, 0.45, 0.95)  # grass/leaves and water in the inventory
 
 # Sound numbers; sound effects play on channel 3, music on channels 0-2
 SND_BREAK, SND_PLACE, SND_JUMP, SND_STEP, SND_SPLASH, SND_CLICK = range(6)
@@ -39,8 +48,8 @@ SFX_CHANNEL = 3
 
 HELP = [
     "WASD move  SPACE jump/swim  CTRL sprint  F fly (SPACE/SHIFT up/down)",
-    "Left click break  Right click place  1-9/wheel choose  E all blocks",
-    "ESC menu and settings  F3 info  H hide help",
+    "CTRL while flying: fly fast   E all blocks   1-9/wheel choose",
+    "Left click break  Right click place  ESC menu  F3 info  H hide help",
 ]
 
 
@@ -52,8 +61,14 @@ def make_palette():
 
 
 def atlas_to_indices(atlas):
-    """Nearest color-cube index for every pixel (0 where transparent), for pyxel.blt icons."""
-    levels = np.rint(atlas[..., :3] / 51).astype(np.uint8)
+    """Nearest color-cube index for every pixel (0 where transparent), for pyxel.blt icons.
+    Texels that take the biome color get a typical green (blue for water)."""
+    rgb = atlas[..., :3].astype(float)
+    tint = np.broadcast_to(np.array(ICON_GREEN), rgb.shape).copy()
+    ty, tx = divmod(T_WATER, ATLAS_TILES)
+    tint[ty * TILE:(ty + 1) * TILE, tx * TILE:(tx + 1) * TILE] = ICON_BLUE
+    rgb = np.where((atlas[..., 3] == TINT_ALPHA)[..., None], rgb * tint, rgb)
+    levels = np.rint(rgb / 51).astype(np.uint8)
     indices = 16 + levels[..., 0] * 36 + levels[..., 1] * 6 + levels[..., 2]
     indices[atlas[..., 3] < 128] = 0
     return indices
@@ -83,6 +98,9 @@ def sky_at(time_of_day):
 
 class App:
     def __init__(self, headless=False):
+        # The terrain is built by a background thread: let Python switch between the threads often,
+        # so the game's own frame never waits long for its turn
+        sys.setswitchinterval(0.001)
         # Create our OpenGL context before Pyxel's, so Pyxel's context stays the current one.
         # The renderer switches to ours only while it draws.
         ctx = moderngl.create_standalone_context()
@@ -103,7 +121,7 @@ class App:
         self.init_sounds()
 
         data_dir = pyxel.user_data_dir("PyCraft", "PyCraft GPU")
-        self.save_path = os.path.join(data_dir, "world.npz")
+        self.save_path = os.path.join(data_dir, SAVE_FILE)
         self.settings_path = os.path.join(data_dir, "settings.json")
         self.settings = self.load_settings()
         self.save_data = None
@@ -117,8 +135,12 @@ class App:
         if self.world is None:
             self.world = World(seed=random.randrange(1 << 30))
 
-        self.player = Player(*self.world.find_spawn())
+        self.spawn = self.world.find_spawn()
+        self.player = Player(*self.spawn)
+        # The title screen looks around from above the spawn, or where the saved game left off
+        self.title_spot = self.save_data["player"][:3].tolist() if self.save_data else self.spawn
         self.renderer = Renderer(ctx, self.world, atlas, BASE_WIDTH, BASE_HEIGHT)
+        self.renderer.render_distance = self.settings["render_distance"]
         self.set_resolution(*self.settings["resolution"])
 
         self.state = "title"
@@ -179,6 +201,8 @@ class App:
             settings["resolution"] = tuple(resolution)
         if saved.get("fps") in FRAME_RATES:
             settings["fps"] = saved["fps"]
+        if saved.get("render_distance") in RENDER_DISTANCES:
+            settings["render_distance"] = saved["render_distance"]
         if isinstance(saved.get("music"), bool):
             settings["music"] = saved["music"]
         return settings
@@ -207,6 +231,12 @@ class App:
     def change_fps(self, step):
         i = FRAME_RATES.index(self.settings["fps"])
         self.settings["fps"] = FRAME_RATES[(i + step) % len(FRAME_RATES)]
+        self.save_settings()
+
+    def change_render_distance(self, step):
+        i = RENDER_DISTANCES.index(self.settings["render_distance"])
+        self.settings["render_distance"] = RENDER_DISTANCES[(i + step) % len(RENDER_DISTANCES)]
+        self.renderer.render_distance = self.settings["render_distance"]
         self.save_settings()
 
     def frames(self, seconds):
@@ -274,7 +304,8 @@ class App:
             if not self.world_is_fresh:
                 self.world = World(seed=random.randrange(1 << 30))
                 self.renderer.set_world(self.world)
-            self.player = Player(*self.world.find_spawn())
+                self.spawn = self.world.find_spawn()
+            self.player = Player(*self.spawn)
             self.hotbar, self.selected, self.time_of_day = list(DEFAULT_HOTBAR), 0, 0.05
             self.save()
         elif self.save_data is not None:
@@ -288,7 +319,7 @@ class App:
         self.save_data = None
         self.play_time = self.last_save = 0.0
         self.show_help = True
-        self.set_state("playing")
+        self.set_state("loading")  # until the blocks around the player are ready
 
     # --- States --------------------------------------------------------------------------------
 
@@ -311,6 +342,15 @@ class App:
     def on_title(self):
         """True on the title screen and on the settings screen opened from it."""
         return self.state == "title" or (self.state == "settings" and self.settings_parent == "title")
+
+    def camera(self):
+        """(eye, forward) of the view: the player's, or a slow look around on the title screen."""
+        if self.on_title():
+            x, _, z = self.title_spot
+            ground = max(self.world.surface_y(math.floor(x), math.floor(z)), SEA_LEVEL)
+            angle = (time.perf_counter() - self.start_time) * 0.05
+            return (x, ground + 30.0, z), (math.sin(angle), -0.2, math.cos(angle))
+        return self.player.eye(), self.player.forward()
 
     def menu_items(self):
         """(label, action) pairs for the menu of the current state.
@@ -338,6 +378,7 @@ class App:
             return [
                 (f"Resolution: {width} x {height}", self.change_resolution),
                 (f"Frame rate: {self.settings['fps']} FPS", self.change_fps),
+                (f"Render distance: {self.settings['render_distance']}", self.change_render_distance),
                 ("Music: " + ("on" if self.settings["music"] else "off"), lambda step: self.toggle_music()),
                 ("Done", lambda step: self.close_settings()),
             ]
@@ -352,6 +393,7 @@ class App:
     def save_and_title(self):
         self.save()
         self.save_data = self.snapshot()  # for "Continue"
+        self.title_spot = list(self.player.pos)
         self.set_state("title")
 
     def save_and_quit(self):
@@ -361,9 +403,16 @@ class App:
     # --- Update --------------------------------------------------------------------------------
 
     def update(self):
+        # Build the world around the camera a little every frame (much more while loading)
+        budget = 0.06 if self.state == "loading" else 0.3 / self.settings["fps"]
+        if self.state != "generating":
+            self.renderer.update(self.camera()[0], budget)
         if self.state == "generating":
             self.world_is_fresh = False
             self.start_game(new_world=True)
+        elif self.state == "loading":
+            if self.renderer.progress(self.player.eye(), LOADING_RADIUS) >= 1:
+                self.set_state("playing")
         elif self.state in ("title", "paused", "settings"):
             if self.state == "paused" and pyxel.btnp(pyxel.KEY_ESCAPE):
                 self.set_state("playing")
@@ -427,7 +476,7 @@ class App:
 
     @staticmethod
     def inventory_slot(i):
-        cols, size = 7, TILE + 6
+        cols, size = INVENTORY_COLUMNS, TILE + 6
         x0 = (pyxel.width - cols * size) // 2
         return x0 + (i % cols) * size, pyxel.height // 2 - 40 + (i // cols) * size, size
 
@@ -497,7 +546,7 @@ class App:
                 self.notify("Bedrock can't be broken")
             else:
                 self.world.set(x, y, z, 0)
-                self.renderer.block_changed(x, z)
+                self.renderer.block_changed(x, y, z)
                 self.sfx(SND_BREAK)
         elif self.target and pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT, hold=hold, repeat=repeat):
             x, y, z = self.target[1]
@@ -505,7 +554,7 @@ class App:
             free = self.world.inside(x, y, z) and self.world.get(x, y, z) in (0, WATER)
             if free and (block == WATER or not self.player.overlaps(x, y, z)):
                 self.world.set(x, y, z, block)
-                self.renderer.block_changed(x, z)
+                self.renderer.block_changed(x, y, z)
                 self.sfx(SND_PLACE)
 
     def update_look(self):
@@ -539,40 +588,39 @@ class App:
 
         if self.state == "generating":
             pyxel.cls(0)
-            self.center_text(pyxel.height // 2 - 3, "Generating world...", 7)
+            self.center_text(pyxel.height // 2 - 3, "Finding a place to start...", 7)
             return
 
         self.draw_world()
         if self.state == "title":
             self.draw_title()
+        elif self.state == "loading":
+            self.dim_screen()
+            done = self.renderer.progress(self.player.eye(), LOADING_RADIUS)
+            self.center_text(pyxel.height // 2 - 3, f"Generating terrain... {done * 100:.0f}%", 7)
         elif self.state in ("paused", "settings"):
             self.dim_screen()
             self.center_text(pyxel.height // 2 - 24, "Game paused" if self.state == "paused" else "Settings", 7)
             self.draw_menu()
             if self.state == "settings":
-                self.center_text(pyxel.height - 10, "Click or LEFT/RIGHT to change, ESC to go back", 13)
+                self.center_text(pyxel.height // 2 - 13, "Click or LEFT/RIGHT to change, ESC to go back", 13)
         else:
             self.draw_hud()
             if self.state == "inventory":
                 self.draw_inventory()
 
     def draw_world(self):
+        eye, forward = self.camera()
         if self.on_title():
-            # Slowly circle above the world
-            sx, _, sz = self.world.size
-            angle = (time.perf_counter() - self.start_time) * 0.12
-            eye = (sx / 2 + math.cos(angle) * sx * 0.45, 52.0, sz / 2 + math.sin(angle) * sz * 0.45)
-            forward = (sx / 2 - eye[0], 24 - eye[1], sz / 2 - eye[2])
             light, zenith, horizon, sun_dir = sky_at(0.12)
             target = None
         else:
-            eye, forward = self.player.eye(), self.player.forward()
             light, zenith, horizon, sun_dir = sky_at(self.time_of_day)
             target = self.target[0] if self.target and self.state == "playing" else None
         if not self.on_title() and self.player.head_in_water(self.world):
-            fog = (tuple(c * light for c in UNDERWATER_FOG), 0.0, 9.0)
+            fog = (tuple(c * light for c in UNDERWATER_FOG), 0.0, 0.0, 9.0)
         else:
-            fog = (horizon, 40.0, 90.0)
+            fog = (horizon, HAZE, FOG_START, FOG_END)
         self.renderer.set_environment(light, zenith, horizon, sun_dir, *fog)
         self.renderer.render(self.screen, eye, forward, target)
 
@@ -638,8 +686,12 @@ class App:
         if self.show_debug:
             px, py, pz = self.player.pos
             hours = int((self.time_of_day * 24 + 6) % 24)
+            biome = self.world.biome_at(math.floor(px), math.floor(pz))
+            chunks = self.renderer.chunks
             lines = [f"FPS {self.fps:4.0f} / {self.settings['fps']}  {w}x{h}",
-                     f"XYZ {px:5.1f} {py:5.1f} {pz:5.1f}",
+                     f"XYZ {px:7.1f} {py:6.1f} {pz:7.1f}  Altitude {py - SEA_LEVEL - 1:5.0f}",
+                     f"Biome {biome}",
+                     f"Chunks {self.renderer.drawn} drawn / {len(chunks.meshes)} built",
                      f"Time {hours:02d}:00  Seed {self.world.seed}" + ("  FLY" if self.player.flying else "")]
             for line in lines:
                 self.shadow_text(2, y, line, 7)
@@ -654,10 +706,10 @@ class App:
     def draw_inventory(self):
         self.dim_screen()
         size = TILE + 6
-        rows = math.ceil(len(PLACEABLE) / 7)
+        rows = math.ceil(len(PLACEABLE) / INVENTORY_COLUMNS)
         x, y, _ = self.inventory_slot(0)
-        pyxel.rect(x - 4, y - 14, 7 * size + 8, rows * size + 18, 1)
-        pyxel.rectb(x - 4, y - 14, 7 * size + 8, rows * size + 18, 13)
+        pyxel.rect(x - 4, y - 14, INVENTORY_COLUMNS * size + 8, rows * size + 18, 1)
+        pyxel.rectb(x - 4, y - 14, INVENTORY_COLUMNS * size + 8, rows * size + 18, 13)
         self.center_text(y - 10, "Click a block to put it in the selected slot", 7)
         hovered = None
         for i, block in enumerate(PLACEABLE):
