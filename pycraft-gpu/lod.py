@@ -68,7 +68,7 @@ class LODChunkBuilder:
                 bz0 = z0 + v * cell_size
                 bx1 = bx0 + cell_size
                 bz1 = bz0 + cell_size
-                h = float(heights[u, v])
+                h_val = float(heights[u, v])
                 b_type = int(block_types[u, v])
                 is_water = (b_type == WATER)
                 kind = 2.0 if is_water else 0.0
@@ -76,57 +76,79 @@ class LODChunkBuilder:
                 top_tile = int(BLOCK_TILES[b_type, 2])
                 side_tile = int(BLOCK_TILES[b_type, 0])
 
-                # 1. Top face (Y = h, normal +Y)
+                # Water top surface is slightly lowered by 0.125 blocks to match block water
+                h_top = (h_val - 0.125) if is_water else h_val
+
+                # 1. Top face (normal +Y)
                 top_corners = [
-                    (bx0, h, bz0),
-                    (bx1, h, bz0),
-                    (bx1, h, bz1),
-                    (bx0, h, bz1),
+                    (bx0, h_top, bz0),
+                    (bx1, h_top, bz0),
+                    (bx1, h_top, bz1),
+                    (bx0, h_top, bz1),
                 ]
                 quads.append(make_quad(top_corners, top_tile, shade=1.0, kind=kind))
 
-                # 2. Skirts and step-downs to adjacent cells
+                # 2. Skirts and step-downs to adjacent cells (proper outward CCW winding)
+                mid_z = bz0 + cell_size // 2
+                mid_x = bx0 + cell_size // 2
+
                 # East (+X)
-                h_east = float(heights[u + 1, v]) if u + 1 < num_cells else (h - 3.0)
-                if h > h_east:
+                if u + 1 < num_cells:
+                    h_east = float(heights[u + 1, v])
+                else:
+                    h_east = float(world.get_column_height(bx1 + 1, mid_z))
+                if h_val > h_east:
+                    h_bot = max(1.0, h_east)
                     east_corners = [
-                        (bx1, h, bz0),
-                        (bx1, h_east, bz0),
-                        (bx1, h_east, bz1),
-                        (bx1, h, bz1),
+                        (bx1, h_val, bz0),
+                        (bx1, h_val, bz1),
+                        (bx1, h_bot, bz1),
+                        (bx1, h_bot, bz0),
                     ]
                     quads.append(make_quad(east_corners, side_tile, shade=0.8, kind=kind))
 
                 # West (-X)
-                h_west = float(heights[u - 1, v]) if u - 1 >= 0 else (h - 3.0)
-                if h > h_west:
+                if u - 1 >= 0:
+                    h_west = float(heights[u - 1, v])
+                else:
+                    h_west = float(world.get_column_height(bx0 - 1, mid_z))
+                if h_val > h_west:
+                    h_bot = max(1.0, h_west)
                     west_corners = [
-                        (bx0, h, bz1),
-                        (bx0, h_west, bz1),
-                        (bx0, h_west, bz0),
-                        (bx0, h, bz0),
+                        (bx0, h_val, bz1),
+                        (bx0, h_val, bz0),
+                        (bx0, h_bot, bz0),
+                        (bx0, h_bot, bz1),
                     ]
                     quads.append(make_quad(west_corners, side_tile, shade=0.8, kind=kind))
 
                 # South (+Z)
-                h_south = float(heights[u, v + 1]) if v + 1 < num_cells else (h - 3.0)
-                if h > h_south:
+                if v + 1 < num_cells:
+                    h_south = float(heights[u, v + 1])
+                else:
+                    h_south = float(world.get_column_height(mid_x, bz1 + 1))
+                if h_val > h_south:
+                    h_bot = max(1.0, h_south)
                     south_corners = [
-                        (bx1, h, bz1),
-                        (bx1, h_south, bz1),
-                        (bx0, h_south, bz1),
-                        (bx0, h, bz1),
+                        (bx1, h_val, bz1),
+                        (bx0, h_val, bz1),
+                        (bx0, h_bot, bz1),
+                        (bx1, h_bot, bz1),
                     ]
                     quads.append(make_quad(south_corners, side_tile, shade=0.65, kind=kind))
 
                 # North (-Z)
-                h_north = float(heights[u, v - 1]) if v - 1 >= 0 else (h - 3.0)
-                if h > h_north:
+                if v - 1 >= 0:
+                    h_north = float(heights[u, v - 1])
+                else:
+                    h_north = float(world.get_column_height(mid_x, bz0 - 1))
+                if h_val > h_north:
+                    h_bot = max(1.0, h_north)
                     north_corners = [
-                        (bx0, h, bz0),
-                        (bx0, h_north, bz0),
-                        (bx1, h_north, bz0),
-                        (bx1, h, bz0),
+                        (bx0, h_val, bz0),
+                        (bx1, h_val, bz0),
+                        (bx1, h_bot, bz0),
+                        (bx0, h_bot, bz0),
                     ]
                     quads.append(make_quad(north_corners, side_tile, shade=0.65, kind=kind))
 
@@ -147,19 +169,20 @@ class LODChunkBuilder:
         top_tile = int(BLOCK_TILES[b_type, 2])
         side_tile = int(BLOCK_TILES[b_type, 0])
         x1, z1 = x0 + CHUNK, z0 + CHUNK
-        h_base = max(1.0, h - 6.0)
+        h_top = (h - 0.125) if is_water else h
+        h_base = max(1.0, h - 8.0)
 
         quads = [
-            # Top
-            make_quad([(x0, h, z0), (x1, h, z0), (x1, h, z1), (x0, h, z1)], top_tile, 1.0, kind=kind),
-            # +X
-            make_quad([(x1, h, z0), (x1, h_base, z0), (x1, h_base, z1), (x1, h, z1)], side_tile, 0.8, kind=kind),
-            # -X
-            make_quad([(x0, h, z1), (x0, h_base, z1), (x0, h_base, z0), (x0, h, z0)], side_tile, 0.8, kind=kind),
-            # +Z
-            make_quad([(x1, h, z1), (x1, h_base, z1), (x0, h_base, z1), (x0, h, z1)], side_tile, 0.65, kind=kind),
-            # -Z
-            make_quad([(x0, h, z0), (x0, h_base, z0), (x1, h_base, z0), (x1, h, z0)], side_tile, 0.65, kind=kind),
+            # Top (+Y)
+            make_quad([(x0, h_top, z0), (x1, h_top, z0), (x1, h_top, z1), (x0, h_top, z1)], top_tile, 1.0, kind=kind),
+            # East (+X)
+            make_quad([(x1, h, z0), (x1, h, z1), (x1, h_base, z1), (x1, h_base, z0)], side_tile, 0.8, kind=kind),
+            # West (-X)
+            make_quad([(x0, h, z1), (x0, h, z0), (x0, h_base, z0), (x0, h_base, z1)], side_tile, 0.8, kind=kind),
+            # South (+Z)
+            make_quad([(x1, h, z1), (x0, h, z1), (x0, h_base, z1), (x1, h_base, z1)], side_tile, 0.65, kind=kind),
+            # North (-Z)
+            make_quad([(x0, h, z0), (x1, h, z0), (x1, h_base, z0), (x0, h_base, z0)], side_tile, 0.65, kind=kind),
         ]
         return np.concatenate(quads, axis=0).astype(np.float32)
 
@@ -212,15 +235,15 @@ class LODManager:
         for dcx in range(-r_max, r_max + 1):
             for dcz in range(-r_max, r_max + 1):
                 d2 = dcx * dcx + dcz * dcz
-                if d2 <= r_near2:
-                    continue  # Handled by full near block mesh
-                cx, cz = pcx + dcx, pcz + dcz
-                if (cx, cz) in near_chunks:
+                if d2 > r_max2:
                     continue
+                if d2 <= r_near2:
+                    continue  # Strictly outside near render distance; near chunks are handled by block chunk mesher
+                cx, cz = pcx + dcx, pcz + dcz
 
                 if d2 <= r_mid2:
                     needed_lods.append((cx, cz, 1))  # Level 1: 4x4 sub-cells
-                elif d2 <= r_max2:
+                else:
                     needed_lods.append((cx, cz, 2))  # Level 2: 16x16 macro-box
 
         # Evict old distant cache entries

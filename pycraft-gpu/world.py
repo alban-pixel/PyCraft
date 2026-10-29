@@ -230,12 +230,15 @@ class World:
             if solid_ys.size > 0:
                 return int(solid_ys[-1]) + 1
 
-        # Fallback procedural evaluation
-        if hasattr(self, "generator") and hasattr(self.generator, "evaluate_density"):
-            for y in range(min(self.sy - 1, 120), 0, -1):
-                if self.generator.evaluate_density(x, y, z) >= 0:
-                    return y + 1
+        if self.preset == WorldPreset.SUPERFLAT:
+            return 4
 
+        if self.preset != WorldPreset.STANDARD:
+            col = self.get_chunk(cx, cz)
+            solid_ys = np.nonzero(col[x % 16, :, z % 16] != 0)[0]
+            return int(solid_ys[-1]) + 1 if solid_ys.size > 0 else SEA_LEVEL
+
+        # Standard preset: compute height with the EXACT SAME formula as _generate_chunk
         n = pyxel.noise(x * 0.022, z * 0.022) + 0.5 * pyxel.noise(x * 0.07 + 100, z * 0.07 + 100)
         return min(max(int(SEA_LEVEL + 3 + n * 14), 4), self.sy - 12)
 

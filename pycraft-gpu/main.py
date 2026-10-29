@@ -310,6 +310,67 @@ class App:
         pyxel.mouse(True)
         self.start_music()
 
+    @property
+    def world_manager(self):
+        return self.world_mgr
+
+    @world_manager.setter
+    def world_manager(self, mgr):
+        self.world_mgr = mgr
+
+    @property
+    def create_world_focus(self):
+        if self.active_text_field == "world_name":
+            return "name"
+        elif self.active_text_field == "seed":
+            return "seed"
+        return "name"
+
+    @create_world_focus.setter
+    def create_world_focus(self, val):
+        if val == "name":
+            self.active_text_field = "world_name"
+        elif val == "seed":
+            self.active_text_field = "seed"
+        else:
+            self.active_text_field = None
+
+    @property
+    def create_world_name(self):
+        return self.new_world_name
+
+    @create_world_name.setter
+    def create_world_name(self, val):
+        self.new_world_name = str(val)
+
+    @property
+    def create_world_seed(self):
+        return self.new_world_seed
+
+    @create_world_seed.setter
+    def create_world_seed(self, val):
+        self.new_world_seed = str(val)
+
+    @property
+    def create_world_mode(self):
+        return self.new_world_mode
+
+    @create_world_mode.setter
+    def create_world_mode(self, val):
+        self.new_world_mode = str(val)
+
+    @property
+    def create_world_preset_idx(self):
+        try:
+            return WorldPreset.ALL.index(self.new_world_preset)
+        except ValueError:
+            return 0
+
+    @create_world_preset_idx.setter
+    def create_world_preset_idx(self, idx):
+        presets = WorldPreset.ALL
+        self.new_world_preset = presets[idx % len(presets)]
+
     def run(self):
         next_frame = last_update = time.perf_counter()
         try:
@@ -696,6 +757,20 @@ class App:
 
     def load_and_play_world(self, w_info):
         save_path = w_info["save_path"]
+        if not os.path.exists(save_path):
+            self.save_path = save_path
+            self.current_world_info = dict(w_info)
+            self.current_preset = w_info.get("preset", WorldPreset.STANDARD)
+            self.world_is_fresh = True
+            self.start_game(
+                new_world=True,
+                mode=w_info.get("mode", "survival"),
+                preset=self.current_preset,
+                seed=w_info.get("seed", 1),
+            )
+            self.notify(f"Created & Loaded {w_info['name']}")
+            return
+
         try:
             self.world, self.save_data = World.load(save_path)
             self.save_path = save_path
@@ -969,7 +1044,8 @@ class App:
             self.menu_index = (self.menu_index - 1) % len(items)
 
         chosen, step = None, 1
-        if pyxel.btnp(pyxel.KEY_RETURN) or pyxel.btnp(pyxel.KEY_SPACE):
+        space_triggers = not (self.state == "create_world" and self.active_text_field)
+        if pyxel.btnp(pyxel.KEY_RETURN) or (space_triggers and pyxel.btnp(pyxel.KEY_SPACE)):
             chosen = self.menu_index
         if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT) and hovered is not None:
             chosen = hovered
