@@ -87,6 +87,7 @@ python main.py
 | **Shift gauche** | Descendre en vol |
 | **F** | Activer / Désactiver le vol (*Mode Créatif uniquement*) |
 | **F4** | Basculer instantanément entre mode **Survie** et **Créatif** |
+| **F11 / Alt+Entrée** | Activer / Désactiver le **Plein écran** (Fullscreen) |
 | **Clic gauche** | Casser un bloc (minage progressif) / Frapper une créature |
 | **Clic droit** | Poser un bloc / Manger un aliment / Ouvrir la Table de Craft |
 | **1 à 9 / Molette** | Sélectionner la case active de la barre d'accès rapide |
@@ -127,7 +128,7 @@ python main.py
 
 ## Tests Automatisés
 
-Le projet comprend une suite complète de 42 tests unitaires automatisés validant la physique, les blocs, la simulation de fluides, le calcul matriciel, l'artisanat, les créatures et la boucle de jeu :
+Le projet comprend une suite complète de 48 tests unitaires automatisés validant la physique, les blocs, la simulation de fluides, le calcul matriciel, l'artisanat, les créatures, le plein écran, le scaling haute résolution (High DPI) et la boucle de jeu :
 
 ```bash
 .venv/bin/pytest -v

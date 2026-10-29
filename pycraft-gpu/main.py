@@ -26,12 +26,21 @@ from renderer import Renderer, look_at
 from world import World
 
 BASE_WIDTH, BASE_HEIGHT = 320, 180
-RESOLUTIONS = [(320, 180), (384, 216), (480, 270), (640, 360), (800, 450), (960, 540)]
+RESOLUTIONS = [(320, 180), (384, 216), (480, 270), (640, 360), (800, 450), (960, 540), (1280, 720)]
 FRAME_RATES = [30, 60, 75, 120, 144, 165, 240]
 FOVS = [60, 70, 80, 90]
 SENSITIVITIES = [0.12, 0.18, 0.25, 0.35, 0.50]
 SENS_NAMES = {0.12: "Low", 0.18: "Medium", 0.25: "Normal", 0.35: "High", 0.50: "Very High"}
-DEFAULT_SETTINGS = {"resolution": (320, 180), "fps": 60, "fov": 70, "sensitivity": 0.25, "music": True}
+GUI_SCALES = ["Auto", "1x", "2x", "3x", "4x"]
+DEFAULT_SETTINGS = {
+    "resolution": (320, 180),
+    "fps": 60,
+    "fov": 70,
+    "sensitivity": 0.25,
+    "music": True,
+    "fullscreen": False,
+    "gui_scale": "Auto",
+}
 MAX_DT = 1 / 30
 REACH = 5.5
 KEY_LOOK_SPEED = 120.0
@@ -52,8 +61,8 @@ SFX_CHANNEL = 3
 
 HELP = [
     "WASD/ZQSD move  SPACE jump/swim  CTRL sprint  F fly (Creative)",
-    "F4 toggle Survival/Creative  Left click mine/attack  Right click place/eat",
-    "1-9/wheel slot  E craft/inventory  ESC settings  F3 debug info",
+    "F4 toggle Survival/Creative  F11 Fullscreen  Left click mine/attack",
+    "Right click place/eat/craft  1-9/wheel slot  E inventory  ESC menu",
 ]
 
 
@@ -177,12 +186,20 @@ class App:
         bank[:icons.shape[0], :icons.shape[1]] = icons
         pyxel.images[1].cls(0)
         pyxel.images[1].text(0, 0, "PYCRAFT", 7)
+        self.text_scratch = pyxel.Image(1024, 64)
         self.init_sounds()
 
         data_dir = pyxel.user_data_dir("PyCraft", "PyCraft GPU")
         self.save_path = os.path.join(data_dir, "world.npz")
         self.settings_path = os.path.join(data_dir, "settings.json")
         self.settings = self.load_settings()
+
+        self.fullscreen_enabled = bool(self.settings.get("fullscreen", False))
+        if self.fullscreen_enabled and not headless:
+            try:
+                pyxel.fullscreen(True)
+            except Exception:
+                pass
 
         self.save_data = None
         self.world = None
@@ -280,6 +297,10 @@ class App:
                 settings["sensitivity"] = saved["sensitivity"]
             if isinstance(saved.get("music"), bool):
                 settings["music"] = saved["music"]
+            if isinstance(saved.get("fullscreen"), bool):
+                settings["fullscreen"] = saved["fullscreen"]
+            if saved.get("gui_scale") in GUI_SCALES:
+                settings["gui_scale"] = saved["gui_scale"]
         return settings
 
     def save_settings(self):
@@ -289,6 +310,39 @@ class App:
         except OSError:
             pass
 
+    def get_ui_scale(self):
+        pref = self.settings.get("gui_scale", "Auto")
+        if pref == "1x":
+            return 1
+        elif pref == "2x":
+            return 2
+        elif pref == "3x":
+            return 3
+        elif pref == "4x":
+            return 4
+        # "Auto" mode: scales proportionally to resolution
+        return max(1, min(pyxel.width // 280, pyxel.height // 160))
+
+    def toggle_fullscreen(self):
+        self.fullscreen_enabled = not self.fullscreen_enabled
+        self.settings["fullscreen"] = self.fullscreen_enabled
+        self.save_settings()
+        if not self.headless:
+            try:
+                pyxel.fullscreen(self.fullscreen_enabled)
+            except Exception:
+                pass
+        self.notify("Fullscreen: " + ("ON" if self.fullscreen_enabled else "OFF"))
+
+    def change_gui_scale(self, step):
+        cur = self.settings.get("gui_scale", "Auto")
+        if cur not in GUI_SCALES:
+            cur = "Auto"
+        i = GUI_SCALES.index(cur)
+        self.settings["gui_scale"] = GUI_SCALES[(i + step) % len(GUI_SCALES)]
+        self.save_settings()
+        self.notify(f"GUI Scale: {self.settings['gui_scale']} ({self.get_ui_scale()}x)")
+
     def set_resolution(self, width, height):
         if (pyxel.width, pyxel.height) != (width, height):
             pyxel.resize(width, height)
@@ -296,6 +350,8 @@ class App:
         self.screen = np.frombuffer(pyxel.screen.data_ptr(), dtype=np.uint8, count=width * height)
         self.screen = self.screen.reshape(height, width)
         self.last_mouse = (pyxel.mouse_x, pyxel.mouse_y)
+        if hasattr(self, "text_scratch"):
+            self.text_scratch = pyxel.Image(max(1024, width), 64)
 
     def change_resolution(self, step):
         on_button = self.button_at(pyxel.mouse_x, pyxel.mouse_y, len(self.menu_items())) == self.menu_index
@@ -504,8 +560,12 @@ class App:
             w, h = self.settings["resolution"]
             sens = self.settings.get("sensitivity", 0.25)
             sens_label = SENS_NAMES.get(sens, "Normal")
+            fs_label = "ON" if self.fullscreen_enabled else "OFF"
+            gui_label = self.settings.get("gui_scale", "Auto")
             return [
                 (f"Resolution: {w} x {h}", self.change_resolution),
+                (f"Fullscreen: {fs_label}", lambda step: self.toggle_fullscreen()),
+                (f"GUI Scale: {gui_label}", self.change_gui_scale),
                 (f"Frame rate: {self.settings['fps']} FPS", self.change_fps),
                 (f"Field of view: {self.settings['fov']} deg", self.change_fov),
                 (f"Mouse speed: {sens_label}", self.change_sensitivity),
@@ -531,6 +591,9 @@ class App:
     # --- Update --------------------------------------------------------------------------------
 
     def update(self):
+        if pyxel.btnp(pyxel.KEY_F11) or (pyxel.btn(pyxel.KEY_ALT) and pyxel.btnp(pyxel.KEY_RETURN)):
+            self.toggle_fullscreen()
+
         if self.player.health <= 0 and self.state not in ("title", "game_over"):
             self.sfx(SND_HURT)
             self.set_state("game_over")
@@ -590,10 +653,14 @@ class App:
             else:
                 items[chosen][1]()
 
-    @staticmethod
-    def button_rect(i):
-        w, h = 140, 13
-        return (pyxel.width - w) // 2, pyxel.height // 2 - 10 + i * 17, w, h
+    def button_rect(self, i):
+        s = self.get_ui_scale()
+        w, h = 140 * s, 13 * s
+        items = self.menu_items()
+        spacing = 3 * s
+        total_h = len(items) * (h + spacing) - spacing
+        y0 = (pyxel.height - total_h) // 2 + 8 * s
+        return (pyxel.width - w) // 2, y0 + i * (h + spacing), w, h
 
     def button_at(self, mx, my, count):
         for i in range(count):
@@ -606,9 +673,17 @@ class App:
         self.player.respawn(self.world.find_spawn())
         self.set_state("playing")
 
+    def game_over_button_rect(self):
+        s = self.get_ui_scale()
+        rw, rh = 100 * s, 16 * s
+        rx, ry = (pyxel.width - rw) // 2, pyxel.height // 2 + 10 * s
+        return rx, ry, rw, rh
+
     def update_game_over(self):
-        rw, rh = 100, 16
-        rx, ry = (pyxel.width - rw) // 2, pyxel.height // 2 + 10
+        rx, ry, rw, rh = self.game_over_button_rect()
+        if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT) and rx <= pyxel.mouse_x < rx + rw and ry <= pyxel.mouse_y < ry + rh:
+            self.sfx(SND_CLICK)
+            self.respawn_player()
         if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT) and rx <= pyxel.mouse_x < rx + rw and ry <= pyxel.mouse_y < ry + rh:
             self.sfx(SND_CLICK)
             self.respawn_player()
@@ -797,9 +872,8 @@ class App:
             pyxel.mouse_x, pyxel.mouse_y, pyxel.width // 2, pyxel.height // 2
         )
         if dx != 0.0 or dy != 0.0:
-            scale = BASE_WIDTH / pyxel.width
             sens = self.settings.get("sensitivity", 0.25)
-            self.player.look(-dx * sens * scale, -dy * sens * scale)
+            self.player.look(-dx * sens, -dy * sens)
 
     def update_hotbar_keys(self):
         for i in range(len(self.hotbar)):
@@ -813,6 +887,38 @@ class App:
 
     # --- Crafting UI ---------------------------------------------------------------------------
 
+    def craft_layout(self):
+        s = self.get_ui_scale()
+        w, h = pyxel.width, pyxel.height
+        size = self.craft_size
+        slot_s = 20 * s
+
+        # Quick recipes on left
+        qw, qh = 82 * s, 14 * s
+        qx = 8 * s
+        qy0 = 36 * s
+
+        # Main Inventory (3 rows of 9) + Hotbar (1 row of 9) at bottom
+        ix0 = (w - 9 * slot_s) // 2
+        iy0 = h - 5 * slot_s - 8 * s
+
+        # Crafting Grid in center above inventory
+        gx0 = w // 2 - (size * slot_s) // 2 - 15 * s
+        gy0 = max(qy0, (iy0 - size * slot_s) // 2)
+
+        # Result slot
+        rx = gx0 + size * slot_s + 20 * s
+        ry = gy0 + (size * slot_s) // 2 - 10 * s
+        rw, rh = slot_s + 2 * s, slot_s + 2 * s
+
+        return {
+            "s": s, "slot_s": slot_s,
+            "gx0": gx0, "gy0": gy0,
+            "rx": rx, "ry": ry, "rw": rw, "rh": rh,
+            "ix0": ix0, "iy0": iy0,
+            "qx": qx, "qy0": qy0, "qw": qw, "qh": qh,
+        }
+
     def update_crafting_ui(self):
         if pyxel.btnp(pyxel.KEY_E) or pyxel.btnp(pyxel.KEY_ESCAPE):
             self.set_state("playing")
@@ -823,9 +929,10 @@ class App:
         res = crafting.check_craft(self.craft_grid, size, size)
         self.craft_result = list(res) if res else [0, 0]
 
+        lay = self.craft_layout()
+        rx, ry, rw, rh = lay["rx"], lay["ry"], lay["rw"], lay["rh"]
+
         # Click on result slot to craft
-        rw, rh = 22, 22
-        rx, ry = pyxel.width // 2 + 50, pyxel.height // 2 - 30
         if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT):
             if rx <= pyxel.mouse_x < rx + rw and ry <= pyxel.mouse_y < ry + rh:
                 if self.craft_result[0] != 0:
@@ -837,10 +944,10 @@ class App:
                         return
 
             # Click quick recipe shortcuts on left side
-            qw, qh = 75, 12
+            qx, qy0, qw, qh = lay["qx"], lay["qy0"], lay["qw"], lay["qh"]
             for q_idx, (r_name, r_ingr, r_out) in enumerate(self.quick_recipes()):
-                qy = 40 + q_idx * 15
-                if 8 <= pyxel.mouse_x < 8 + qw and qy <= pyxel.mouse_y < qy + qh:
+                qy = qy0 + q_idx * (qh + 2 * lay["s"])
+                if qx <= pyxel.mouse_x < qx + qw and qy <= pyxel.mouse_y < qy + qh:
                     if self.has_ingredients(r_ingr):
                         self.consume_ingredients(r_ingr)
                         self.add_to_inventory(r_out[0], r_out[1])
@@ -897,11 +1004,13 @@ class App:
         self.last_draw = now
 
         self.draw_world()
+        s = self.get_ui_scale()
         if self.state == "title":
             self.draw_title()
         elif self.state in ("paused", "settings"):
             self.dim_screen()
-            self.center_text(pyxel.height // 2 - 28, "Settings" if self.state == "settings" else "Game paused", 7)
+            title = "Settings" if self.state == "settings" else "Game paused"
+            self.center_text(pyxel.height // 2 - 28 * s, title, 7, scale=s)
             self.draw_menu()
         elif self.state == "game_over":
             self.draw_game_over()
@@ -961,15 +1070,18 @@ class App:
     def draw_title(self):
         cx = pyxel.width // 2
         cy = pyxel.height // 2
+        s = self.get_ui_scale()
+        logo_scale = 5 * s
         pyxel.pal(7, 0)
-        pyxel.blt(cx - 14 + 3, cy - 50 + 3, 1, 0, 0, 28, 6, colkey=0, scale=5)
+        pyxel.blt(cx, cy - 50 * s + 3 * s, 1, 0, 0, 28, 6, colkey=0, scale=logo_scale)
         pyxel.pal()
-        pyxel.blt(cx - 14, cy - 50, 1, 0, 0, 28, 6, colkey=0, scale=5)
-        self.center_text(cy - 28, "Voxel Sandbox & Survival", 7, shadow=True)
+        pyxel.blt(cx, cy - 50 * s, 1, 0, 0, 28, 6, colkey=0, scale=logo_scale)
+        self.center_text(cy - 28 * s, "Voxel Sandbox & Survival", 7, shadow=True, scale=s)
         self.draw_menu()
-        self.shadow_text(2, pyxel.height - 8, f"Seed {self.world.seed}", 13)
+        self.shadow_text(2 * s, pyxel.height - 8 * s, f"Seed {self.world.seed}", 13, scale=s)
 
     def draw_menu(self):
+        s = self.get_ui_scale()
         items = self.menu_items()
         for i, (label, _) in enumerate(items):
             x, y, w, h = self.button_rect(i)
@@ -979,9 +1091,9 @@ class App:
             pyxel.dither(1.0)
             pyxel.rectb(x, y, w, h, 7 if selected else 13)
             if self.state == "settings" and selected and i < len(items) - 1:
-                pyxel.text(x + 4, y + 4, "<", 10)
-                pyxel.text(x + w - 7, y + 4, ">", 10)
-            self.center_text(y + 4, label, 10 if selected else 7)
+                self.draw_text(x + 4 * s, y + (h - 6 * s) // 2, "<", 10, scale=s)
+                self.draw_text(x + w - 7 * s, y + (h - 6 * s) // 2, ">", 10, scale=s)
+            self.center_text(y + (h - 6 * s) // 2, label, 10 if selected else 7, scale=s)
 
     @staticmethod
     def dim_screen():
@@ -991,20 +1103,21 @@ class App:
 
     def draw_game_over(self):
         w, h = pyxel.width, pyxel.height
+        s = self.get_ui_scale()
         pyxel.dither(0.4)
         pyxel.rect(0, 0, w, h, 8)
         pyxel.dither(1.0)
-        self.center_text(h // 2 - 20, "YOU DIED!", 7, shadow=True)
+        self.center_text(h // 2 - 22 * s, "YOU DIED!", 7, shadow=True, scale=max(1, s * 2))
 
-        rw, rh = 100, 16
-        rx, ry = (w - rw) // 2, h // 2 + 10
+        rx, ry, rw, rh = self.game_over_button_rect()
         hover = rx <= pyxel.mouse_x < rx + rw and ry <= pyxel.mouse_y < ry + rh
         pyxel.rect(rx, ry, rw, rh, 5 if hover else 1)
         pyxel.rectb(rx, ry, rw, rh, 7 if hover else 13)
-        self.center_text(ry + 5, "Respawn", 10 if hover else 7)
+        self.center_text(ry + (rh - 6 * s) // 2, "Respawn", 10 if hover else 7, scale=s)
 
     def draw_hud(self):
         w, h = pyxel.width, pyxel.height
+        s = self.get_ui_scale()
 
         # Underwater screen tint
         if self.player.head_in_water(self.world):
@@ -1023,44 +1136,47 @@ class App:
 
         # Crosshair
         cx, cy = w // 2, h // 2
-        pyxel.line(cx - 4, cy, cx + 4, cy, 7)
-        pyxel.line(cx, cy - 4, cx, cy + 4, 7)
+        arm = 4 * s
+        thick = max(1, s)
+        pyxel.rect(cx - arm, cy - thick // 2, arm * 2 + 1, thick, 7)
+        pyxel.rect(cx - thick // 2, cy - arm, thick, arm * 2 + 1, 7)
 
         # Hotbar
-        slot = TILE + 4
+        slot = 20 * s
         x0 = (w - slot * len(self.hotbar)) // 2
-        y0 = h - slot - 3
+        y0 = h - slot - 3 * s
         pyxel.dither(0.5)
-        pyxel.rect(x0 - 1, y0 - 1, slot * len(self.hotbar) + 2, slot + 2, 0)
+        pyxel.rect(x0 - s, y0 - s, slot * len(self.hotbar) + 2 * s, slot + 2 * s, 0)
         pyxel.dither(1.0)
         for i, (b_id, cnt) in enumerate(self.hotbar):
             bx, by = x0 + i * slot, y0
             pyxel.rectb(bx, by, slot, slot, 7 if i == self.selected else 13)
             if b_id > 0 and cnt > 0:
-                self.draw_icon(bx + 2, by + 2, b_id)
+                self.draw_icon(bx + 2 * s, by + 2 * s, b_id, scale=s)
                 if cnt > 1:
                     cs = str(cnt)
-                    pyxel.text(bx + slot - len(cs) * 4 - 1, by + slot - 6, cs, 7)
+                    self.draw_text(bx + slot - len(cs) * 4 * s - s, by + slot - 6 * s - s, cs, 7, scale=s)
 
         cur_item = self.hotbar[self.selected][0]
         cur_cnt = self.hotbar[self.selected][1]
         cur_name = get_item_name(cur_item) if cur_cnt > 0 else "Empty"
-        self.center_text(y0 - 20 if self.player.mode == "survival" else y0 - 8, cur_name, 7, shadow=True)
+        self.center_text(y0 - (20 * s if self.player.mode == "survival" else 10 * s), cur_name, 7, shadow=True, scale=s)
 
         if self.message and self.play_time - self.message_time < 2.5:
-            self.center_text(y0 - 28, self.message, 10, shadow=True)
+            self.center_text(y0 - 28 * s, self.message, 10, shadow=True, scale=s)
 
         # Status bars: Hearts & Bubbles in Survival
         if self.player.mode == "survival":
-            self.draw_status_bars(x0, y0 - 10)
+            self.draw_status_bars(x0, y0 - 10 * s)
 
         # Debug & Help overlays
-        y = 2
+        y = 2 * s
         if self.show_debug:
             px, py, pz = self.player.pos
             hours = int((self.time_of_day * 24 + 6) % 24)
+            fs_text = "  [FULLSCREEN]" if self.fullscreen_enabled else ""
             lines = [
-                f"FPS {self.fps:4.0f} / {self.settings['fps']}  {w}x{h}  FOV {self.settings['fov']}",
+                f"FPS {self.fps:4.0f} / {self.settings['fps']}  {w}x{h} (UI {s}x)  FOV {self.settings['fov']}{fs_text}",
                 f"XYZ {px:5.1f} {py:5.1f} {pz:5.1f}  MODE: {self.player.mode.upper()}",
                 f"Time {hours:02d}:00  Seed {self.world.seed}" + ("  FLY" if self.player.flying else ""),
             ]
@@ -1069,60 +1185,62 @@ class App:
                 t_name = get_item_name(self.world.get(tx, ty, tz))
                 lines.append(f"Target: {t_name} [{tx}, {ty}, {tz}]")
             for line in lines:
-                self.shadow_text(2, y, line, 7)
-                y += 7
+                self.shadow_text(2 * s, y, line, 7, scale=s)
+                y += 7 * s
         if self.show_help:
             for line in HELP:
-                self.shadow_text(2, y, line, 6)
-                y += 7
+                self.shadow_text(2 * s, y, line, 6, scale=s)
+                y += 7 * s
         if not self.mouse_captured and self.state == "playing":
-            self.center_text(cy + 10, "Click to capture the mouse", 10, shadow=True)
+            self.center_text(cy + 12 * s, "Click to capture the mouse", 10, shadow=True, scale=s)
 
     def draw_status_bars(self, x0, y0):
+        s = self.get_ui_scale()
         # 10 Hearts (2 HP per heart)
         for i in range(10):
-            hx = x0 + i * 8
+            hx = x0 + i * 8 * s
             hy = y0
             hp = (i + 1) * 2
             # Heart outline
-            pyxel.rect(hx + 1, hy, 5, 6, 0)
-            pyxel.rect(hx, hy + 1, 7, 4, 0)
-            pyxel.pset(hx + 3, hy + 6, 0)
+            pyxel.rect(hx + s, hy, 5 * s, 6 * s, 0)
+            pyxel.rect(hx, hy + s, 7 * s, 4 * s, 0)
+            pyxel.rect(hx + 3 * s, hy + 6 * s, s, s, 0)
             if self.player.health >= hp:
                 # Full red heart
-                pyxel.rect(hx + 1, hy + 1, 5, 4, 8)
-                pyxel.pset(hx + 2, hy, 8)
-                pyxel.pset(hx + 4, hy, 8)
-                pyxel.pset(hx + 3, hy + 5, 8)
-                pyxel.pset(hx + 1, hy + 1, 7)
+                pyxel.rect(hx + s, hy + s, 5 * s, 4 * s, 8)
+                pyxel.rect(hx + 2 * s, hy, s, s, 8)
+                pyxel.rect(hx + 4 * s, hy, s, s, 8)
+                pyxel.rect(hx + 3 * s, hy + 5 * s, s, s, 8)
+                pyxel.rect(hx + s, hy + s, s, s, 7)
             elif self.player.health == hp - 1:
                 # Half red heart
-                pyxel.rect(hx + 1, hy + 1, 2, 4, 8)
-                pyxel.pset(hx + 2, hy, 8)
-                pyxel.pset(hx + 2, hy + 5, 8)
-                pyxel.pset(hx + 1, hy + 1, 7)
+                pyxel.rect(hx + s, hy + s, 2 * s, 4 * s, 8)
+                pyxel.rect(hx + 2 * s, hy, s, s, 8)
+                pyxel.rect(hx + 2 * s, hy + 5 * s, s, s, 8)
+                pyxel.rect(hx + s, hy + s, s, s, 7)
             else:
                 # Empty heart
-                pyxel.rect(hx + 1, hy + 1, 5, 4, 13)
+                pyxel.rect(hx + s, hy + s, 5 * s, 4 * s, 13)
 
         # 10 Air bubbles
         if self.player.air < self.player.max_air:
             bubbles = int(math.ceil(self.player.air))
-            slot = TILE + 4
+            slot = 20 * s
             for i in range(bubbles):
-                bx = x0 + slot * len(self.hotbar) - (10 - i) * 8
+                bx = x0 + slot * len(self.hotbar) - (10 - i) * 8 * s
                 by = y0
-                pyxel.circb(bx + 3, by + 3, 3, 12)
-                pyxel.pset(bx + 2, by + 2, 7)
+                pyxel.circb(bx + 3 * s, by + 3 * s, 3 * s, 12)
+                pyxel.rect(bx + 2 * s, by + 2 * s, s, s, 7)
 
     def draw_first_person_hand(self):
         w, h = pyxel.width, pyxel.height
-        hx, hy = w - 44, h - 36
-        bob_x = math.cos(self.player.walked * 3.5) * 3 if self.player.on_ground else 0
-        bob_y = abs(math.sin(self.player.walked * 3.5)) * 3 if self.player.on_ground else 0
+        s = self.get_ui_scale()
+        hx, hy = w - 44 * s, h - 36 * s
+        bob_x = (math.cos(self.player.walked * 3.5) * 3 * s) if self.player.on_ground else 0
+        bob_y = (abs(math.sin(self.player.walked * 3.5)) * 3 * s) if self.player.on_ground else 0
         swing_val = math.sin(self.player.swing_progress * math.pi)
-        swing_x = swing_val * 8
-        swing_y = swing_val * 10
+        swing_x = swing_val * 8 * s
+        swing_y = swing_val * 10 * s
 
         x = int(hx - swing_x + bob_x)
         y = int(hy + swing_y - bob_y)
@@ -1132,34 +1250,34 @@ class App:
 
         if item_id == 0:
             # Arm box
-            pyxel.rect(x + 10, y + 8, 22, 34, 15)
-            pyxel.rect(x + 8, y + 26, 26, 20, 12)
-            pyxel.rectb(x + 10, y + 8, 22, 34, 4)
+            pyxel.rect(x + 10 * s, y + 8 * s, 22 * s, 34 * s, 15)
+            pyxel.rect(x + 8 * s, y + 26 * s, 26 * s, 20 * s, 12)
+            pyxel.rectb(x + 10 * s, y + 8 * s, 22 * s, 34 * s, 4)
         else:
-            self.draw_icon(x + 8, y - 2, item_id, scale=2)
+            self.draw_icon(x + 8 * s, y - 2 * s, item_id, scale=2 * s)
 
     def draw_crafting_screen(self):
         self.dim_screen()
-        w, h = pyxel.width, pyxel.height
+        lay = self.craft_layout()
+        s, slot_s = lay["s"], lay["slot_s"]
+
         title = "Crafting Table (3x3)" if self.craft_size == 3 else "Crafting & Inventory (2x2)"
-        self.center_text(12, title, 7, shadow=True)
+        self.center_text(12 * s, title, 7, shadow=True, scale=s)
 
         # Quick recipes on left
-        pyxel.text(10, 28, "Quick Recipes:", 10)
+        self.draw_text(lay["qx"], lay["qy0"] - 10 * s, "Quick Recipes:", 10, scale=s)
         for q_idx, (r_name, r_ingr, r_out) in enumerate(self.quick_recipes()):
-            qy = 40 + q_idx * 15
+            qy = lay["qy0"] + q_idx * (lay["qh"] + 2 * s)
             can_craft = self.has_ingredients(r_ingr)
-            hover = 8 <= pyxel.mouse_x < 85 and qy <= pyxel.mouse_y < qy + 12
-            pyxel.rect(8, qy, 76, 12, 5 if hover else (1 if can_craft else 0))
-            pyxel.rectb(8, qy, 76, 12, 7 if hover else (13 if can_craft else 1))
-            self.draw_icon(10, qy + 1, r_out[0])
-            pyxel.text(25, qy + 3, r_name, 10 if can_craft else 6)
+            hover = lay["qx"] <= pyxel.mouse_x < lay["qx"] + lay["qw"] and qy <= pyxel.mouse_y < qy + lay["qh"]
+            pyxel.rect(lay["qx"], qy, lay["qw"], lay["qh"], 5 if hover else (1 if can_craft else 0))
+            pyxel.rectb(lay["qx"], qy, lay["qw"], lay["qh"], 7 if hover else (13 if can_craft else 1))
+            self.draw_icon(lay["qx"] + 2 * s, qy + s, r_out[0], scale=s)
+            self.draw_text(lay["qx"] + 18 * s, qy + 3 * s, r_name, 10 if can_craft else 6, scale=s)
 
         # Crafting Grid in center
         size = self.craft_size
-        slot_s = 20
-        gx0 = w // 2 - (size * slot_s) // 2 - 15
-        gy0 = 45
+        gx0, gy0 = lay["gx0"], lay["gy0"]
         for r in range(size):
             for c in range(size):
                 idx = r * size + c
@@ -1168,26 +1286,26 @@ class App:
                 pyxel.rect(sx, sy, slot_s, slot_s, 1)
                 pyxel.rectb(sx, sy, slot_s, slot_s, 13)
                 if slot[0] != 0 and slot[1] > 0:
-                    self.draw_icon(sx + 2, sy + 2, slot[0])
+                    self.draw_icon(sx + 2 * s, sy + 2 * s, slot[0], scale=s)
                     if slot[1] > 1:
-                        pyxel.text(sx + 10, sy + 13, str(slot[1]), 7)
+                        self.draw_text(sx + 10 * s, sy + 12 * s, str(slot[1]), 7, scale=s)
 
         # Arrow ->
-        pyxel.text(gx0 + size * slot_s + 6, gy0 + (size * slot_s) // 2 - 2, "->", 7)
+        self.draw_text(gx0 + size * slot_s + 5 * s, gy0 + (size * slot_s) // 2 - 3 * s, "->", 7, scale=s)
 
         # Result slot
-        rx, ry = gx0 + size * slot_s + 20, gy0 + (size * slot_s) // 2 - 10
-        pyxel.rect(rx, ry, slot_s + 2, slot_s + 2, 5 if self.craft_result[0] != 0 else 1)
-        pyxel.rectb(rx, ry, slot_s + 2, slot_s + 2, 10 if self.craft_result[0] != 0 else 13)
-        if self.craft_result[0] != 0:
-            self.draw_icon(rx + 3, ry + 3, self.craft_result[0])
+        rx, ry, rw, rh = lay["rx"], lay["ry"], lay["rw"], lay["rh"]
+        has_res = self.craft_result[0] != 0
+        pyxel.rect(rx, ry, rw, rh, 5 if has_res else 1)
+        pyxel.rectb(rx, ry, rw, rh, 10 if has_res else 13)
+        if has_res:
+            self.draw_icon(rx + 2 * s, ry + 2 * s, self.craft_result[0], scale=s)
             if self.craft_result[1] > 1:
-                pyxel.text(rx + 11, ry + 15, str(self.craft_result[1]), 10)
+                self.draw_text(rx + 10 * s, ry + 12 * s, str(self.craft_result[1]), 10, scale=s)
 
         # Main Inventory (3 rows of 9) + Hotbar (1 row of 9)
-        ix0 = (w - 9 * slot_s) // 2
-        iy0 = h - 5 * slot_s - 8
-        pyxel.text(ix0, iy0 - 8, "Inventory:", 7)
+        ix0, iy0 = lay["ix0"], lay["iy0"]
+        self.draw_text(ix0, iy0 - 8 * s, "Inventory:", 7, scale=s)
         for row in range(3):
             for col in range(9):
                 idx = row * 9 + col
@@ -1196,39 +1314,62 @@ class App:
                 pyxel.rect(sx, sy, slot_s, slot_s, 1)
                 pyxel.rectb(sx, sy, slot_s, slot_s, 13)
                 if slot[0] != 0 and slot[1] > 0:
-                    self.draw_icon(sx + 2, sy + 2, slot[0])
+                    self.draw_icon(sx + 2 * s, sy + 2 * s, slot[0], scale=s)
                     if slot[1] > 1:
-                        pyxel.text(sx + 10, sy + 13, str(slot[1]), 7)
+                        self.draw_text(sx + 10 * s, sy + 12 * s, str(slot[1]), 7, scale=s)
 
-        # Hotbar
-        hy0 = iy0 + 3 * slot_s + 4
+        # Hotbar row
+        hy0 = iy0 + 3 * slot_s + 4 * s
         for col in range(9):
             sx, sy = ix0 + col * slot_s, hy0
             slot = self.hotbar[col]
             pyxel.rect(sx, sy, slot_s, slot_s, 1)
             pyxel.rectb(sx, sy, slot_s, slot_s, 7 if col == self.selected else 13)
             if slot[0] != 0 and slot[1] > 0:
-                self.draw_icon(sx + 2, sy + 2, slot[0])
+                self.draw_icon(sx + 2 * s, sy + 2 * s, slot[0], scale=s)
                 if slot[1] > 1:
-                    pyxel.text(sx + 10, sy + 13, str(slot[1]), 7)
+                    self.draw_text(sx + 10 * s, sy + 12 * s, str(slot[1]), 7, scale=s)
 
     @staticmethod
     def draw_icon(x, y, item_id, scale=1):
         tile = get_item_tile(item_id)
         u, v = (tile % ATLAS_TILES) * TILE, (tile // ATLAS_TILES) * TILE
-        pyxel.blt(x, y, 0, u, v, TILE, TILE, colkey=0, scale=scale)
-
-    def center_text(self, y, s, col, shadow=False):
-        x = (pyxel.width - len(s) * 4) // 2
-        if shadow:
-            self.shadow_text(x, y, s, col)
+        if scale <= 1:
+            pyxel.blt(int(x), int(y), 0, u, v, TILE, TILE, colkey=0)
         else:
-            pyxel.text(x, y, s, col)
+            bx = int(x + (scale - 1) * (TILE / 2))
+            by = int(y + (scale - 1) * (TILE / 2))
+            pyxel.blt(bx, by, 0, u, v, TILE, TILE, colkey=0, scale=scale)
 
-    @staticmethod
-    def shadow_text(x, y, s, col):
-        pyxel.text(x + 1, y + 1, s, 0)
-        pyxel.text(x, y, s, col)
+    def draw_text(self, x, y, s, col, scale=1):
+        if not s:
+            return
+        if "\n" in s:
+            for idx, line in enumerate(s.split("\n")):
+                self.draw_text(x, y + idx * 7 * scale, line, col, scale=scale)
+            return
+        if scale <= 1:
+            pyxel.text(int(x), int(y), s, col)
+            return
+        w = min(self.text_scratch.width, max(1, len(s) * 4))
+        h = 6
+        self.text_scratch.cls(255)
+        self.text_scratch.text(0, 0, s, col)
+        bx = int(x + (scale - 1) * (w / 2))
+        by = int(y + (scale - 1) * (h / 2))
+        pyxel.blt(bx, by, self.text_scratch, 0, 0, w, h, colkey=255, scale=scale)
+
+    def shadow_text(self, x, y, s, col, scale=1):
+        self.draw_text(x + scale, y + scale, s, 0, scale=scale)
+        self.draw_text(x, y, s, col, scale=scale)
+
+    def center_text(self, y, s, col, shadow=False, scale=1):
+        w = len(s) * 4 * scale
+        x = (pyxel.width - w) // 2
+        if shadow:
+            self.shadow_text(x, y, s, col, scale=scale)
+        else:
+            self.draw_text(x, y, s, col, scale=scale)
 
 
 if __name__ == "__main__":

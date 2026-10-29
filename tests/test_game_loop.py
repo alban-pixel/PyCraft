@@ -8,13 +8,6 @@ import blocks
 from main import App
 
 
-@pytest.fixture(scope="module")
-def headless_app():
-    # Pyxel only supports one pyxel.init per process lifecycle.
-    app = App(headless=True)
-    return app
-
-
 def test_app_initialization(headless_app):
     app = headless_app
     assert app.headless is True
