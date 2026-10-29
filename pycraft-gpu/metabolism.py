@@ -18,6 +18,8 @@ from dataclasses import dataclass
 import math
 from typing import Dict, Tuple
 
+import blocks
+
 EXHAUSTION_SPRINT_PER_M = 0.10
 EXHAUSTION_JUMP = 0.05
 EXHAUSTION_SPRINT_JUMP = 0.20
@@ -38,20 +40,45 @@ class FoodItem:
 
 # Nutritional food table
 FOOD_PROPERTIES: Dict[int, FoodItem] = {
-    109: FoodItem(food=3, saturation=1.8),   # ITEM_RAW_PORK
-    110: FoodItem(food=8, saturation=12.8),  # ITEM_COOKED_PORK
-    111: FoodItem(food=4, saturation=2.4),   # Apple
-    112: FoodItem(food=5, saturation=6.0),   # Bread
-    113: FoodItem(food=6, saturation=14.4),  # Golden Carrot
-    114: FoodItem(food=4, saturation=9.6),   # Golden Apple
-    115: FoodItem(food=4, saturation=0.8),   # Rotten Flesh
+    blocks.ITEM_RAW_PORK: FoodItem(food=3, saturation=1.8),
+    blocks.ITEM_COOKED_PORK: FoodItem(food=8, saturation=12.8),
+    blocks.ITEM_APPLE: FoodItem(food=4, saturation=2.4),
+    blocks.ITEM_BREAD: FoodItem(food=5, saturation=6.0),
+    blocks.ITEM_GOLDEN_CARROT: FoodItem(food=6, saturation=14.4),
+    blocks.ITEM_GOLDEN_APPLE: FoodItem(food=4, saturation=9.6),
     # 1.8 Food items
-    120: FoodItem(food=2, saturation=1.2),   # ITEM_RAW_MUTTON
-    121: FoodItem(food=6, saturation=9.6),   # ITEM_COOKED_MUTTON
-    122: FoodItem(food=3, saturation=1.8),   # ITEM_RAW_RABBIT
-    123: FoodItem(food=5, saturation=6.0),   # ITEM_COOKED_RABBIT
-    124: FoodItem(food=10, saturation=12.0), # ITEM_RABBIT_STEW
+    blocks.ITEM_RAW_MUTTON: FoodItem(food=2, saturation=1.2),
+    blocks.ITEM_COOKED_MUTTON: FoodItem(food=6, saturation=9.6),
+    blocks.ITEM_RAW_RABBIT: FoodItem(food=3, saturation=1.8),
+    blocks.ITEM_COOKED_RABBIT: FoodItem(food=5, saturation=6.0),
+    blocks.ITEM_RABBIT_STEW: FoodItem(food=10, saturation=12.0),
+    blocks.ITEM_RAW_BEEF: FoodItem(food=3, saturation=1.8),
+    blocks.ITEM_STEAK: FoodItem(food=8, saturation=12.8),
+    blocks.ITEM_RAW_CHICKEN: FoodItem(food=2, saturation=1.2),
+    blocks.ITEM_COOKED_CHICKEN: FoodItem(food=6, saturation=7.2),
 }
+
+# Legacy ID backwards compatibility mapping for unit tests
+_LEGACY_FOOD_MAP = {
+    109: blocks.ITEM_RAW_PORK,
+    110: blocks.ITEM_COOKED_PORK,
+    111: blocks.ITEM_APPLE,
+    112: blocks.ITEM_BREAD,
+    113: blocks.ITEM_GOLDEN_CARROT,
+    114: blocks.ITEM_GOLDEN_APPLE,
+    120: blocks.ITEM_RAW_MUTTON,
+    121: blocks.ITEM_COOKED_MUTTON,
+    122: blocks.ITEM_RAW_RABBIT,
+    123: blocks.ITEM_COOKED_RABBIT,
+    124: blocks.ITEM_RABBIT_STEW,
+    125: blocks.ITEM_RAW_BEEF,
+    126: blocks.ITEM_STEAK,
+    127: blocks.ITEM_RAW_CHICKEN,
+    128: blocks.ITEM_COOKED_CHICKEN,
+}
+for leg_id, new_id in _LEGACY_FOOD_MAP.items():
+    if new_id in FOOD_PROPERTIES and leg_id not in FOOD_PROPERTIES:
+        FOOD_PROPERTIES[leg_id] = FOOD_PROPERTIES[new_id]
 
 
 class Metabolism:

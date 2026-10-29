@@ -10,8 +10,10 @@ import moderngl
 import numpy as np
 
 from blocks import (
-    ATLAS_TILES, BLOCK_TILES, CUTOUT, OPAQUE, SELF_CULL, WATER,
+    ATLAS_TILES, BLOCK_TILES, CROSS_MODEL, CUTOUT, OPAQUE, SELF_CULL, SLAB, WATER,
     T_CRACK_0, T_DIRT, T_PIG_BODY, T_PIG_FACE, T_ZOMBIE_BODY, T_ZOMBIE_FACE,
+    T_GRASS_TOP, T_LEAVES, T_SNOW, T_SLIME, T_OBSIDIAN, T_LAVA, T_PLANKS, T_STONE, T_COBBLE, T_SAND,
+    get_item_tile,
 )
 from lod import LODManager
 
@@ -378,8 +380,8 @@ class Renderer:
         parts = []
         for face, ((dx, dy, dz), corners, shade) in enumerate(FACES):
             neighbor = region[1 + dx:1 + dx + nx, 1 + dy:1 + dy + ny, 1 + dz:1 + dz + nz]
-            # A face shows when its neighbor doesn't hide it: not opaque, and not the same glass/water
-            visible = (core != 0) & ~OPAQUE[neighbor] & ~((core == neighbor) & SELF_CULL[core])
+            # A face shows when its neighbor doesn't hide it: not opaque, not cross-model, and not the same glass/water
+            visible = (core != 0) & ~CROSS_MODEL[core] & ~OPAQUE[neighbor] & ~((core == neighbor) & SELF_CULL[core])
             i, j, k = np.nonzero(visible)
             if i.size == 0:
                 continue
@@ -390,6 +392,12 @@ class Renderer:
             low = (blocks == WATER) & ~water_above[i, j, k]
             top_corner = np.array(corners)[:, 1] == 1
             pos[low[:, None] & top_corner[None], 1] -= 1 - WATER_SURFACE
+
+            # Lower slab top and upper side corners to 0.5 height
+            is_slab = SLAB[blocks]
+            if np.any(is_slab):
+                pos[is_slab[:, None] & top_corner[None], 1] -= 0.5
+
             tile = BLOCK_TILES[blocks, face]
             tile_xy = np.stack([tile % ATLAS_TILES, tile // ATLAS_TILES], axis=1).astype(np.float32)
             uv = (tile_xy[:, None, :] + UV_INSET + CORNER_UV[None] * (1 - 2 * UV_INSET)) / ATLAS_TILES
@@ -418,6 +426,40 @@ class Renderer:
             t_flipped = combined[:, [1, 2, 3, 1, 3, 0], :]
             verts = np.where(flip[:, None, None], t_flipped, t_normal)
             parts.append(verts.reshape(-1, 7))
+
+        # Cross-model diagonal quads for plants, flowers, torches
+        cross_idx = np.nonzero(CROSS_MODEL[core])
+        if cross_idx[0].size > 0:
+            ci, cj, ck = cross_idx
+            c_blocks = core[ci, cj, ck]
+            c_tiles = BLOCK_TILES[c_blocks, 0]
+            c_tile_xy = np.stack([c_tiles % ATLAS_TILES, c_tiles // ATLAS_TILES], axis=1).astype(np.float32)
+            c_uv = (c_tile_xy[:, None, :] + UV_INSET + CORNER_UV[None] * (1 - 2 * UV_INSET)) / ATLAS_TILES
+            c_base = np.stack([ci + x0, cj, ck + z0], axis=1).astype(np.float32)
+
+            # Diagonal 1: (0.15, 0, 0.15) to (0.85, 1, 0.85)
+            p1 = c_base[:, None, :] + np.array([
+                [0.15, 0.0, 0.15],
+                [0.85, 0.0, 0.85],
+                [0.85, 1.0, 0.85],
+                [0.15, 1.0, 0.15],
+            ], dtype=np.float32)[None]
+
+            # Diagonal 2: (0.85, 0, 0.15) to (0.15, 1, 0.85)
+            p2 = c_base[:, None, :] + np.array([
+                [0.85, 0.0, 0.15],
+                [0.15, 0.0, 0.85],
+                [0.15, 1.0, 0.85],
+                [0.85, 1.0, 0.15],
+            ], dtype=np.float32)[None]
+
+            for diag_p in (p1, p2):
+                extra = np.full((ci.size, 4, 2), [0.95, 1.0], dtype=np.float32)  # shade 0.95, kind 1.0 (cutout)
+                comb = np.concatenate([diag_p, c_uv, extra], axis=2)
+                # Front-facing
+                parts.append(comb[:, [0, 1, 2, 0, 2, 3], :].reshape(-1, 7))
+                # Back-facing
+                parts.append(comb[:, [2, 1, 0, 3, 2, 0], :].reshape(-1, 7))
 
         old = self.chunks.pop((cx, cz), None)
         if old:
@@ -487,10 +529,12 @@ class Renderer:
             parts.append(np.concatenate([f_p, f_uv, f_sh, f_kd], axis=1))
         return np.concatenate(parts, axis=0)
 
-    def _build_entities_mesh(self, entities, alpha: float = 0.0):
+    @classmethod
+    def _build_entities_mesh(cls, entities, alpha: float = 0.0):
         if not entities:
             return None, 0
         boxes = []
+        make_box = cls._make_box_verts
         for ent in entities:
             if hasattr(ent, "prev_pos") and ent.prev_pos is not None:
                 x = (1.0 - alpha) * ent.prev_pos[0] + alpha * ent.pos[0]
@@ -498,46 +542,121 @@ class Renderer:
                 z = (1.0 - alpha) * ent.prev_pos[2] + alpha * ent.pos[2]
             else:
                 x, y, z = ent.pos
-            yaw = ent.yaw
-            shade_mult = 1.8 if ent.hurt_timer > 0 else 1.0
+            yaw = getattr(ent, "yaw", 0.0)
+            shade_mult = 1.8 if getattr(ent, "hurt_timer", 0.0) > 0 else 1.0
 
-            if ent.kind == "zombie":
+            # 1. Dropped Items (spinning, floating, bobbing miniature cube)
+            if getattr(ent, "kind", "") == "item" or hasattr(ent, "item_id"):
+                item_id = getattr(ent, "item_id", 1)
+                tile = get_item_tile(item_id)
+                age = getattr(ent, "age", 0.0)
+                bob = 0.06 * math.sin(age * 4.0)
+                boxes.append(make_box((x, y + 0.15 + bob, z), (0.28, 0.28, 0.28), yaw, tile, kind=0.0))
+                continue
+
+            # 2. Living Mobs with custom 3D geometries
+            walk = getattr(ent, "walk_cycle", 0.0)
+            yaw_rad = math.radians(yaw)
+            cos_y, sin_y = math.cos(yaw_rad), math.sin(yaw_rad)
+
+            k = getattr(ent, "kind", "")
+            if k in ("zombie", "skeleton", "zombie_pigman", "wither_skeleton", "villager", "witch"):
+                face_t = T_ZOMBIE_FACE if k == "zombie" else (T_STONE if "skeleton" in k else T_DIRT)
+                body_t = T_ZOMBIE_BODY if k == "zombie" else (T_COBBLE if "skeleton" in k else T_PLANKS)
                 # Head
-                boxes.append(self._make_box_verts((x, y + 1.55, z), (0.45, 0.45, 0.45), yaw, T_ZOMBIE_FACE, shade_mult=shade_mult))
+                boxes.append(make_box((x, y + 1.55, z), (0.45, 0.45, 0.45), yaw, face_t, shade_mult=shade_mult))
                 # Torso
-                boxes.append(self._make_box_verts((x, y + 0.95, z), (0.5, 0.75, 0.28), yaw, T_ZOMBIE_BODY, shade_mult=shade_mult))
-                # Extended arms (forward)
-                yaw_rad = math.radians(yaw)
-                cos_y, sin_y = math.cos(yaw_rad), math.sin(yaw_rad)
+                boxes.append(make_box((x, y + 0.95, z), (0.5, 0.75, 0.28), yaw, body_t, shade_mult=shade_mult))
+                # Arms
                 ra_x = x + 0.32 * cos_y + 0.3 * sin_y
                 ra_z = z - 0.32 * sin_y + 0.3 * cos_y
                 la_x = x - 0.32 * cos_y + 0.3 * sin_y
                 la_z = z + 0.32 * sin_y + 0.3 * cos_y
-                boxes.append(self._make_box_verts((ra_x, y + 0.95, ra_z), (0.18, 0.18, 0.6), yaw, T_ZOMBIE_FACE, shade_mult=shade_mult))
-                boxes.append(self._make_box_verts((la_x, y + 0.95, la_z), (0.18, 0.18, 0.6), yaw, T_ZOMBIE_FACE, shade_mult=shade_mult))
-                # Legs
-                sw = math.sin(ent.walk_cycle) * 0.15
+                boxes.append(make_box((ra_x, y + 0.95, ra_z), (0.18, 0.18, 0.6), yaw, face_t, shade_mult=shade_mult))
+                boxes.append(make_box((la_x, y + 0.95, la_z), (0.18, 0.18, 0.6), yaw, face_t, shade_mult=shade_mult))
+                # Legs with walk cycle
+                sw = math.sin(walk) * 0.15
                 rl_x = x + 0.15 * cos_y + sw * sin_y
                 rl_z = z - 0.15 * sin_y + sw * cos_y
                 ll_x = x - 0.15 * cos_y - sw * sin_y
                 ll_z = z + 0.15 * sin_y - sw * cos_y
-                boxes.append(self._make_box_verts((rl_x, y + 0.3, rl_z), (0.2, 0.6, 0.2), yaw, T_DIRT, shade_mult=shade_mult))
-                boxes.append(self._make_box_verts((ll_x, y + 0.3, ll_z), (0.2, 0.6, 0.2), yaw, T_DIRT, shade_mult=shade_mult))
-            elif ent.kind == "pig":
-                yaw_rad = math.radians(yaw)
-                cos_y, sin_y = math.cos(yaw_rad), math.sin(yaw_rad)
+                boxes.append(make_box((rl_x, y + 0.3, rl_z), (0.2, 0.6, 0.2), yaw, T_DIRT, shade_mult=shade_mult))
+                boxes.append(make_box((ll_x, y + 0.3, ll_z), (0.2, 0.6, 0.2), yaw, T_DIRT, shade_mult=shade_mult))
+
+            elif k in ("pig", "cow", "sheep", "mooshroom", "ocelot", "wolf", "horse", "rabbit"):
+                body_t = T_PIG_BODY if k == "pig" else (160 if k == "sheep" else (T_DIRT if k in ("cow", "mooshroom") else T_SAND))
+                face_t = T_PIG_FACE if k == "pig" else body_t
+                scale = 0.5 if k == "rabbit" else (1.3 if k == "horse" else 1.0)
                 # Body
-                boxes.append(self._make_box_verts((x, y + 0.45, z), (0.65, 0.55, 0.9), yaw, T_PIG_BODY, shade_mult=shade_mult))
+                boxes.append(make_box((x, y + 0.45 * scale, z), (0.65 * scale, 0.55 * scale, 0.9 * scale), yaw, body_t, shade_mult=shade_mult))
                 # Head
-                hx = x + 0.45 * sin_y
-                hz = z + 0.45 * cos_y
-                boxes.append(self._make_box_verts((hx, y + 0.6, hz), (0.42, 0.42, 0.42), yaw, T_PIG_FACE, shade_mult=shade_mult))
+                hx = x + 0.45 * scale * sin_y
+                hz = z + 0.45 * scale * cos_y
+                boxes.append(make_box((hx, y + 0.6 * scale, hz), (0.42 * scale, 0.42 * scale, 0.42 * scale), yaw, face_t, shade_mult=shade_mult))
                 # 4 legs
-                sw = math.sin(ent.walk_cycle) * 0.12
+                sw = math.sin(walk) * 0.12 * scale
                 for ox, oz, s in [(-0.2, -0.3, sw), (0.2, -0.3, -sw), (-0.2, 0.3, -sw), (0.2, 0.3, sw)]:
+                    lx = x + (ox * scale) * cos_y + (oz * scale + s) * sin_y
+                    lz = z - (ox * scale) * sin_y + (oz * scale + s) * cos_y
+                    boxes.append(make_box((lx, y + 0.18 * scale, lz), (0.18 * scale, 0.35 * scale, 0.18 * scale), yaw, body_t, shade_mult=shade_mult))
+
+            elif k == "creeper":
+                # Head
+                boxes.append(make_box((x, y + 1.45, z), (0.45, 0.45, 0.45), yaw, T_GRASS_TOP, shade_mult=shade_mult))
+                # Torso
+                boxes.append(make_box((x, y + 0.85, z), (0.45, 0.75, 0.25), yaw, T_LEAVES, shade_mult=shade_mult))
+                # 4 stubby legs
+                sw = math.sin(walk) * 0.08
+                for ox, oz, s in [(-0.16, -0.16, sw), (0.16, -0.16, -sw), (-0.16, 0.16, -sw), (0.16, 0.16, sw)]:
                     lx = x + ox * cos_y + (oz + s) * sin_y
                     lz = z - ox * sin_y + (oz + s) * cos_y
-                    boxes.append(self._make_box_verts((lx, y + 0.18, lz), (0.18, 0.35, 0.18), yaw, T_PIG_BODY, shade_mult=shade_mult))
+                    boxes.append(make_box((lx, y + 0.22, lz), (0.2, 0.45, 0.2), yaw, T_LEAVES, shade_mult=shade_mult))
+
+            elif k in ("spider", "cave_spider"):
+                scale = 0.7 if k == "cave_spider" else 1.0
+                hx = x + 0.35 * scale * sin_y
+                hz = z + 0.35 * scale * cos_y
+                boxes.append(make_box((hx, y + 0.25 * scale, hz), (0.4 * scale, 0.35 * scale, 0.4 * scale), yaw, T_OBSIDIAN, shade_mult=shade_mult))
+                ax = x - 0.35 * scale * sin_y
+                az = z - 0.35 * scale * cos_y
+                boxes.append(make_box((ax, y + 0.35 * scale, az), (0.7 * scale, 0.5 * scale, 0.8 * scale), yaw, T_OBSIDIAN, shade_mult=shade_mult))
+
+            elif k == "enderman":
+                boxes.append(make_box((x, y + 2.6, z), (0.35, 0.35, 0.35), yaw, T_OBSIDIAN, shade_mult=shade_mult))
+                boxes.append(make_box((x, y + 1.8, z), (0.35, 0.8, 0.2), yaw, T_OBSIDIAN, shade_mult=shade_mult))
+                boxes.append(make_box((x - 0.1 * cos_y, y + 0.65, z + 0.1 * sin_y), (0.12, 1.3, 0.12), yaw, T_OBSIDIAN, shade_mult=shade_mult))
+                boxes.append(make_box((x + 0.1 * cos_y, y + 0.65, z - 0.1 * sin_y), (0.12, 1.3, 0.12), yaw, T_OBSIDIAN, shade_mult=shade_mult))
+
+            elif k in ("slime", "magma_cube"):
+                t = T_SLIME if k == "slime" else T_LAVA
+                boxes.append(make_box((x, y + 0.5, z), (0.9, 0.9, 0.9), yaw, t, shade_mult=shade_mult))
+
+            elif k == "chicken":
+                boxes.append(make_box((x, y + 0.25, z), (0.35, 0.3, 0.4), yaw, 160, shade_mult=shade_mult))
+                hx = x + 0.2 * sin_y
+                hz = z + 0.2 * cos_y
+                boxes.append(make_box((hx, y + 0.5, hz), (0.2, 0.25, 0.2), yaw, 160, shade_mult=shade_mult))
+
+            elif k == "iron_golem":
+                boxes.append(make_box((x, y + 1.9, z), (0.9, 0.8, 0.5), yaw, 145, shade_mult=shade_mult))
+                boxes.append(make_box((x, y + 2.5, z), (0.45, 0.5, 0.45), yaw, 145, shade_mult=shade_mult))
+                boxes.append(make_box((x, y + 0.5, z), (0.6, 1.0, 0.4), yaw, 145, shade_mult=shade_mult))
+
+            elif k == "snow_golem":
+                boxes.append(make_box((x, y + 0.4, z), (0.7, 0.7, 0.7), yaw, T_SNOW, shade_mult=shade_mult))
+                boxes.append(make_box((x, y + 1.05, z), (0.5, 0.5, 0.5), yaw, T_SNOW, shade_mult=shade_mult))
+                boxes.append(make_box((x, y + 1.55, z), (0.4, 0.4, 0.4), yaw, T_DIRT, shade_mult=shade_mult))
+
+            elif k in ("ghast", "ender_dragon", "wither"):
+                t = T_SNOW if k == "ghast" else T_OBSIDIAN
+                w = getattr(ent, "width", 2.0)
+                h = getattr(ent, "height", 2.0)
+                boxes.append(make_box((x, y + h * 0.5, z), (w, h, w), yaw, t, shade_mult=shade_mult))
+
+            else:
+                w = getattr(ent, "width", 0.6)
+                h = getattr(ent, "height", 1.0)
+                boxes.append(make_box((x, y + h * 0.5, z), (w, h, w), yaw, T_DIRT, shade_mult=shade_mult))
 
         if not boxes:
             return None, 0

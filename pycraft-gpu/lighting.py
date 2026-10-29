@@ -14,16 +14,21 @@ import numpy as np
 
 from blocks import (
     AIR, GLASS, GLOWSTONE, ICE, LAVA, LEAVES, OPAQUE, WATER,
+    LIT_FURNACE, SEA_LANTERN, BEACON, REDSTONE_TORCH, LIT_REDSTONE_LAMP, TORCH as BLOCKS_TORCH,
 )
 
-# Optional TORCH definition
-TORCH = 13
+TORCH = BLOCKS_TORCH
 
 # Light emission by block ID [0, 15]
 LIGHT_EMITTERS: Dict[int, int] = {
     GLOWSTONE: 15,
     LAVA: 15,
     TORCH: 14,
+    LIT_FURNACE: 13,
+    SEA_LANTERN: 15,
+    BEACON: 15,
+    REDSTONE_TORCH: 7,
+    LIT_REDSTONE_LAMP: 15,
 }
 
 # Opacity / attenuation by block ID

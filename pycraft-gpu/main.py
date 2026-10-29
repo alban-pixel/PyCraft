@@ -669,10 +669,22 @@ class App:
         slot = self.hotbar[self.selected]
         if slot[0] != 0 and slot[1] > 0:
             cnt = slot[1] if pyxel.btn(pyxel.KEY_LCTRL) else 1
-            slot[1] -= cnt
             dropped_id = slot[0]
+            slot[1] -= cnt
             if slot[1] <= 0:
                 slot[0] = 0
+            if hasattr(self, "entity_mgr"):
+                eye = self.player.eye()
+                fwd = self.player.forward()
+                px = eye[0] + fwd[0] * 0.4
+                py = eye[1] - 0.2 + fwd[1] * 0.4
+                pz = eye[2] + fwd[2] * 0.4
+                vx = fwd[0] * 4.5 + random.uniform(-0.3, 0.3)
+                vy = fwd[1] * 4.5 + 2.0
+                vz = fwd[2] * 4.5 + random.uniform(-0.3, 0.3)
+                self.entity_mgr.spawn_dropped_item(
+                    dropped_id, cnt, px, py, pz, vx=vx, vy=vy, vz=vz, pickup_delay=1.0
+                )
             self.notify(f"Dropped {get_item_name(dropped_id)} x{cnt}")
             self.sfx(SND_CLICK)
 
@@ -1252,7 +1264,7 @@ class App:
 
             # Mobs update
             daylight = (math.sin(self.time_of_day * 2 * math.pi) + 1.0) * 0.5
-            mob_events, mob_drops = self.entity_mgr.update(self.world, TICK_DURATION, self.player.pos, daylight)
+            mob_events, mob_drops = self.entity_mgr.update(self.world, TICK_DURATION, self.player.pos, daylight, player=self)
             for me in mob_events:
                 if me == "zombie_attack":
                     net_dmg = CombatEngine.compute_total_mitigated_damage(3.0, armor=0.0)
@@ -1260,9 +1272,16 @@ class App:
                     if actual_dmg > 0 and self.player.take_damage(int(round(actual_dmg))):
                         self.sfx(SND_HURT)
                         self.notify("Zombie attacked you!")
+                elif isinstance(me, tuple) and me[0] == "item_pickup":
+                    self.sfx(SND_CLICK)
+                    self.notify(f"Picked up {get_item_name(me[1])} x{me[2]}")
+                elif me == "item_pickup":
+                    self.sfx(SND_CLICK)
             for drop_item, drop_pos in mob_drops:
-                self.add_to_inventory(drop_item, 1)
-                self.notify(f"Collected {get_item_name(drop_item)}")
+                # If physical dropped item wasn't already picked up
+                if hasattr(self, "add_to_inventory"):
+                    self.add_to_inventory(drop_item, 1)
+                    self.notify(f"Collected {get_item_name(drop_item)}")
 
         self.clock.advance(dt, tick_logic)
 
@@ -1390,7 +1409,14 @@ class App:
         for _ in range(12):
             self.particles.append(Particle(x + 0.5, y + 0.5, z + 0.5, col))
         if self.player.mode == "survival":
-            self.add_to_inventory(block_id, 1)
+            if hasattr(self, "entity_mgr"):
+                self.entity_mgr.spawn_dropped_item(
+                    block_id, 1, x + 0.5, y + 0.5, z + 0.5,
+                    vx=random.uniform(-0.5, 0.5), vy=2.2, vz=random.uniform(-0.5, 0.5),
+                    pickup_delay=0.3
+                )
+            else:
+                self.add_to_inventory(block_id, 1)
 
     def update_look(self):
         keys_yaw = pyxel.btn(pyxel.KEY_LEFT) - pyxel.btn(pyxel.KEY_RIGHT)
@@ -1860,9 +1886,10 @@ class App:
             crack_stage = min(3, max(0, int((self.mining_time / hardness) * 4)))
 
         self.renderer.set_environment(light, zenith, horizon, sun_dir, *fog)
+        all_entities = (self.entity_mgr.entities + self.entity_mgr.dropped_items) if (hasattr(self, "entity_mgr") and not self.on_title()) else None
         self.renderer.render(
             self.screen, eye, forward, target,
-            entities=self.entity_mgr.entities if not self.on_title() else None,
+            entities=all_entities,
             mining_target=self.mining_target if self.state == "playing" else None,
             crack_stage=crack_stage,
             render_dist=rd,

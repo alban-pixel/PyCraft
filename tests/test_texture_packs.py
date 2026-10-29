@@ -94,6 +94,7 @@ def test_build_pack_atlas_variants(tmp_path):
 def test_app_resource_pack_workflow(headless_app, tmp_path):
     """Test switching texture packs in App updates active pack, image bank, and ModernGL texture."""
     app = headless_app
+    app.set_resource_pack("default")
     app.resource_packs_dir = str(tmp_path / "resourcepacks")
     app.texture_pack_mgr = TexturePackManager(app.resource_packs_dir)
 
