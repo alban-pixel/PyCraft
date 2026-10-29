@@ -60,7 +60,7 @@ DEFAULT_SETTINGS = {
     "fullscreen": False,
     "gui_scale": "Auto",
 }
-MAX_DT = 1 / 30
+MAX_DT = 0.1
 REACH = 5.5
 KEY_LOOK_SPEED = 120.0
 DAY_SECONDS = 8 * 60
@@ -595,6 +595,8 @@ class App:
             "time_of_day": self.time_of_day,
             "hotbar": np.array([[int(s[0]), int(s[1]), int(s[2]) if len(s) > 2 else 0] for s in self.hotbar], dtype=np.int32),
             "inventory": np.array([[int(s[0]), int(s[1]), int(s[2]) if len(s) > 2 else 0] for s in self.inventory], dtype=np.int32),
+            "armor": np.array([[int(s[0]), int(s[1]), int(s[2]) if len(s) > 2 else 0] for s in getattr(p, "armor_slots", [[0, 0]] * 4)], dtype=np.int32),
+            "offhand": np.array([int(s) for s in getattr(p, "offhand_slot", [0, 0])[:2]], dtype=np.int32),
             "selected": self.selected,
             "mode": self.player.mode,
         }
@@ -658,6 +660,10 @@ class App:
                         self.inventory.append([int(s), 64])
                 while len(self.inventory) < 27:
                     self.inventory.append([0, 0])
+            if "armor" in data:
+                self.player.armor_slots = [list(map(int, s)) for s in data["armor"]]
+            if "offhand" in data:
+                self.player.offhand_slot = list(map(int, data["offhand"]))
             self.selected = int(data.get("selected", 0))
             self.clock.reset(int(self.time_of_day * TICKS_PER_DAY))
             self.renderer.set_world(self.world, spawn_pos=self.player.pos, render_dist=self.settings.get("render_distance", 4))
@@ -1133,8 +1139,8 @@ class App:
         if self.fluid_timer >= 0.15:
             self.fluid_timer = 0.0
             updated_chunks = self.world.tick_fluids()
-            for cx, cz in updated_chunks:
-                self.renderer.block_changed(cx * 16, cz * 16)
+            if updated_chunks:
+                self.renderer.rebuild_chunks(updated_chunks)
 
         if self.player.health <= 0:
             self.sfx(SND_HURT)
@@ -1315,6 +1321,10 @@ class App:
             pvy = py0 + 8 * s
             pvw = 48 * s
             pvh = 70 * s
+            arm_x0 = px0 + 8 * s
+            arm_y0 = py0 + 8 * s
+            off_x0 = px0 + 77 * s
+            off_y0 = py0 + 60 * s
             gx0 = px0 + 88 * s
             gy0 = py0 + 18 * s
             ax = px0 + 130 * s
@@ -1326,6 +1336,8 @@ class App:
                 "s": s, "slot_s": slot_s, "size": size,
                 "pw": pw, "ph": ph, "px0": px0, "py0": py0,
                 "pvx": pvx, "pvy": pvy, "pvw": pvw, "pvh": pvh,
+                "arm_x0": arm_x0, "arm_y0": arm_y0,
+                "off_x0": off_x0, "off_y0": off_y0,
                 "gx0": gx0, "gy0": gy0,
                 "ax": ax, "ay": ay,
                 "rx": rx, "ry": ry, "rw": rw, "rh": rh,
@@ -1366,6 +1378,17 @@ class App:
             if sx <= mx < sx + slot_s and sy <= my < sy + slot_s:
                 return ("hotbar", c, sx, sy, slot_s, slot_s)
 
+        # 5. Armor slots & Off-hand in 2x2 player inventory
+        if size == 2 and "arm_x0" in lay:
+            arm_x0, arm_y0 = lay["arm_x0"], lay["arm_y0"]
+            for i in range(4):
+                sx, sy = arm_x0, arm_y0 + i * slot_s
+                if sx <= mx < sx + slot_s and sy <= my < sy + slot_s:
+                    return ("armor", i, sx, sy, slot_s, slot_s)
+            off_x0, off_y0 = lay["off_x0"], lay["off_y0"]
+            if off_x0 <= mx < off_x0 + slot_s and off_y0 <= my < off_y0 + slot_s:
+                return ("offhand", 0, off_x0, off_y0, slot_s, slot_s)
+
         return None
 
     def handle_slot_click(self, slot_type, idx, is_right_click, is_shift_click):
@@ -1389,6 +1412,10 @@ class App:
             target = self.inventory[idx]
         elif slot_type == "hotbar":
             target = self.hotbar[idx]
+        elif slot_type == "armor":
+            target = self.player.armor_slots[idx]
+        elif slot_type == "offhand":
+            target = self.player.offhand_slot
         else:
             return
 
@@ -1587,6 +1614,7 @@ class App:
             mining_target=self.mining_target if self.state == "playing" else None,
             crack_stage=crack_stage,
             render_dist=rd,
+            alpha=self.clock.sub_frame_alpha,
         )
 
         # 3D Break particles
@@ -1810,6 +1838,25 @@ class App:
         slot = 20 * s
         total_w = slot * len(self.hotbar)
 
+        # 10 Armor icons above health bar if armor > 0 (2 armor points per icon)
+        armor_pts = getattr(self.player, "armor_points", 0)
+        if armor_pts > 0:
+            for i in range(10):
+                ax = x0 + i * 8 * s
+                ay = y0 - 8 * s
+                a_val = (i + 1) * 2
+                # Armor icon outline
+                pyxel.rect(ax + s, ay, 5 * s, 6 * s, 0)
+                pyxel.rect(ax, ay + s, 7 * s, 4 * s, 0)
+                if armor_pts >= a_val:
+                    # Full armor chestplate (metallic gray & highlight)
+                    pyxel.rect(ax + s, ay + s, 5 * s, 4 * s, 6)
+                    pyxel.rect(ax + 2 * s, ay + s, 3 * s, 2 * s, 7)
+                elif armor_pts == a_val - 1:
+                    # Half armor icon
+                    pyxel.rect(ax + s, ay + s, 2 * s, 4 * s, 6)
+                    pyxel.rect(ax + 2 * s, ay + s, s, 2 * s, 7)
+
         # 10 Hearts on the left (2 HP per heart)
         for i in range(10):
             hx = x0 + i * 8 * s
@@ -2031,6 +2078,18 @@ class App:
             is_hovered = (hovered_slot_type == "hotbar" and hovered_slot_idx == c)
             self.draw_slot(sx, sy, slot_s, slot[0], slot[1], is_selected=(c == self.selected), is_hovered=is_hovered)
 
+        if size == 2 and "arm_x0" in lay:
+            arm_x0, arm_y0 = lay["arm_x0"], lay["arm_y0"]
+            for i in range(4):
+                sx, sy = arm_x0, arm_y0 + i * slot_s
+                slot = self.player.armor_slots[i]
+                is_hovered = (hovered_slot_type == "armor" and hovered_slot_idx == i)
+                self.draw_slot(sx, sy, slot_s, slot[0], slot[1], is_hovered=is_hovered)
+            off_x0, off_y0 = lay["off_x0"], lay["off_y0"]
+            slot = self.player.offhand_slot
+            is_hovered = (hovered_slot_type == "offhand")
+            self.draw_slot(off_x0, off_y0, slot_s, slot[0], slot[1], is_hovered=is_hovered)
+
         if self.cursor_item[0] != 0 and self.cursor_item[1] > 0:
             mx, my = pyxel.mouse_x, pyxel.mouse_y
             self.draw_icon(mx - 8 * s, my - 8 * s, self.cursor_item[0], scale=s)
@@ -2050,6 +2109,10 @@ class App:
                 item_id = self.inventory[hovered_slot_idx][0]
             elif hovered_slot_type == "hotbar":
                 item_id = self.hotbar[hovered_slot_idx][0]
+            elif hovered_slot_type == "armor":
+                item_id = self.player.armor_slots[hovered_slot_idx][0]
+            elif hovered_slot_type == "offhand":
+                item_id = self.player.offhand_slot[0]
 
             if item_id > 0:
                 name = get_item_name(item_id)

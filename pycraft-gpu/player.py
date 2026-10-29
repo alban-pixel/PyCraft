@@ -70,6 +70,17 @@ class Player:
         # Deterministic sub-frame interpolation & metabolism
         self.prev_pos = [float(x), float(y), float(z)]
         self.metabolism = Metabolism(max_health=self.max_health)
+        self.armor_slots = [[0, 0] for _ in range(4)]
+        self.offhand_slot = [0, 0]
+
+    @property
+    def armor_points(self) -> int:
+        points = 0
+        def_vals = [2, 6, 5, 2]
+        for idx, slot in enumerate(self.armor_slots):
+            if slot[0] != 0 and slot[1] > 0:
+                points += def_vals[idx]
+        return min(20, points)
 
     @property
     def is_dead(self):

@@ -45,3 +45,57 @@ def test_fluid_no_active_water():
     assert len(w.active_water) == 0
     modified = w.tick_fluids()
     assert modified == set()
+
+
+def test_fluid_max_spread_limit():
+    # Long strip of stone floor at y=0, air above
+    w = World(size=(32, 16, 16), seed=1, generate=False)
+    for x in range(32):
+        for z in range(16):
+            w.set(x, 0, z, blocks.STONE)
+
+    # Place single water source at (15, 1, 8)
+    w.set(15, 1, 8, blocks.WATER)
+    w.trigger_water(15, 1, 8)
+
+    # Tick fluids multiple times until settled
+    for _ in range(15):
+        w.tick_fluids()
+
+    # Max horizontal spread distance is 7 blocks: x=15+7=22 should have water, x=15+8=23 MUST be air!
+    assert w.get(15 + 7, 1, 8) == blocks.WATER
+    assert w.get(15 + 8, 1, 8) == blocks.AIR
+    assert w.get(15 - 7, 1, 8) == blocks.WATER
+    assert w.get(15 - 8, 1, 8) == blocks.AIR
+
+
+def test_fluid_dissipation_when_source_removed():
+    w = World(size=(16, 16, 16), seed=1, generate=False)
+    for x in range(16):
+        for z in range(16):
+            w.set(x, 0, z, blocks.STONE)
+
+    # Place water source at (5, 1, 5)
+    w.set(5, 1, 5, blocks.WATER)
+    w.trigger_water(5, 1, 5)
+
+    # Flow outward for 3 ticks
+    for _ in range(3):
+        w.tick_fluids()
+
+    assert w.get(6, 1, 5) == blocks.WATER
+
+    # Remove the water source (turn it back to AIR)
+    w.set(5, 1, 5, blocks.AIR)
+    w.trigger_water(5, 1, 5)
+
+    # Tick fluids until all dependent flowing water dissipates
+    for _ in range(6):
+        w.tick_fluids()
+
+    # All flowing cells should have dissipated back to AIR
+    assert w.get(6, 1, 5) == blocks.AIR
+    assert w.get(4, 1, 5) == blocks.AIR
+    assert w.get(5, 1, 6) == blocks.AIR
+    assert w.get(5, 1, 4) == blocks.AIR
+

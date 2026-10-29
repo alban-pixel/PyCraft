@@ -58,6 +58,7 @@ class World:
     def set(self, x, y, z, block):
         if not self.inside(x, y, z):
             return
+        old_b = self.get(x, y, z)
         sx, sy, sz = self.size
         if 0 <= x < sx and 0 <= z < sz:
             self.blocks[x + 1, y + 1, z + 1] = block
@@ -68,37 +69,27 @@ class World:
             chunk = self.get_chunk(cx, cz)
             chunk[x % 16, y, z % 16] = block
 
+        if old_b != block:
+            if block in (WATER, LAVA):
+                self.fluid_automata.add_fluid(x, y, z, block, level=0)
+            elif old_b in (WATER, LAVA):
+                self.fluid_automata.remove_fluid(x, y, z)
+
     def trigger_water(self, x, y, z):
         """Wake up fluid simulation around position (x, y, z)."""
         for dx, dy, dz in [(0, 0, 0), (0, 1, 0), (0, -1, 0), (1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1)]:
             nx, ny, nz = x + dx, y + dy, z + dz
-            if self.inside(nx, ny, nz) and self.get(nx, ny, nz) == WATER:
+            if self.inside(nx, ny, nz) and self.get(nx, ny, nz) in (WATER, LAVA):
                 self.active_water.add((nx, ny, nz))
+                self.fluid_automata.trigger_cell(nx, ny, nz)
 
     def tick_fluids(self):
-        """Step dynamic water flow. Returns a set of (cx, cz) chunk indices that were updated."""
-        if not self.active_water:
-            return set()
-        next_active = set()
-        modified_chunks = set()
-        for x, y, z in list(self.active_water):
-            if self.get(x, y, z) != WATER:
-                continue
-            # Priority: downwards
-            if y > 1 and self.get(x, y - 1, z) == AIR:
-                self.set(x, y - 1, z, WATER)
-                next_active.add((x, y - 1, z))
-                modified_chunks.add((x // 16, z // 16))
-                continue
-            # Spread horizontally if resting on solid or water
-            for dx, dz in [(1, 0), (-1, 0), (0, 1), (0, -1)]:
-                nx, nz = x + dx, z + dz
-                if self.inside(nx, y, nz) and self.get(nx, y, nz) == AIR:
-                    self.set(nx, y, nz, WATER)
-                    next_active.add((nx, y, nz))
-                    modified_chunks.add((nx // 16, nz // 16))
-        self.active_water = next_active
-        return modified_chunks
+        """Step dynamic fluid flow using deterministic cellular automata. Returns a set of (cx, cz) chunk indices that were updated."""
+        for cell in self.active_water:
+            self.fluid_automata.active_cells.add(cell)
+        modified = self.fluid_automata.tick()
+        self.active_water = set(self.fluid_automata.active_cells)
+        return modified
 
     def get_chunk(self, cx, cz):
         key = (int(cx), int(cz))

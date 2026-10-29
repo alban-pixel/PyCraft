@@ -164,6 +164,7 @@ class Renderer:
         self.ctx = ctx
         self.fov = fov
         self.fbo = None
+        self._frame_buf = None
         self.chunks = {}
         self.chunk_centers = {}
         self.chunk_radius = 0.0
@@ -206,6 +207,7 @@ class Renderer:
             color = self.ctx.texture((width, height), 1, dtype="f1")
             depth = self.ctx.depth_renderbuffer((width, height))
             self.fbo = self.ctx.framebuffer(color_attachments=[color], depth_attachment=depth)
+            self._frame_buf = bytearray(width * height)
 
     def set_fov(self, fov):
         self.fov = fov
@@ -290,6 +292,13 @@ class Renderer:
         self.light = light
         self.zenith, self.horizon, self.sun_dir = zenith, horizon, sun_dir
         self.fog = (fog_color, fog_start, fog_end)
+
+    def rebuild_chunks(self, chunk_coords):
+        """Rebuild specified chunks in a single context without re-evaluating unmodified borders."""
+        with self.ctx:
+            for cx, cz in chunk_coords:
+                if (cx, cz) in self.chunks:
+                    self._build_chunk(cx, cz)
 
     def block_changed(self, x, z):
         """Rebuild the chunk holding (x, z), and its neighbor when the block sits on a chunk border."""
@@ -411,12 +420,17 @@ class Renderer:
             parts.append(np.concatenate([f_p, f_uv, f_sh, f_kd], axis=1))
         return np.concatenate(parts, axis=0)
 
-    def _build_entities_mesh(self, entities):
+    def _build_entities_mesh(self, entities, alpha: float = 0.0):
         if not entities:
             return None, 0
         boxes = []
         for ent in entities:
-            x, y, z = ent.pos
+            if hasattr(ent, "prev_pos") and ent.prev_pos is not None:
+                x = (1.0 - alpha) * ent.prev_pos[0] + alpha * ent.pos[0]
+                y = (1.0 - alpha) * ent.prev_pos[1] + alpha * ent.pos[1]
+                z = (1.0 - alpha) * ent.prev_pos[2] + alpha * ent.pos[2]
+            else:
+                x, y, z = ent.pos
             yaw = ent.yaw
             shade_mult = 1.8 if ent.hurt_timer > 0 else 1.0
 
@@ -463,7 +477,7 @@ class Renderer:
         data = np.concatenate(boxes, axis=0).astype("f4")
         return data, len(data)
 
-    def render(self, screen, eye, forward, target=None, entities=None, mining_target=None, crack_stage=-1, render_dist=4):
+    def render(self, screen, eye, forward, target=None, entities=None, mining_target=None, crack_stage=-1, render_dist=4, alpha=0.0):
         """Draw the world seen from eye into screen (a (height, width) uint8 view of pyxel.screen)."""
         self.update_streaming(eye[0], eye[2], render_dist=render_dist)
         vp = self.projection @ look_at(eye, forward)
@@ -493,9 +507,9 @@ class Renderer:
                 if chunk and self._chunk_in_frustum(planes, cx, cz):
                     chunk[1].render()
 
-            # Render 3D Mobs
+            # Render 3D Mobs with sub-frame temporal interpolation
             if entities:
-                ent_data, vcount = self._build_entities_mesh(entities)
+                ent_data, vcount = self._build_entities_mesh(entities, alpha=alpha)
                 if ent_data is not None and vcount > 0:
                     self.entity_vbo.write(ent_data.tobytes())
                     self.entity_vao.render(moderngl.TRIANGLES, vertices=vcount)
@@ -515,6 +529,9 @@ class Renderer:
                 self.outline_vbo.write(lines.astype("f4").tobytes())
                 self.outline_program["mvp"].write(mvp)
                 self.outline_vao.render(moderngl.LINES)
-            frame = np.frombuffer(self.fbo.read(components=1, dtype="f1"), dtype=np.uint8)
-        width, height = self.size
-        screen[:, :] = frame.reshape(height, width)[::-1]  # OpenGL rows go bottom-up
+            width, height = self.size
+            if self._frame_buf is None or len(self._frame_buf) != width * height:
+                self._frame_buf = bytearray(width * height)
+            self.fbo.read_into(self._frame_buf, components=1, dtype="f1")
+        frame = np.frombuffer(self._frame_buf, dtype=np.uint8).reshape(height, width)
+        screen[:, :] = frame[::-1]  # OpenGL rows go bottom-up
