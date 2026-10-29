@@ -13,10 +13,10 @@ import pyxel
 
 from blocks import (
     ATLAS_TILES, ATTACK_DAMAGE, BLOCK_COLORS, BLOCK_HARDNESS, BLOCK_NAMES,
-    BLOCK_TILES, CRAFTING_TABLE, DEFAULT_HOTBAR, FOOD_HEAL, ITEM_COOKED_PORK,
+    BLOCK_TILES, CRAFTING_TABLE, CREATIVE_CATALOG, DEFAULT_HOTBAR, FOOD_HEAL, ITEM_COOKED_PORK,
     ITEM_DIAMOND_PICKAXE, ITEM_DIAMOND_SWORD, ITEM_IRON_PICKAXE, ITEM_IRON_SWORD,
     ITEM_RAW_PORK, ITEM_STICK, ITEM_STONE_PICKAXE, ITEM_STONE_SWORD, ITEM_WOOD_PICKAXE,
-    ITEM_WOOD_SWORD, LOG, PICKAXES, PLACEABLE, PLANKS, TILE, UNBREAKABLE, WATER,
+    ITEM_WOOD_SWORD, LOG, NON_STACKABLE, PICKAXES, PLACEABLE, PLANKS, TILE, UNBREAKABLE, WATER,
     build_atlas, get_item_name, get_item_tile,
 )
 import crafting
@@ -269,6 +269,7 @@ class App:
         self.craft_size = 2  # 2x2 in inventory, 3x3 on table
         self.craft_result = [0, 0]
         self.cursor_item = [0, 0]  # [item_id, count] held on mouse cursor
+        self.creative_tab = "catalog"  # "catalog" or "survival" in Creative mode
 
         # Multi-world selection & creation
         self.selected_world_idx = 0
@@ -528,10 +529,11 @@ class App:
 
     def add_to_container(self, container, item_id, count):
         """Add items to a container list (hotbar or inventory). Returns amount added."""
+        max_stack = 1 if item_id in NON_STACKABLE else 64
         added = 0
         for slot in container:
-            if slot[0] == item_id and slot[1] < 64:
-                take = min(64 - slot[1], count)
+            if slot[0] == item_id and slot[1] < max_stack:
+                take = min(max_stack - slot[1], count)
                 slot[1] += take
                 count -= take
                 added += take
@@ -540,7 +542,7 @@ class App:
         for slot in container:
             if slot[0] == 0 or slot[1] <= 0:
                 slot[0] = item_id
-                take = min(64, count)
+                take = min(max_stack, count)
                 slot[1] = take
                 count -= take
                 added += take
@@ -579,8 +581,11 @@ class App:
     def close_inventory(self):
         # Refund cursor item
         if self.cursor_item[0] != 0 and self.cursor_item[1] > 0:
-            self.add_to_inventory(self.cursor_item[0], self.cursor_item[1])
-            self.cursor_item = [0, 0]
+            if getattr(self.player, "mode", "survival") == "creative":
+                self.cursor_item = [0, 0]
+            else:
+                self.add_to_inventory(self.cursor_item[0], self.cursor_item[1])
+                self.cursor_item = [0, 0]
         # Refund crafting grid items
         for slot in self.craft_grid:
             if slot[0] != 0 and slot[1] > 0:
@@ -1068,6 +1073,8 @@ class App:
             return
         if pyxel.btnp(pyxel.KEY_E):
             self.craft_size = 2
+            if getattr(self.player, "mode", "survival") == "creative":
+                self.creative_tab = "catalog"
             self.set_state("inventory")
             return
         if pyxel.btnp(pyxel.KEY_F4):
@@ -1292,12 +1299,15 @@ class App:
 
         pw, ph = 176 * s, 166 * s
         px0 = (pyxel.width - pw) // 2
-        py0 = (pyxel.height - ph) // 2
+        py0 = max(12 * s, (pyxel.height - ph) // 2) if (getattr(self.player, "mode", "survival") == "creative" and size == 2) else (pyxel.height - ph) // 2
 
         ix0 = px0 + 8 * s
         iy0 = py0 + 84 * s
         hx0 = px0 + 8 * s
         hy0 = py0 + 142 * s
+
+        tab_cat = (px0 + 8 * s, py0 - 11 * s, 48 * s, 12 * s)
+        tab_surv = (px0 + 60 * s, py0 - 11 * s, 54 * s, 12 * s)
 
         if size == 3:
             gx0 = px0 + 30 * s
@@ -1317,6 +1327,25 @@ class App:
                 "hx0": hx0, "hy0": hy0,
             }
         else:
+            is_creative = getattr(self.player, "mode", "survival") == "creative"
+            if is_creative and getattr(self, "creative_tab", "catalog") == "catalog":
+                cat_x0 = px0 + 8 * s
+                cat_y0 = py0 + 18 * s
+                trash_x = px0 + 150 * s
+                trash_y = py0 + 114 * s
+                hy0_cat = py0 + 138 * s
+                return {
+                    "type": "creative_catalog",
+                    "s": s, "slot_s": slot_s, "size": size,
+                    "pw": pw, "ph": ph, "px0": px0, "py0": py0,
+                    "cat_x0": cat_x0, "cat_y0": cat_y0, "cat_rows": 5, "cat_cols": 9,
+                    "trash_x": trash_x, "trash_y": trash_y, "trash_w": slot_s, "trash_h": slot_s,
+                    "tab_cat": tab_cat, "tab_surv": tab_surv,
+                    "hx0": hx0, "hy0": hy0_cat,
+                    "ix0": cat_x0, "iy0": cat_y0,
+                    "rx": trash_x, "ry": trash_y, "rw": slot_s, "rh": slot_s,
+                }
+
             pvx = px0 + 26 * s
             pvy = py0 + 8 * s
             pvw = 48 * s
@@ -1332,7 +1361,7 @@ class App:
             rx = px0 + 146 * s
             ry = py0 + 23 * s
             rw, rh = 24 * s, 24 * s
-            return {
+            res = {
                 "s": s, "slot_s": slot_s, "size": size,
                 "pw": pw, "ph": ph, "px0": px0, "py0": py0,
                 "pvx": pvx, "pvy": pvy, "pvw": pvw, "pvh": pvh,
@@ -1344,11 +1373,51 @@ class App:
                 "ix0": ix0, "iy0": iy0,
                 "hx0": hx0, "hy0": hy0,
             }
+            if is_creative:
+                res["tab_cat"] = tab_cat
+                res["tab_surv"] = tab_surv
+            return res
 
     def get_slot_under_mouse(self, mx, my):
         lay = self.craft_layout()
         s, slot_s = lay["s"], lay["slot_s"]
         size = lay["size"]
+
+        # Check tabs if present
+        if "tab_cat" in lay:
+            tx, ty, tw, th = lay["tab_cat"]
+            if tx <= mx < tx + tw and ty <= my < ty + th:
+                return ("tab", "catalog", tx, ty, tw, th)
+        if "tab_surv" in lay:
+            tx, ty, tw, th = lay["tab_surv"]
+            if tx <= mx < tx + tw and ty <= my < ty + th:
+                return ("tab", "survival", tx, ty, tw, th)
+
+        # Creative catalog screen
+        if lay.get("type") == "creative_catalog":
+            # Trash slot
+            tx, ty, tw, th = lay["trash_x"], lay["trash_y"], lay["trash_w"], lay["trash_h"]
+            if tx <= mx < tx + tw and ty <= my < ty + th:
+                return ("trash", 0, tx, ty, tw, th)
+
+            # Catalog grid (5 rows x 9 cols)
+            cat_x0, cat_y0 = lay["cat_x0"], lay["cat_y0"]
+            for r in range(lay["cat_rows"]):
+                for c in range(lay["cat_cols"]):
+                    sx = cat_x0 + c * slot_s
+                    sy = cat_y0 + r * slot_s
+                    if sx <= mx < sx + slot_s and sy <= my < sy + slot_s:
+                        idx = r * lay["cat_cols"] + c
+                        return ("creative_catalog", idx, sx, sy, slot_s, slot_s)
+
+            # Hotbar (1 row of 9)
+            hx0, hy0 = lay["hx0"], lay["hy0"]
+            for c in range(9):
+                sx, sy = hx0 + c * slot_s, hy0
+                if sx <= mx < sx + slot_s and sy <= my < sy + slot_s:
+                    return ("hotbar", c, sx, sy, slot_s, slot_s)
+
+            return None
 
         # 1. Result slot
         rx, ry, rw, rh = lay["rx"], lay["ry"], lay["rw"], lay["rh"]
@@ -1392,6 +1461,48 @@ class App:
         return None
 
     def handle_slot_click(self, slot_type, idx, is_right_click, is_shift_click):
+        if slot_type == "tab":
+            self.creative_tab = idx
+            self.sfx(SND_CLICK)
+            return
+
+        if slot_type == "trash":
+            if is_shift_click:
+                for s in self.hotbar:
+                    s[0], s[1] = 0, 0
+                for s in self.inventory:
+                    s[0], s[1] = 0, 0
+                self.cursor_item = [0, 0]
+                self.sfx(SND_CLICK)
+            else:
+                if self.cursor_item[0] != 0:
+                    self.cursor_item = [0, 0]
+                    self.sfx(SND_CLICK)
+            return
+
+        if slot_type == "creative_catalog":
+            if idx < len(CREATIVE_CATALOG):
+                item_id = CREATIVE_CATALOG[idx]
+                is_tool = item_id in NON_STACKABLE
+                count = 1 if is_tool else 64
+                if is_shift_click:
+                    self.add_to_container(self.hotbar, item_id, count)
+                    self.sfx(SND_CLICK)
+                elif is_right_click:
+                    if self.cursor_item[0] == 0:
+                        self.cursor_item = [item_id, 1]
+                        self.sfx(SND_CLICK)
+                    elif self.cursor_item[0] == item_id and not is_tool and self.cursor_item[1] < 64:
+                        self.cursor_item[1] += 1
+                        self.sfx(SND_CLICK)
+                    else:
+                        self.cursor_item = [item_id, 1]
+                        self.sfx(SND_CLICK)
+                else:
+                    self.cursor_item = [item_id, count]
+                    self.sfx(SND_CLICK)
+            return
+
         if slot_type == "result":
             if self.craft_result[0] != 0:
                 res_id, res_cnt = self.craft_result[0], self.craft_result[1]
@@ -1419,9 +1530,15 @@ class App:
         else:
             return
 
-        # Shift + Left click: quick move
+        # Shift + Left click: quick move or clear
         if is_shift_click and not is_right_click:
             if target[0] != 0 and target[1] > 0:
+                lay = self.craft_layout()
+                if lay.get("type") == "creative_catalog" and slot_type == "hotbar":
+                    # In creative catalog, shift-clicking a hotbar slot clears it
+                    target[0], target[1] = 0, 0
+                    self.sfx(SND_CLICK)
+                    return
                 item_id, count = target[0], target[1]
                 if slot_type == "hotbar":
                     moved = self.add_to_container(self.inventory, item_id, count)
@@ -1451,13 +1568,14 @@ class App:
                     if target[1] <= 0: target[0] = 0
                     self.sfx(SND_CLICK)
             else:
+                max_stack = 1 if self.cursor_item[0] in NON_STACKABLE else 64
                 if target[0] == 0:
                     target[0] = self.cursor_item[0]
                     target[1] = 1
                     self.cursor_item[1] -= 1
                     if self.cursor_item[1] <= 0: self.cursor_item = [0, 0]
                     self.sfx(SND_CLICK)
-                elif target[0] == self.cursor_item[0] and target[1] < 64:
+                elif target[0] == self.cursor_item[0] and target[1] < max_stack:
                     target[1] += 1
                     self.cursor_item[1] -= 1
                     if self.cursor_item[1] <= 0: self.cursor_item = [0, 0]
@@ -1471,12 +1589,13 @@ class App:
                 target[0], target[1] = 0, 0
                 self.sfx(SND_CLICK)
         else:
+            max_stack = 1 if self.cursor_item[0] in NON_STACKABLE else 64
             if target[0] == 0:
                 target[0], target[1] = self.cursor_item[0], self.cursor_item[1]
                 self.cursor_item = [0, 0]
                 self.sfx(SND_CLICK)
             elif target[0] == self.cursor_item[0]:
-                space = 64 - target[1]
+                space = max_stack - target[1]
                 add = min(space, self.cursor_item[1])
                 target[1] += add
                 self.cursor_item[1] -= add
@@ -2028,68 +2147,129 @@ class App:
         pyxel.rect(tx + s, ty + s, tw - 2 * s, th - 2 * s, 1)
         self.draw_text(tx + 3 * s, ty + 2 * s, text, 7, scale=s)
 
+    def draw_tab(self, x, y, w, h, text, is_active, is_hovered=False):
+        s = self.get_ui_scale()
+        tab_h = h + (2 * s if is_active else 0)
+        pyxel.rectb(x, y, w, tab_h, 0)
+        bg_col = 6 if is_active else (7 if is_hovered else 5)
+        pyxel.rect(x + s, y + s, w - 2 * s, tab_h - (s if is_active else 2 * s), bg_col)
+        pyxel.rect(x + s, y + s, w - 2 * s, s, 7 if is_active else 6)
+        pyxel.rect(x + s, y + s, s, tab_h - 2 * s, 7 if is_active else 6)
+        pyxel.rect(x + w - 2 * s, y + s, s, tab_h - 2 * s, 5 if is_active else 0)
+        txt_col = 0 if is_active else (7 if is_hovered else 13)
+        tx = x + (w - len(text) * 4 * s) // 2
+        ty = y + (h - 6 * s) // 2
+        self.draw_text(tx, ty, text, txt_col, scale=s)
+
     def draw_crafting_screen(self):
         self.dim_screen()
         lay = self.craft_layout()
         s, slot_s = lay["s"], lay["slot_s"]
         size = lay["size"]
 
-        self.draw_minecraft_panel(lay["px0"], lay["py0"], lay["pw"], lay["ph"])
-
-        if size == 3:
-            self.draw_text(lay["px0"] + 30 * s, lay["py0"] + 6 * s, "Crafting", 5, scale=s)
-        else:
-            self.draw_text(lay["px0"] + 88 * s, lay["py0"] + 6 * s, "Crafting", 5, scale=s)
-            self.draw_steve_preview(lay["pvx"], lay["pvy"], lay["pvw"], lay["pvh"])
-        self.draw_text(lay["ix0"], lay["iy0"] - 10 * s, "Inventory", 5, scale=s)
-
         slot_under_mouse = self.get_slot_under_mouse(pyxel.mouse_x, pyxel.mouse_y)
         hovered_slot_type = slot_under_mouse[0] if slot_under_mouse else None
         hovered_slot_idx = slot_under_mouse[1] if slot_under_mouse else None
 
-        gx0, gy0 = lay["gx0"], lay["gy0"]
-        for r in range(size):
-            for c in range(size):
-                idx = r * size + c
-                sx, sy = gx0 + c * slot_s, gy0 + r * slot_s
-                slot = self.craft_grid[idx]
-                is_hovered = (hovered_slot_type == "grid" and hovered_slot_idx == idx)
-                self.draw_slot(sx, sy, slot_s, slot[0], slot[1], is_hovered=is_hovered)
+        # Draw tabs if present (in Creative mode)
+        if "tab_cat" in lay and "tab_surv" in lay:
+            cat_x, cat_y, cat_w, cat_h = lay["tab_cat"]
+            surv_x, surv_y, surv_w, surv_h = lay["tab_surv"]
+            is_cat_active = (getattr(self, "creative_tab", "catalog") == "catalog")
+            self.draw_tab(cat_x, cat_y, cat_w, cat_h, "Items", is_cat_active,
+                          is_hovered=(hovered_slot_type == "tab" and hovered_slot_idx == "catalog"))
+            self.draw_tab(surv_x, surv_y, surv_w, surv_h, "Survival", not is_cat_active,
+                          is_hovered=(hovered_slot_type == "tab" and hovered_slot_idx == "survival"))
 
-        self.draw_crafting_arrow(lay["ax"], lay["ay"])
+        # Main panel
+        self.draw_minecraft_panel(lay["px0"], lay["py0"], lay["pw"], lay["ph"])
 
-        rx, ry, rw, rh = lay["rx"], lay["ry"], lay["rw"], lay["rh"]
-        is_res_hovered = (hovered_slot_type == "result")
-        self.draw_slot(rx, ry, rw, self.craft_result[0], self.craft_result[1], is_hovered=is_res_hovered)
+        if lay.get("type") == "creative_catalog":
+            # 1. Creative Catalog Screen
+            self.draw_text(lay["px0"] + 8 * s, lay["py0"] + 6 * s, "Item Catalog", 5, scale=s)
 
-        ix0, iy0 = lay["ix0"], lay["iy0"]
-        for r in range(3):
+            # 5x9 catalog slots
+            cat_x0, cat_y0 = lay["cat_x0"], lay["cat_y0"]
+            for r in range(lay["cat_rows"]):
+                for c in range(lay["cat_cols"]):
+                    idx = r * lay["cat_cols"] + c
+                    sx, sy = cat_x0 + c * slot_s, cat_y0 + r * slot_s
+                    item_id = CREATIVE_CATALOG[idx] if idx < len(CREATIVE_CATALOG) else 0
+                    is_hovered = (hovered_slot_type == "creative_catalog" and hovered_slot_idx == idx)
+                    self.draw_slot(sx, sy, slot_s, item_id, 1 if item_id else 0, is_hovered=is_hovered)
+
+            # Trash / Destroy slot
+            tx, ty = lay["trash_x"], lay["trash_y"]
+            is_trash_hovered = (hovered_slot_type == "trash")
+            self.draw_slot(tx, ty, slot_s, 0, 0, is_hovered=is_trash_hovered)
+            cx, cy = tx + slot_s // 2, ty + slot_s // 2
+            for d in range(-3 * s, 4 * s, s):
+                pyxel.rect(cx + d, cy + d, s, s, 8)
+                pyxel.rect(cx + d, cy - d, s, s, 8)
+            self.draw_text(tx - 38 * s, ty + 6 * s, "Destroy", 5, scale=s)
+
+            # Hotbar
+            hx0, hy0 = lay["hx0"], lay["hy0"]
+            self.draw_text(hx0, hy0 - 9 * s, "Hotbar", 5, scale=s)
             for c in range(9):
-                idx = r * 9 + c
-                sx, sy = ix0 + c * slot_s, iy0 + r * slot_s
-                slot = self.inventory[idx]
-                is_hovered = (hovered_slot_type == "inventory" and hovered_slot_idx == idx)
-                self.draw_slot(sx, sy, slot_s, slot[0], slot[1], is_hovered=is_hovered)
+                sx, sy = hx0 + c * slot_s, hy0
+                slot = self.hotbar[c]
+                is_hovered = (hovered_slot_type == "hotbar" and hovered_slot_idx == c)
+                self.draw_slot(sx, sy, slot_s, slot[0], slot[1], is_selected=(c == self.selected), is_hovered=is_hovered)
 
-        hx0, hy0 = lay["hx0"], lay["hy0"]
-        for c in range(9):
-            sx, sy = hx0 + c * slot_s, hy0
-            slot = self.hotbar[c]
-            is_hovered = (hovered_slot_type == "hotbar" and hovered_slot_idx == c)
-            self.draw_slot(sx, sy, slot_s, slot[0], slot[1], is_selected=(c == self.selected), is_hovered=is_hovered)
+        else:
+            # 2. Standard Crafting / Survival Screen
+            if size == 3:
+                self.draw_text(lay["px0"] + 30 * s, lay["py0"] + 6 * s, "Crafting", 5, scale=s)
+            else:
+                self.draw_text(lay["px0"] + 88 * s, lay["py0"] + 6 * s, "Crafting", 5, scale=s)
+                self.draw_steve_preview(lay["pvx"], lay["pvy"], lay["pvw"], lay["pvh"])
+            self.draw_text(lay["ix0"], lay["iy0"] - 10 * s, "Inventory", 5, scale=s)
 
-        if size == 2 and "arm_x0" in lay:
-            arm_x0, arm_y0 = lay["arm_x0"], lay["arm_y0"]
-            for i in range(4):
-                sx, sy = arm_x0, arm_y0 + i * slot_s
-                slot = self.player.armor_slots[i]
-                is_hovered = (hovered_slot_type == "armor" and hovered_slot_idx == i)
-                self.draw_slot(sx, sy, slot_s, slot[0], slot[1], is_hovered=is_hovered)
-            off_x0, off_y0 = lay["off_x0"], lay["off_y0"]
-            slot = self.player.offhand_slot
-            is_hovered = (hovered_slot_type == "offhand")
-            self.draw_slot(off_x0, off_y0, slot_s, slot[0], slot[1], is_hovered=is_hovered)
+            gx0, gy0 = lay["gx0"], lay["gy0"]
+            for r in range(size):
+                for c in range(size):
+                    idx = r * size + c
+                    sx, sy = gx0 + c * slot_s, gy0 + r * slot_s
+                    slot = self.craft_grid[idx]
+                    is_hovered = (hovered_slot_type == "grid" and hovered_slot_idx == idx)
+                    self.draw_slot(sx, sy, slot_s, slot[0], slot[1], is_hovered=is_hovered)
 
+            self.draw_crafting_arrow(lay["ax"], lay["ay"])
+
+            rx, ry, rw, rh = lay["rx"], lay["ry"], lay["rw"], lay["rh"]
+            is_res_hovered = (hovered_slot_type == "result")
+            self.draw_slot(rx, ry, rw, self.craft_result[0], self.craft_result[1], is_hovered=is_res_hovered)
+
+            ix0, iy0 = lay["ix0"], lay["iy0"]
+            for r in range(3):
+                for c in range(9):
+                    idx = r * 9 + c
+                    sx, sy = ix0 + c * slot_s, iy0 + r * slot_s
+                    slot = self.inventory[idx]
+                    is_hovered = (hovered_slot_type == "inventory" and hovered_slot_idx == idx)
+                    self.draw_slot(sx, sy, slot_s, slot[0], slot[1], is_hovered=is_hovered)
+
+            hx0, hy0 = lay["hx0"], lay["hy0"]
+            for c in range(9):
+                sx, sy = hx0 + c * slot_s, hy0
+                slot = self.hotbar[c]
+                is_hovered = (hovered_slot_type == "hotbar" and hovered_slot_idx == c)
+                self.draw_slot(sx, sy, slot_s, slot[0], slot[1], is_selected=(c == self.selected), is_hovered=is_hovered)
+
+            if size == 2 and "arm_x0" in lay:
+                arm_x0, arm_y0 = lay["arm_x0"], lay["arm_y0"]
+                for i in range(4):
+                    sx, sy = arm_x0, arm_y0 + i * slot_s
+                    slot = self.player.armor_slots[i]
+                    is_hovered = (hovered_slot_type == "armor" and hovered_slot_idx == i)
+                    self.draw_slot(sx, sy, slot_s, slot[0], slot[1], is_hovered=is_hovered)
+                off_x0, off_y0 = lay["off_x0"], lay["off_y0"]
+                slot = self.player.offhand_slot
+                is_hovered = (hovered_slot_type == "offhand")
+                self.draw_slot(off_x0, off_y0, slot_s, slot[0], slot[1], is_hovered=is_hovered)
+
+        # Cursor item & tooltips
         if self.cursor_item[0] != 0 and self.cursor_item[1] > 0:
             mx, my = pyxel.mouse_x, pyxel.mouse_y
             self.draw_icon(mx - 8 * s, my - 8 * s, self.cursor_item[0], scale=s)
@@ -2100,23 +2280,33 @@ class App:
                 self.draw_text(tx + s, ty + s, cs, 0, scale=s)
                 self.draw_text(tx, ty, cs, 7, scale=s)
         elif slot_under_mouse:
-            item_id = 0
-            if hovered_slot_type == "grid":
-                item_id = self.craft_grid[hovered_slot_idx][0]
-            elif hovered_slot_type == "result":
-                item_id = self.craft_result[0]
-            elif hovered_slot_type == "inventory":
-                item_id = self.inventory[hovered_slot_idx][0]
-            elif hovered_slot_type == "hotbar":
-                item_id = self.hotbar[hovered_slot_idx][0]
-            elif hovered_slot_type == "armor":
-                item_id = self.player.armor_slots[hovered_slot_idx][0]
-            elif hovered_slot_type == "offhand":
-                item_id = self.player.offhand_slot[0]
-
-            if item_id > 0:
-                name = get_item_name(item_id)
+            if hovered_slot_type == "tab":
+                name = "Creative Item Catalog" if hovered_slot_idx == "catalog" else "Survival Inventory"
                 self.draw_tooltip(pyxel.mouse_x, pyxel.mouse_y, name)
+            elif hovered_slot_type == "trash":
+                self.draw_tooltip(pyxel.mouse_x, pyxel.mouse_y, "Destroy Item (Shift: Clear All)")
+            elif hovered_slot_type == "creative_catalog":
+                if hovered_slot_idx < len(CREATIVE_CATALOG):
+                    item_id = CREATIVE_CATALOG[hovered_slot_idx]
+                    self.draw_tooltip(pyxel.mouse_x, pyxel.mouse_y, get_item_name(item_id))
+            else:
+                item_id = 0
+                if hovered_slot_type == "grid":
+                    item_id = self.craft_grid[hovered_slot_idx][0]
+                elif hovered_slot_type == "result":
+                    item_id = self.craft_result[0]
+                elif hovered_slot_type == "inventory":
+                    item_id = self.inventory[hovered_slot_idx][0]
+                elif hovered_slot_type == "hotbar":
+                    item_id = self.hotbar[hovered_slot_idx][0]
+                elif hovered_slot_type == "armor":
+                    item_id = self.player.armor_slots[hovered_slot_idx][0]
+                elif hovered_slot_type == "offhand":
+                    item_id = self.player.offhand_slot[0]
+
+                if item_id > 0:
+                    name = get_item_name(item_id)
+                    self.draw_tooltip(pyxel.mouse_x, pyxel.mouse_y, name)
 
     @staticmethod
     def draw_icon(x, y, item_id, scale=1):
