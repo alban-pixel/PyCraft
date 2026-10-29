@@ -211,6 +211,47 @@ class World:
                 return False
             return bool(SOLID[self.get(x, y, z)])
 
+    def get_column_height(self, x, z) -> int:
+        """Return the top solid block Y coordinate + 1 in column (x, z), or sea level if water/air."""
+        if not self.infinite:
+            sx, sy, sz = self.size
+            if 0 <= x < sx and 0 <= z < sz:
+                col = self.blocks[x + 1, 1:sy + 1, z + 1]
+                solid_ys = np.nonzero(col != 0)[0]
+                if solid_ys.size > 0:
+                    return int(solid_ys[-1]) + 1
+            return SEA_LEVEL
+
+        cx, cz = x // 16, z // 16
+        chunk = self.chunks.get((cx, cz))
+        if chunk is not None:
+            col = chunk[x % 16, :, z % 16]
+            solid_ys = np.nonzero(col != 0)[0]
+            if solid_ys.size > 0:
+                return int(solid_ys[-1]) + 1
+
+        # Fallback procedural evaluation
+        if hasattr(self, "generator") and hasattr(self.generator, "evaluate_density"):
+            for y in range(min(self.sy - 1, 120), 0, -1):
+                if self.generator.evaluate_density(x, y, z) >= 0:
+                    return y + 1
+
+        n = pyxel.noise(x * 0.022, z * 0.022) + 0.5 * pyxel.noise(x * 0.07 + 100, z * 0.07 + 100)
+        return min(max(int(SEA_LEVEL + 3 + n * 14), 4), self.sy - 12)
+
+    def get_surface_block_type(self, x, h, z) -> int:
+        """Return dominant surface block type at column (x, z) with ground height h."""
+        b = self.get(x, max(0, h - 1), z)
+        if b != AIR:
+            return b
+        if h <= SEA_LEVEL:
+            return WATER
+        if h <= SEA_LEVEL + 1:
+            return SAND
+        if h > 33:
+            return SNOW
+        return GRASS
+
     # --- Generation ----------------------------------------------------------------------------
 
     def generate(self):

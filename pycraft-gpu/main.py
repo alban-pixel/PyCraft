@@ -1712,8 +1712,9 @@ class App:
 
         rd = self.settings.get("render_distance", 4)
         max_dist = rd * 16.0
-        fog_end = max_dist
-        fog_start = max(10.0, max_dist - 24.0)
+        lod_max_dist = min(800.0, (rd + 16) * 16.0)
+        fog_end = lod_max_dist
+        fog_start = max(max_dist, lod_max_dist - 80.0)
 
         if not self.on_title() and self.player.head_in_water(self.world):
             fog = (tuple(c * light for c in UNDERWATER_FOG), 0.0, 9.0)

@@ -13,6 +13,7 @@ from blocks import (
     ATLAS_TILES, BLOCK_TILES, CUTOUT, OPAQUE, SELF_CULL, WATER,
     T_CRACK_0, T_DIRT, T_PIG_BODY, T_PIG_FACE, T_ZOMBIE_BODY, T_ZOMBIE_FACE,
 )
+from lod import LODManager
 
 CHUNK = 16
 OUTLINE_INDEX = 0  # Pyxel black
@@ -69,6 +70,11 @@ void main() {
     if (v_kind == 1 && tex.a < 0.5) discard;  // see-through texel (leaves, glass)
     if (v_kind == 2 && ((int(gl_FragCoord.x) + int(gl_FragCoord.y)) & 1) == 0) discard;  // water
     vec3 color = tex.rgb * v_shade * light;
+    if (v_kind == 2) {
+        // Subtle wave & sky reflection highlights
+        float wave = sin(v_uv.x * 24.0 + v_uv.y * 24.0) * 0.08;
+        color = mix(color, fog_color * 1.15, 0.20 + wave);
+    }
     float fog = clamp((v_dist - fog_start) / (fog_end - fog_start), 0.0, 1.0);
     index = to_palette(mix(color, fog_color, fog));
 }
@@ -128,6 +134,36 @@ FACES = [
     ((0, 0, 1), [(1, 1, 1), (0, 1, 1), (0, 0, 1), (1, 0, 1)], 0.65),
     ((0, 0, -1), [(0, 1, 0), (1, 1, 0), (1, 0, 0), (0, 0, 0)], 0.65),
 ]
+
+# Ambient Occlusion (AO) factors per corner
+AO_LEVELS = np.array([0.55, 0.70, 0.85, 1.0], dtype=np.float32)
+
+
+def _build_ao_offsets():
+    out = []
+    for face_idx, (normal, corners, _) in enumerate(FACES):
+        dx, dy, dz = normal
+        axis = [abs(c) for c in normal].index(1)
+        tangents = [a for a in range(3) if a != axis]
+        face_corners = []
+        for corner in corners:
+            d1 = [0, 0, 0]
+            d1[tangents[0]] = 1 if corner[tangents[0]] == 1 else -1
+            d2 = [0, 0, 0]
+            d2[tangents[1]] = 1 if corner[tangents[1]] == 1 else -1
+            dc = [0, 0, 0]
+            dc[tangents[0]] = d1[tangents[0]]
+            dc[tangents[1]] = d2[tangents[1]]
+            face_corners.append((
+                (dx + d1[0], dy + d1[1], dz + d1[2]),
+                (dx + d2[0], dy + d2[1], dz + d2[2]),
+                (dx + dc[0], dy + dc[1], dz + dc[2]),
+            ))
+        out.append(face_corners)
+    return out
+
+
+AO_OFFSETS = _build_ao_offsets()
 CORNER_UV = np.array([(0, 0), (1, 0), (1, 1), (0, 1)], dtype=np.float32)
 TRIANGLES = [0, 1, 2, 0, 2, 3]
 UV_INSET = 0.5 / 16  # half a texel, in tile units, so neighbor tiles never bleed in
@@ -193,13 +229,14 @@ class Renderer:
             self.crack_vao = ctx.vertex_array(
                 self.program, [(self.crack_vbo, "3f 2f 1f 1f", "in_pos", "in_uv", "in_shade", "in_kind")]
             )
+            self.lod = LODManager(ctx, self.program, world)
         self.resize(width, height)
         self.set_world(world)
 
     def resize(self, width, height):
         """Draw frames of a new size (when the resolution setting changes)."""
         self.size = (width, height)
-        self.projection = perspective(self.fov, width / height, 0.05, 300)
+        self.projection = perspective(self.fov, width / height, 0.05, 1200)
         with self.ctx:
             if self.fbo:
                 for obj in (*self.fbo.color_attachments, self.fbo.depth_attachment, self.fbo):
@@ -212,11 +249,13 @@ class Renderer:
     def set_fov(self, fov):
         self.fov = fov
         width, height = self.size
-        self.projection = perspective(self.fov, width / height, 0.05, 300)
+        self.projection = perspective(self.fov, width / height, 0.05, 1200)
 
     def set_world(self, world, spawn_pos=None, render_dist=4):
         """Use a new world (after loading or generating one) and build all of its chunks."""
         self.world = world
+        if hasattr(self, "lod"):
+            self.lod.set_world(world)
         sx, sy, sz = world.size
         self.chunk_radius = math.hypot(CHUNK / 2, sy / 2, CHUNK / 2)
         with self.ctx:
@@ -288,6 +327,9 @@ class Renderer:
                     chunk[1].release()
                 self.chunk_centers.pop(key, None)
 
+        if hasattr(self, "lod"):
+            self.lod.update(player_x, player_z, set(self.chunks.keys()), render_dist=render_dist, max_lod_dist=render_dist + 16)
+
     def set_environment(self, light, zenith, horizon, sun_dir, fog_color, fog_start, fog_end):
         self.light = light
         self.zenith, self.horizon, self.sun_dir = zenith, horizon, sun_dir
@@ -303,6 +345,9 @@ class Renderer:
     def block_changed(self, x, z):
         """Rebuild the chunk holding (x, z), and its neighbor when the block sits on a chunk border."""
         cx, cz = x // CHUNK, z // CHUNK
+        if hasattr(self, "lod"):
+            self.lod.cache.pop((cx, cz, 1), None)
+            self.lod.cache.pop((cx, cz, 2), None)
         todo = {(cx, cz)}
         if x % CHUNK == 0:
             todo.add((cx - 1, cz))
@@ -347,9 +392,29 @@ class Renderer:
             tile_xy = np.stack([tile % ATLAS_TILES, tile // ATLAS_TILES], axis=1).astype(np.float32)
             uv = (tile_xy[:, None, :] + UV_INSET + CORNER_UV[None] * (1 - 2 * UV_INSET)) / ATLAS_TILES
             kind = np.where(blocks == WATER, 2.0, np.where(CUTOUT[blocks], 1.0, 0.0)).astype(np.float32)
-            extra = np.stack([np.full(i.size, shade, dtype=np.float32), kind], axis=1)
-            extra = np.broadcast_to(extra[:, None, :], (i.size, 4, 2))
-            verts = np.concatenate([pos, uv, extra], axis=2)[:, TRIANGLES]  # (n, 6, 7)
+
+            # Smooth Ambient Occlusion (AO) per corner
+            ao_corners = []
+            for c_idx in range(4):
+                (o1x, o1y, o1z), (o2x, o2y, o2z), (ocx, ocy, ocz) = AO_OFFSETS[face][c_idx]
+                s1 = OPAQUE[region[1 + o1x + i, 1 + o1y + j, 1 + o1z + k]]
+                s2 = OPAQUE[region[1 + o2x + i, 1 + o2y + j, 1 + o2z + k]]
+                sc = OPAQUE[region[1 + ocx + i, 1 + ocy + j, 1 + ocz + k]]
+                ao_raw = 3 - (s1.astype(np.int32) + s2.astype(np.int32) + sc.astype(np.int32))
+                ao_val = np.where(s1 & s2, 0, ao_raw)
+                ao_corners.append(ao_val)
+
+            ao_arr = np.stack(ao_corners, axis=1)  # (N, 4)
+            corner_shades = shade * AO_LEVELS[ao_arr]  # (N, 4)
+            kind_arr = np.broadcast_to(kind[:, None], (i.size, 4))
+            extra = np.stack([corner_shades, kind_arr], axis=2)  # (N, 4, 2)
+
+            # Flip triangle diagonal if needed to prevent lighting creases
+            flip = (ao_arr[:, 0] + ao_arr[:, 2] < ao_arr[:, 1] + ao_arr[:, 3])
+            combined = np.concatenate([pos, uv, extra], axis=2)  # (N, 4, 7)
+            t_normal = combined[:, [0, 1, 2, 0, 2, 3], :]
+            t_flipped = combined[:, [1, 2, 3, 1, 3, 0], :]
+            verts = np.where(flip[:, None, None], t_flipped, t_normal)
             parts.append(verts.reshape(-1, 7))
 
         old = self.chunks.pop((cx, cz), None)
@@ -506,6 +571,10 @@ class Renderer:
             for (cx, cz), chunk in self.chunks.items():
                 if chunk and self._chunk_in_frustum(planes, cx, cz):
                     chunk[1].render()
+
+            # Render Distant Voxel LODs (seamlessly occluded by near chunks in unified depth buffer)
+            if hasattr(self, "lod"):
+                self.lod.render()
 
             # Render 3D Mobs with sub-frame temporal interpolation
             if entities:
