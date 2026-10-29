@@ -119,3 +119,108 @@ def test_app_resource_pack_workflow(headless_app, tmp_path):
     assert any("Default" in l for l in labels)
     assert any("Faithful" in l for l in labels)
     assert any("Done" in l for l in labels)
+
+
+def test_custom_directory_resource_pack_compilation(tmp_path):
+    """Verify Minecraft resource pack directory with blocks/*.png compiles to atlas."""
+    from PIL import Image
+
+    packs_dir = tmp_path / "resourcepacks"
+    mgr = TexturePackManager(str(packs_dir))
+
+    pack_dir = packs_dir / "ocd_style_pack"
+    pack_dir.mkdir(parents=True)
+    with open(pack_dir / "pack.mcmeta", "w", encoding="utf-8") as f:
+        json.dump({"pack": {"pack_format": 1, "description": "OCD Blocks"}}, f)
+
+    # Add 64x64 pack icon (which must NOT become the whole atlas)
+    icon = Image.new("RGBA", (64, 64), (128, 0, 128, 255))
+    icon.save(pack_dir / "pack.png")
+
+    blocks_dir = pack_dir / "assets" / "minecraft" / "textures" / "blocks"
+    blocks_dir.mkdir(parents=True)
+
+    # Add custom dirt texture (pure green for testing distinction)
+    dirt_img = Image.new("RGBA", (16, 16), (42, 210, 42, 255))
+    dirt_img.save(blocks_dir / "dirt.png")
+
+    # Add animated water texture (16x64 strip)
+    water_anim = Image.new("RGBA", (16, 64), (10, 20, 200, 255))
+    # Make top 16x16 frame distinguishable
+    water_top = Image.new("RGBA", (16, 16), (50, 100, 250, 255))
+    water_anim.paste(water_top, (0, 0))
+    water_anim.save(blocks_dir / "water_still.png")
+
+    packs = mgr.list_packs()
+    custom_pack = next(p for p in packs if "ocd_style_pack" in p.pack_id)
+    atlas = mgr.build_pack_atlas(custom_pack.pack_id)
+
+    assert atlas.shape == (256, 256, 4)
+    # Dirt tile is tile 2 (x=32..48, y=0..16)
+    dirt_tile = atlas[0:16, 32:48]
+    assert np.all(dirt_tile[..., 0] == 42)
+    assert np.all(dirt_tile[..., 1] == 210)
+    assert np.all(dirt_tile[..., 2] == 42)
+
+    # Water tile is tile 12 (x=192..208, y=0..16)
+    water_tile = atlas[0:16, 192:208]
+    assert np.all(water_tile[..., 0] == 50)
+    assert np.all(water_tile[..., 2] == 250)
+
+
+def test_custom_zip_resource_pack_compilation(tmp_path):
+    """Verify Minecraft resource pack .zip with individual block PNGs compiles to atlas."""
+    from PIL import Image
+    import io
+
+    packs_dir = tmp_path / "resourcepacks"
+    mgr = TexturePackManager(str(packs_dir))
+
+    zip_path = packs_dir / "test_zip_pack.zip"
+    with zipfile.ZipFile(str(zip_path), "w") as zf:
+        zf.writestr("pack.mcmeta", json.dumps({"pack": {"pack_format": 1, "description": "Zip Pack"}}))
+
+        # Pack icon
+        icon_buf = io.BytesIO()
+        Image.new("RGBA", (64, 64), (200, 100, 50, 255)).save(icon_buf, format="PNG")
+        zf.writestr("pack.png", icon_buf.getvalue())
+
+        # Stone block PNG (16x16 bright cyan)
+        stone_buf = io.BytesIO()
+        Image.new("RGBA", (16, 16), (0, 255, 255, 255)).save(stone_buf, format="PNG")
+        zf.writestr("assets/minecraft/textures/blocks/stone.png", stone_buf.getvalue())
+
+    packs = mgr.list_packs()
+    custom_zip = next(p for p in packs if "test_zip_pack" in p.pack_id)
+    atlas = mgr.build_pack_atlas(custom_zip.pack_id)
+
+    assert atlas.shape == (256, 256, 4)
+    # Stone tile is tile 3 (x=48..64, y=0..16)
+    stone_tile = atlas[0:16, 48:64]
+    assert np.all(stone_tile[..., 0] == 0)
+    assert np.all(stone_tile[..., 1] == 255)
+    assert np.all(stone_tile[..., 2] == 255)
+
+
+def test_pack_icon_only_does_not_override_atlas(tmp_path):
+    """A resource pack containing ONLY pack.png must not replace the 256x256 atlas."""
+    from PIL import Image
+
+    packs_dir = tmp_path / "resourcepacks"
+    mgr = TexturePackManager(str(packs_dir))
+
+    pack_dir = packs_dir / "icon_only_pack"
+    pack_dir.mkdir(parents=True)
+    with open(pack_dir / "pack.mcmeta", "w", encoding="utf-8") as f:
+        json.dump({"pack": {"pack_format": 1, "description": "Icon Only"}}, f)
+
+    icon = Image.new("RGBA", (64, 64), (255, 0, 0, 255))
+    icon.save(pack_dir / "pack.png")
+
+    packs = mgr.list_packs()
+    custom_pack = next(p for p in packs if "icon_only_pack" in p.pack_id)
+    atlas = mgr.build_pack_atlas(custom_pack.pack_id)
+
+    # Must fall back to default procedural atlas, NOT a 256x256 red square
+    default_atlas = mgr.build_pack_atlas("default")
+    assert np.array_equal(atlas, default_atlas)

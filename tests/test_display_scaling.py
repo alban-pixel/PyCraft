@@ -5,7 +5,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "pycraft-gpu"))
 
 import pyxel
-from main import App, GUI_SCALES, RESOLUTIONS
+from main import App, GUI_SCALES, RESOLUTIONS, detect_screen_resolution
 
 
 def test_fullscreen_toggle(headless_app):
@@ -151,4 +151,71 @@ def test_hotbar_with_tool_durability_draw_hud(headless_app):
     # Reset
     app.hotbar[0] = [blocks.GRASS, 64]
     app.hotbar[1] = [blocks.DIRT, 64]
+    app.set_state("title")
+
+
+def test_detect_screen_resolution_returns_valid_dimensions():
+    """detect_screen_resolution must return a positive (width, height) tuple."""
+    w, h = detect_screen_resolution()
+    assert isinstance(w, int) and w >= 640
+    assert isinstance(h, int) and h >= 360
+
+
+def test_fullscreen_switches_to_max_screen_resolution(headless_app, monkeypatch):
+    """Entering fullscreen must automatically set resolution to MAX screen resolution and scale GUI."""
+    app = headless_app
+    app.set_resolution(640, 360)
+    app.settings["resolution"] = (640, 360)
+    app.fullscreen_enabled = False
+
+    # Mock screen detection to a high-res display (e.g. 1512x982 MacBook or 1920x1080)
+    monkeypatch.setattr(app, "detect_screen_resolution", lambda: (1920, 1080))
+
+    # Toggle to fullscreen
+    app.toggle_fullscreen()
+    assert app.fullscreen_enabled is True
+    assert app.settings["resolution"] == (1920, 1080)
+    assert pyxel.width == 1920
+    assert pyxel.height == 1080
+    assert app.get_ui_scale() == 6
+
+    # Toggle back to windowed
+    app.toggle_fullscreen()
+    assert app.fullscreen_enabled is False
+    assert app.settings["resolution"] == (640, 360)
+    assert pyxel.width == 640
+    assert pyxel.height == 360
+    assert app.get_ui_scale() == 2
+
+    # Clean up
+    app.set_resolution(320, 180)
+    app.settings["resolution"] = (320, 180)
+
+
+def test_settings_menu_shows_max_tag_for_display_resolution(headless_app, monkeypatch):
+    """Settings menu must tag the display's maximum resolution with [MAX]."""
+    app = headless_app
+    monkeypatch.setattr(app, "detect_screen_resolution", lambda: (1920, 1080))
+
+    app.set_state("settings")
+    app.set_resolution(1920, 1080)
+    app.settings["resolution"] = (1920, 1080)
+
+    items = app.menu_items()
+    labels = [lbl for lbl, _ in items]
+    res_label = next(lbl for lbl in labels if "Resolution:" in lbl)
+    assert "[MAX]" in res_label
+    assert "1920 x 1080" in res_label
+
+    # Other resolutions should not have [MAX]
+    app.set_resolution(640, 360)
+    app.settings["resolution"] = (640, 360)
+    items = app.menu_items()
+    labels = [lbl for lbl, _ in items]
+    res_label = next(lbl for lbl in labels if "Resolution:" in lbl)
+    assert "[MAX]" not in res_label
+
+    # Clean up
+    app.set_resolution(320, 180)
+    app.settings["resolution"] = (320, 180)
     app.set_state("title")

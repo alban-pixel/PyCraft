@@ -6,6 +6,7 @@ import os
 import random
 import sys
 import time
+from typing import Tuple
 
 import moderngl
 import numpy as np
@@ -32,6 +33,46 @@ from world import World
 from world_manager import WorldManager
 from texture_pack import TexturePackManager
 
+def detect_screen_resolution() -> Tuple[int, int]:
+    """Detect native display resolution (width, height) of the primary monitor in pixels."""
+    if sys.platform == "darwin":
+        try:
+            cg = ctypes.cdll.LoadLibrary("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")
+            cg.CGMainDisplayID.restype = ctypes.c_uint32
+            cg.CGDisplayPixelsWide.argtypes = [ctypes.c_uint32]
+            cg.CGDisplayPixelsWide.restype = ctypes.c_size_t
+            cg.CGDisplayPixelsHigh.argtypes = [ctypes.c_uint32]
+            cg.CGDisplayPixelsHigh.restype = ctypes.c_size_t
+            mid = cg.CGMainDisplayID()
+            w = int(cg.CGDisplayPixelsWide(mid))
+            h = int(cg.CGDisplayPixelsHigh(mid))
+            if w > 0 and h > 0:
+                return (w, h)
+        except Exception:
+            pass
+    elif sys.platform == "win32":
+        try:
+            user32 = ctypes.windll.user32
+            w = int(user32.GetSystemMetrics(0))
+            h = int(user32.GetSystemMetrics(1))
+            if w > 0 and h > 0:
+                return (w, h)
+        except Exception:
+            pass
+    try:
+        import tkinter
+        root = tkinter.Tk()
+        root.withdraw()
+        w = int(root.winfo_screenwidth())
+        h = int(root.winfo_screenheight())
+        root.destroy()
+        if w > 0 and h > 0:
+            return (w, h)
+    except Exception:
+        pass
+    return (1920, 1080)
+
+
 BASE_WIDTH, BASE_HEIGHT = 320, 180
 RESOLUTIONS = [
     (320, 180),
@@ -50,7 +91,7 @@ FOVS = [60, 70, 80, 90]
 RENDER_DISTANCES = [2, 4, 6, 8, 10, 12, 16, 20, 24]
 SENSITIVITIES = [0.12, 0.18, 0.25, 0.35, 0.50]
 SENS_NAMES = {0.12: "Low", 0.18: "Medium", 0.25: "Normal", 0.35: "High", 0.50: "Very High"}
-GUI_SCALES = ["Auto", "1x", "2x", "3x", "4x"]
+GUI_SCALES = ["Auto", "1x", "2x", "3x", "4x", "5x", "6x"]
 DEFAULT_SETTINGS = {
     "resolution": (320, 180),
     "fps": 60,
@@ -209,6 +250,13 @@ class App:
         self.settings_path = os.path.join(data_dir, "settings.json")
         self.settings = self.load_settings()
 
+        self.detect_screen_resolution = detect_screen_resolution
+        screen_res = self.detect_screen_resolution()
+        if screen_res not in RESOLUTIONS:
+            RESOLUTIONS.append(screen_res)
+            RESOLUTIONS.sort(key=lambda r: r[0] * r[1])
+        self.windowed_resolution = tuple(self.settings.get("resolution", (BASE_WIDTH, BASE_HEIGHT)))
+
         self.resource_packs_dir = os.path.join(data_dir, "resourcepacks")
         self.texture_pack_mgr = TexturePackManager(self.resource_packs_dir)
         self.active_resource_pack = self.settings.get("active_resource_pack", "default")
@@ -224,11 +272,13 @@ class App:
         self.init_sounds()
 
         self.fullscreen_enabled = bool(self.settings.get("fullscreen", False))
-        if self.fullscreen_enabled and not headless:
-            try:
-                pyxel.fullscreen(True)
-            except Exception:
-                pass
+        if self.fullscreen_enabled:
+            self.settings["resolution"] = screen_res
+            if not headless:
+                try:
+                    pyxel.fullscreen(True)
+                except Exception:
+                    pass
 
         self.save_data = None
         self.world = None
@@ -411,8 +461,14 @@ class App:
             saved = {}
         if isinstance(saved, dict):
             resolution = saved.get("resolution")
-            if isinstance(resolution, list) and tuple(resolution) in RESOLUTIONS:
-                settings["resolution"] = tuple(resolution)
+            if isinstance(resolution, list) and len(resolution) == 2:
+                res_tuple = (int(resolution[0]), int(resolution[1]))
+                if res_tuple in RESOLUTIONS:
+                    settings["resolution"] = res_tuple
+                elif res_tuple[0] > 0 and res_tuple[1] > 0:
+                    RESOLUTIONS.append(res_tuple)
+                    RESOLUTIONS.sort(key=lambda r: r[0] * r[1])
+                    settings["resolution"] = res_tuple
             if saved.get("render_distance") in RENDER_DISTANCES:
                 settings["render_distance"] = saved["render_distance"]
             if saved.get("fps") in FRAME_RATES:
@@ -448,19 +504,50 @@ class App:
             return 3
         elif pref == "4x":
             return 4
+        elif pref == "5x":
+            return 5
+        elif pref == "6x":
+            return 6
         # "Auto" mode: scales proportionally to resolution
         return max(1, min(pyxel.width // 280, pyxel.height // 160))
 
     def toggle_fullscreen(self):
         self.fullscreen_enabled = not self.fullscreen_enabled
         self.settings["fullscreen"] = self.fullscreen_enabled
+        if self.fullscreen_enabled:
+            # Entering fullscreen: save current windowed resolution and switch to detected max screen resolution
+            current_res = tuple(self.settings.get("resolution", (pyxel.width, pyxel.height)))
+            self.windowed_resolution = current_res
+            max_w, max_h = self.detect_screen_resolution()
+            if (max_w, max_h) not in RESOLUTIONS:
+                RESOLUTIONS.append((max_w, max_h))
+                RESOLUTIONS.sort(key=lambda r: r[0] * r[1])
+            self.set_resolution(max_w, max_h)
+            self.settings["resolution"] = (max_w, max_h)
+            if not self.headless:
+                try:
+                    pyxel.fullscreen(True)
+                except Exception:
+                    pass
+            self.notify(f"Fullscreen: ON ({max_w}x{max_h})")
+        else:
+            # Exiting fullscreen: restore previous windowed resolution
+            if not self.headless:
+                try:
+                    pyxel.fullscreen(False)
+                except Exception:
+                    pass
+            win_w, win_h = getattr(self, "windowed_resolution", (640, 360))
+            max_w, max_h = self.detect_screen_resolution()
+            if (win_w, win_h) == (max_w, max_h):
+                win_w, win_h = (640, 360) if max_w >= 640 else (320, 180)
+            if (win_w, win_h) not in RESOLUTIONS:
+                RESOLUTIONS.append((win_w, win_h))
+                RESOLUTIONS.sort(key=lambda r: r[0] * r[1])
+            self.set_resolution(win_w, win_h)
+            self.settings["resolution"] = (win_w, win_h)
+            self.notify(f"Fullscreen: OFF ({win_w}x{win_h})")
         self.save_settings()
-        if not self.headless:
-            try:
-                pyxel.fullscreen(self.fullscreen_enabled)
-            except Exception:
-                pass
-        self.notify("Fullscreen: " + ("ON" if self.fullscreen_enabled else "OFF"))
 
     def change_gui_scale(self, step):
         cur = self.settings.get("gui_scale", "Auto")
@@ -483,8 +570,14 @@ class App:
 
     def change_resolution(self, step):
         on_button = self.button_at(pyxel.mouse_x, pyxel.mouse_y, len(self.menu_items())) == self.menu_index
-        i = RESOLUTIONS.index(self.settings["resolution"])
+        cur_res = self.settings["resolution"]
+        if cur_res not in RESOLUTIONS:
+            RESOLUTIONS.append(cur_res)
+            RESOLUTIONS.sort(key=lambda r: r[0] * r[1])
+        i = RESOLUTIONS.index(cur_res)
         self.settings["resolution"] = RESOLUTIONS[(i + step) % len(RESOLUTIONS)]
+        if not self.fullscreen_enabled:
+            self.windowed_resolution = self.settings["resolution"]
         self.save_settings()
         self.set_resolution(*self.settings["resolution"])
         self.warp_to_button = on_button
@@ -985,13 +1078,15 @@ class App:
             ]
         if self.state == "settings":
             w, h = self.settings["resolution"]
+            max_w, max_h = self.detect_screen_resolution()
+            res_tag = " [MAX]" if (w, h) == (max_w, max_h) else ""
             sens = self.settings.get("sensitivity", 0.25)
             sens_label = SENS_NAMES.get(sens, "Normal")
             fs_label = "ON" if self.fullscreen_enabled else "OFF"
             gui_label = self.settings.get("gui_scale", "Auto")
             rd = self.settings.get("render_distance", 4)
             return [
-                (f"Resolution: {w} x {h}", self.change_resolution),
+                (f"Resolution: {w} x {h}{res_tag}", self.change_resolution),
                 (f"Fullscreen: {fs_label}", lambda step: self.toggle_fullscreen()),
                 (f"Render Distance: {rd} Chunks", self.change_render_distance),
                 (f"GUI Scale: {gui_label}", self.change_gui_scale),

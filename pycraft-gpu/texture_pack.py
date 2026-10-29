@@ -3,17 +3,336 @@
 Manages built-in and user-installed resource packs located in `resourcepacks/`.
 Supports loading packs from directories and .zip files with pack.mcmeta metadata,
 live hot-reloading into Pyxel image bank 0 and ModernGL texture 0 without restarting.
+Fully compatible with standard Minecraft 1.6-1.20+ resource packs containing
+individual block and item PNG textures in `assets/minecraft/textures/blocks/` (or `block/`).
 """
+import io
 import json
 import os
 import shutil
 import zipfile
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
-from blocks import ATLAS_TILES, TILE, build_atlas
+from blocks import (
+    ATLAS_TILES, TILE, build_atlas,
+    T_GRASS_TOP, T_GRASS_SIDE, T_DIRT, T_STONE, T_COBBLE, T_PLANKS, T_LOG_SIDE, T_LOG_TOP, T_LEAVES,
+    T_SAND, T_BRICK, T_GLASS, T_WATER, T_COAL, T_IRON, T_BEDROCK,
+    T_GOLD, T_DIAMOND, T_GLOWSTONE, T_SNOW, T_SNOW_SIDE,
+    T_CRAFT_TOP, T_CRAFT_SIDE, T_ICE, T_SLIME, T_OBSIDIAN, T_LAVA,
+    T_GRANITE, T_POLISHED_GRANITE, T_DIORITE, T_POLISHED_DIORITE, T_ANDESITE,
+    T_POLISHED_ANDESITE, T_PRISMARINE, T_PRISMARINE_BRICKS, T_DARK_PRISMARINE, T_SEA_LANTERN,
+    T_RED_SAND, T_RED_SANDSTONE_SIDE, T_RED_SANDSTONE_TOP, T_RED_SANDSTONE_BOTTOM,
+    T_CHISELED_RED_SANDSTONE, T_SMOOTH_RED_SANDSTONE,
+    T_COARSE_DIRT, T_PODZOL_TOP, T_PODZOL_SIDE, T_SPONGE, T_WET_SPONGE,
+    T_SPRUCE_PLANKS, T_BIRCH_PLANKS, T_JUNGLE_PLANKS, T_ACACIA_PLANKS, T_DARK_OAK_PLANKS,
+    T_IRON_TRAPDOOR,
+    T_CRACK_0, T_CRACK_1, T_CRACK_2, T_CRACK_3,
+    T_ZOMBIE_FACE, T_ZOMBIE_BODY, T_PIG_FACE, T_PIG_BODY,
+    T_STICK, T_ARMOR_STAND,
+    T_WOOD_PICKAXE, T_STONE_PICKAXE, T_IRON_PICKAXE, T_DIAMOND_PICKAXE,
+    T_WOOD_SWORD, T_STONE_SWORD, ITEM_IRON_SWORD_TILE, T_DIAMOND_SWORD,
+    T_RAW_PORK, T_COOKED_PORK, T_RAW_MUTTON, T_COOKED_MUTTON,
+    T_RAW_RABBIT, T_COOKED_RABBIT, T_RABBIT_STEW, T_RABBIT_FOOT,
+    T_RABBIT_HIDE, T_PRISMARINE_SHARD, T_PRISMARINE_CRYSTALS,
+    T_FURNACE_FRONT, T_FURNACE_FRONT_LIT, T_FURNACE_SIDE, T_FURNACE_TOP,
+    T_CHEST_FRONT, T_CHEST_SIDE, T_CHEST_TOP,
+    T_DISPENSER_FRONT, T_HOPPER_TOP, T_HOPPER_SIDE,
+    T_BREWING_STAND, T_ANVIL_TOP, T_ANVIL_SIDE,
+    T_ENCHANTING_TABLE_TOP, T_ENCHANTING_TABLE_SIDE,
+    T_JUKEBOX_TOP, T_JUKEBOX_SIDE, T_NOTE_BLOCK, T_BEACON,
+    T_TORCH, T_REDSTONE_TORCH,
+    T_TALL_GRASS, T_FERN, T_DEAD_BUSH,
+    T_DANDELION, T_POPPY, T_BLUE_ORCHID, T_ALLIUM, T_RED_TULIP,
+    T_OXEYE_DAISY, T_SUNFLOWER,
+    T_BROWN_MUSHROOM, T_RED_MUSHROOM,
+    T_SUGAR_CANE, T_CACTUS_SIDE, T_CACTUS_TOP,
+    T_OAK_SAPLING, T_SPRUCE_SAPLING, T_BIRCH_SAPLING,
+    T_LADDER, T_VINE, T_LILY_PAD, T_COBWEB,
+    T_WOODEN_DOOR_TOP, T_WOODEN_DOOR_BOTTOM,
+    T_IRON_DOOR_TOP, T_IRON_DOOR_BOTTOM,
+    T_WOODEN_TRAPDOOR,
+    T_REDSTONE_WIRE, T_REDSTONE_REPEATER, T_REDSTONE_COMPARATOR,
+    T_REDSTONE_LAMP_OFF, T_REDSTONE_LAMP_ON,
+    T_LEVER, T_STONE_BUTTON,
+    T_RAIL, T_POWERED_RAIL,
+    T_PISTON_TOP, T_PISTON_SIDE,
+    T_DAYLIGHT_DETECTOR, T_TNT_SIDE,
+    T_TNT_TOP, T_TNT_BOTTOM,
+    T_COAL_BLOCK, T_IRON_BLOCK, T_GOLD_BLOCK, T_DIAMOND_BLOCK,
+    T_EMERALD_BLOCK, T_REDSTONE_BLOCK, T_LAPIS_BLOCK,
+    T_LAPIS_ORE, T_EMERALD_ORE, T_NETHER_QUARTZ_ORE, T_REDSTONE_ORE,
+    T_QUARTZ_BLOCK_TOP, T_QUARTZ_BLOCK_SIDE, T_QUARTZ_PILLAR_SIDE,
+    T_STONE_BRICKS, T_MOSSY_STONE_BRICKS, T_CRACKED_STONE_BRICKS, T_CHISELED_STONE_BRICKS,
+    T_MOSSY_COBBLE, T_NETHERRACK, T_SOUL_SAND, T_NETHER_BRICKS, T_END_STONE,
+    T_CLAY_BLOCK, T_HARDENED_CLAY,
+    T_HAY_SIDE, T_HAY_TOP, T_BOOKSHELF,
+    T_PUMPKIN_SIDE, T_PUMPKIN_TOP,
+    T_PUMPKIN_FRONT, T_JACK_O_LANTERN_FRONT,
+    T_MELON_SIDE, T_MELON_TOP,
+    T_FARMLAND_TOP, T_WHEAT_STAGE_7,
+    T_WHITE_WOOL, T_RED_WOOL, T_BLUE_WOOL, T_YELLOW_WOOL, T_GREEN_WOOL, T_BLACK_WOOL,
+    T_IRON_BARS, T_GLASS_PANE, T_STONE_SLAB_SIDE, T_MYCELIUM_TOP,
+    T_CREEPER_FACE, T_SKELETON_FACE, T_SPIDER_FACE, T_ENDERMAN_FACE,
+    T_COW_FACE, T_SHEEP_FACE, T_CHICKEN_FACE, T_VILLAGER_FACE,
+    T_SLIME_FACE, T_GHAST_FACE, T_BLAZE_FACE, T_WOLF_FACE,
+    T_OCELOT_FACE, T_IRON_GOLEM_FACE, T_SNOW_GOLEM_FACE, T_WITCH_FACE,
+    T_COAL_ITEM, T_IRON_INGOT, T_GOLD_INGOT, T_DIAMOND_ITEM,
+    T_EMERALD_ITEM, T_REDSTONE_ITEM, T_LAPIS_ITEM, T_QUARTZ_ITEM,
+    T_BREAD, T_APPLE, T_GOLDEN_APPLE, T_CARROT, T_POTATO,
+    T_RAW_BEEF, T_STEAK, T_RAW_CHICKEN,
+    T_COOKED_CHICKEN, T_GUNPOWDER, T_STRING, T_FEATHER,
+    T_BONE, T_ARROW, T_BOW, T_SNOWBALL, T_SLIMEBALL,
+    T_BLAZE_ROD, T_GHAST_TEAR, T_NETHER_STAR, T_ENDER_PEARL,
+    T_LEATHER, T_WHEAT_ITEM, T_FLINT,
+    T_BUCKET, T_WATER_BUCKET, T_LAVA_BUCKET, T_MILK_BUCKET,
+    T_FLINT_AND_STEEL, T_SHEARS,
+    T_IRON_HELMET, T_IRON_CHESTPLATE, T_IRON_LEGGINGS, T_IRON_BOOTS,
+    T_DIAMOND_HELMET, T_DIAMOND_CHESTPLATE, T_DIAMOND_LEGGINGS, T_DIAMOND_BOOTS,
+    T_BED_ITEM, T_DRAGON_EGG,
+)
+
+# Comprehensive mapping from PyCraft tile indices (0..255) to standard Minecraft texture names
+MINECRAFT_TILE_MAP: Dict[int, List[str]] = {
+    T_GRASS_TOP: ["grass_top.png", "grass_block_top.png"],
+    T_GRASS_SIDE: ["grass_side.png", "grass_block_side.png"],
+    T_DIRT: ["dirt.png"],
+    T_STONE: ["stone.png"],
+    T_COBBLE: ["cobblestone.png"],
+    T_PLANKS: ["planks_oak.png", "oak_planks.png", "planks.png"],
+    T_LOG_SIDE: ["log_oak.png", "oak_log.png", "log.png"],
+    T_LOG_TOP: ["log_oak_top.png", "oak_log_top.png", "log_top.png"],
+    T_LEAVES: ["leaves_oak.png", "oak_leaves.png", "leaves_oak_opaque.png", "leaves.png"],
+    T_SAND: ["sand.png"],
+    T_BRICK: ["brick.png", "bricks.png"],
+    T_GLASS: ["glass.png"],
+    T_WATER: ["water_still.png", "water.png", "water_flow.png"],
+    T_COAL: ["coal_ore.png"],
+    T_IRON: ["iron_ore.png"],
+    T_BEDROCK: ["bedrock.png"],
+    T_GOLD: ["gold_ore.png"],
+    T_DIAMOND: ["diamond_ore.png"],
+    T_GLOWSTONE: ["glowstone.png"],
+    T_SNOW: ["snow.png"],
+    T_SNOW_SIDE: ["grass_side_snowed.png", "snow_side.png"],
+    T_CRAFT_TOP: ["crafting_table_top.png"],
+    T_CRAFT_SIDE: ["crafting_table_side.png", "crafting_table_front.png"],
+    T_ICE: ["ice.png", "packed_ice.png"],
+    T_SLIME: ["slime.png", "slime_block.png"],
+    T_OBSIDIAN: ["obsidian.png"],
+    T_LAVA: ["lava_still.png", "lava.png", "lava_flow.png"],
+    T_GRANITE: ["granite.png"],
+    T_POLISHED_GRANITE: ["granite_smooth.png", "polished_granite.png"],
+    T_DIORITE: ["diorite.png"],
+    T_POLISHED_DIORITE: ["diorite_smooth.png", "polished_diorite.png"],
+    T_ANDESITE: ["andesite.png"],
+    T_POLISHED_ANDESITE: ["andesite_smooth.png", "polished_andesite.png"],
+    T_PRISMARINE: ["prismarine_rough.png", "prismarine.png"],
+    T_PRISMARINE_BRICKS: ["prismarine_bricks.png"],
+    T_DARK_PRISMARINE: ["prismarine_dark.png", "dark_prismarine.png"],
+    T_SEA_LANTERN: ["sea_lantern.png"],
+    T_RED_SAND: ["red_sand.png"],
+    T_RED_SANDSTONE_SIDE: ["red_sandstone_normal.png", "red_sandstone_side.png", "red_sandstone.png"],
+    T_RED_SANDSTONE_TOP: ["red_sandstone_top.png"],
+    T_RED_SANDSTONE_BOTTOM: ["red_sandstone_bottom.png"],
+    T_CHISELED_RED_SANDSTONE: ["red_sandstone_carved.png", "chiseled_red_sandstone.png"],
+    T_SMOOTH_RED_SANDSTONE: ["red_sandstone_smooth.png", "smooth_red_sandstone.png"],
+    T_COARSE_DIRT: ["coarse_dirt.png"],
+    T_PODZOL_TOP: ["dirt_podzol_top.png", "podzol_top.png"],
+    T_PODZOL_SIDE: ["dirt_podzol_side.png", "podzol_side.png"],
+    T_SPONGE: ["sponge.png"],
+    T_WET_SPONGE: ["sponge_wet.png", "wet_sponge.png"],
+    T_SPRUCE_PLANKS: ["planks_spruce.png", "spruce_planks.png"],
+    T_BIRCH_PLANKS: ["planks_birch.png", "birch_planks.png"],
+    T_JUNGLE_PLANKS: ["planks_jungle.png", "jungle_planks.png"],
+    T_ACACIA_PLANKS: ["planks_acacia.png", "acacia_planks.png"],
+    T_DARK_OAK_PLANKS: ["planks_big_oak.png", "dark_oak_planks.png"],
+    T_IRON_TRAPDOOR: ["iron_trapdoor.png"],
+    T_CRACK_0: ["destroy_stage_0.png"],
+    T_CRACK_1: ["destroy_stage_1.png"],
+    T_CRACK_2: ["destroy_stage_2.png"],
+    T_CRACK_3: ["destroy_stage_3.png"],
+    T_STICK: ["stick.png"],
+    T_ARMOR_STAND: ["wooden_armorstand.png", "armor_stand.png"],
+    T_WOOD_PICKAXE: ["wooden_pickaxe.png", "wood_pickaxe.png"],
+    T_STONE_PICKAXE: ["stone_pickaxe.png"],
+    T_IRON_PICKAXE: ["iron_pickaxe.png"],
+    T_DIAMOND_PICKAXE: ["diamond_pickaxe.png"],
+    T_WOOD_SWORD: ["wooden_sword.png", "wood_sword.png"],
+    T_STONE_SWORD: ["stone_sword.png"],
+    ITEM_IRON_SWORD_TILE: ["iron_sword.png"],
+    T_DIAMOND_SWORD: ["diamond_sword.png"],
+    T_RAW_PORK: ["porkchop_raw.png", "raw_porkchop.png"],
+    T_COOKED_PORK: ["porkchop_cooked.png", "cooked_porkchop.png"],
+    T_RAW_MUTTON: ["mutton_raw.png", "raw_mutton.png"],
+    T_COOKED_MUTTON: ["mutton_cooked.png", "cooked_mutton.png"],
+    T_RAW_RABBIT: ["rabbit_raw.png", "raw_rabbit.png"],
+    T_COOKED_RABBIT: ["rabbit_cooked.png", "cooked_rabbit.png"],
+    T_RABBIT_STEW: ["rabbit_stew.png"],
+    T_RABBIT_FOOT: ["rabbit_foot.png"],
+    T_RABBIT_HIDE: ["rabbit_hide.png"],
+    T_PRISMARINE_SHARD: ["prismarine_shard.png"],
+    T_PRISMARINE_CRYSTALS: ["prismarine_crystals.png"],
+    T_FURNACE_FRONT: ["furnace_front_off.png", "furnace_front.png"],
+    T_FURNACE_FRONT_LIT: ["furnace_front_on.png"],
+    T_FURNACE_SIDE: ["furnace_side.png"],
+    T_FURNACE_TOP: ["furnace_top.png"],
+    T_CHEST_FRONT: ["chest_front.png", "chest.png"],
+    T_CHEST_SIDE: ["chest_side.png"],
+    T_CHEST_TOP: ["chest_top.png"],
+    T_DISPENSER_FRONT: ["dispenser_front_horizontal.png", "dispenser_front.png"],
+    T_HOPPER_TOP: ["hopper_top.png"],
+    T_HOPPER_SIDE: ["hopper_outside.png", "hopper_side.png"],
+    T_BREWING_STAND: ["brewing_stand_base.png", "brewing_stand.png"],
+    T_ANVIL_TOP: ["anvil_top_damaged_0.png", "anvil_top.png"],
+    T_ANVIL_SIDE: ["anvil_base.png", "anvil_side.png"],
+    T_ENCHANTING_TABLE_TOP: ["enchanting_table_top.png"],
+    T_ENCHANTING_TABLE_SIDE: ["enchanting_table_side.png"],
+    T_JUKEBOX_TOP: ["jukebox_top.png"],
+    T_JUKEBOX_SIDE: ["jukebox_side.png"],
+    T_NOTE_BLOCK: ["noteblock.png", "note_block.png"],
+    T_BEACON: ["beacon.png"],
+    T_TORCH: ["torch_on.png", "torch.png"],
+    T_REDSTONE_TORCH: ["redstone_torch_on.png", "redstone_torch.png"],
+    T_TALL_GRASS: ["tallgrass.png", "grass.png", "tall_grass.png"],
+    T_FERN: ["fern.png"],
+    T_DEAD_BUSH: ["deadbush.png", "dead_bush.png"],
+    T_DANDELION: ["flower_dandelion.png", "dandelion.png"],
+    T_POPPY: ["flower_rose.png", "flower_poppy.png", "poppy.png"],
+    T_BLUE_ORCHID: ["flower_blue_orchid.png", "blue_orchid.png"],
+    T_ALLIUM: ["flower_allium.png", "allium.png"],
+    T_RED_TULIP: ["flower_tulip_red.png", "red_tulip.png"],
+    T_OXEYE_DAISY: ["flower_oxeye_daisy.png", "oxeye_daisy.png"],
+    T_SUNFLOWER: ["double_plant_sunflower_front.png", "sunflower.png"],
+    T_BROWN_MUSHROOM: ["mushroom_brown.png", "brown_mushroom.png"],
+    T_RED_MUSHROOM: ["mushroom_red.png", "red_mushroom.png"],
+    T_SUGAR_CANE: ["reeds.png", "sugar_cane.png"],
+    T_CACTUS_SIDE: ["cactus_side.png"],
+    T_CACTUS_TOP: ["cactus_top.png"],
+    T_OAK_SAPLING: ["sapling_oak.png", "oak_sapling.png"],
+    T_SPRUCE_SAPLING: ["sapling_spruce.png", "spruce_sapling.png"],
+    T_BIRCH_SAPLING: ["sapling_birch.png", "birch_sapling.png"],
+    T_LADDER: ["ladder.png"],
+    T_VINE: ["vine.png"],
+    T_LILY_PAD: ["waterlily.png", "lily_pad.png"],
+    T_COBWEB: ["web.png", "cobweb.png"],
+    T_WOODEN_DOOR_TOP: ["door_wood_upper.png", "oak_door_top.png"],
+    T_WOODEN_DOOR_BOTTOM: ["door_wood_lower.png", "oak_door_bottom.png"],
+    T_IRON_DOOR_TOP: ["door_iron_upper.png", "iron_door_top.png"],
+    T_IRON_DOOR_BOTTOM: ["door_iron_lower.png", "iron_door_bottom.png"],
+    T_WOODEN_TRAPDOOR: ["trapdoor.png", "oak_trapdoor.png"],
+    T_REDSTONE_WIRE: ["redstone_dust_cross.png", "redstone_dust_line.png", "redstone_dust.png"],
+    T_REDSTONE_REPEATER: ["repeater_off.png"],
+    T_REDSTONE_COMPARATOR: ["comparator_off.png"],
+    T_REDSTONE_LAMP_OFF: ["redstone_lamp_off.png"],
+    T_REDSTONE_LAMP_ON: ["redstone_lamp_on.png"],
+    T_LEVER: ["lever.png"],
+    T_STONE_BUTTON: ["stone.png"],
+    T_RAIL: ["rail_normal.png", "rail.png"],
+    T_POWERED_RAIL: ["rail_golden_powered.png", "rail_golden.png", "powered_rail.png"],
+    T_PISTON_TOP: ["piston_top_normal.png", "piston_top.png"],
+    T_PISTON_SIDE: ["piston_side.png"],
+    T_DAYLIGHT_DETECTOR: ["daylight_detector_top.png"],
+    T_TNT_SIDE: ["tnt_side.png"],
+    T_TNT_TOP: ["tnt_top.png"],
+    T_TNT_BOTTOM: ["tnt_bottom.png"],
+    T_COAL_BLOCK: ["coal_block.png"],
+    T_IRON_BLOCK: ["iron_block.png"],
+    T_GOLD_BLOCK: ["gold_block.png"],
+    T_DIAMOND_BLOCK: ["diamond_block.png"],
+    T_EMERALD_BLOCK: ["emerald_block.png"],
+    T_REDSTONE_BLOCK: ["redstone_block.png"],
+    T_LAPIS_BLOCK: ["lapis_block.png"],
+    T_LAPIS_ORE: ["lapis_ore.png"],
+    T_EMERALD_ORE: ["emerald_ore.png"],
+    T_NETHER_QUARTZ_ORE: ["quartz_ore.png", "nether_quartz_ore.png"],
+    T_REDSTONE_ORE: ["redstone_ore.png"],
+    T_QUARTZ_BLOCK_TOP: ["quartz_block_top.png"],
+    T_QUARTZ_BLOCK_SIDE: ["quartz_block_side.png"],
+    T_QUARTZ_PILLAR_SIDE: ["quartz_block_lines.png", "quartz_pillar.png"],
+    T_STONE_BRICKS: ["stonebrick.png", "stone_bricks.png"],
+    T_MOSSY_STONE_BRICKS: ["stonebrick_mossy.png", "mossy_stone_bricks.png"],
+    T_CRACKED_STONE_BRICKS: ["stonebrick_cracked.png", "cracked_stone_bricks.png"],
+    T_CHISELED_STONE_BRICKS: ["stonebrick_carved.png", "chiseled_stone_bricks.png"],
+    T_MOSSY_COBBLE: ["cobblestone_mossy.png", "mossy_cobblestone.png"],
+    T_NETHERRACK: ["netherrack.png"],
+    T_SOUL_SAND: ["soul_sand.png"],
+    T_NETHER_BRICKS: ["nether_brick.png", "nether_bricks.png"],
+    T_END_STONE: ["end_stone.png"],
+    T_CLAY_BLOCK: ["clay.png", "clay_block.png"],
+    T_HARDENED_CLAY: ["hardened_clay.png", "terracotta.png"],
+    T_HAY_SIDE: ["hay_block_side.png"],
+    T_HAY_TOP: ["hay_block_top.png"],
+    T_BOOKSHELF: ["bookshelf.png"],
+    T_PUMPKIN_SIDE: ["pumpkin_side.png"],
+    T_PUMPKIN_TOP: ["pumpkin_top.png"],
+    T_PUMPKIN_FRONT: ["pumpkin_face_off.png"],
+    T_JACK_O_LANTERN_FRONT: ["pumpkin_face_on.png"],
+    T_MELON_SIDE: ["melon_side.png"],
+    T_MELON_TOP: ["melon_top.png"],
+    T_FARMLAND_TOP: ["farmland_wet.png", "farmland.png"],
+    T_WHEAT_STAGE_7: ["wheat_stage_7.png"],
+    T_WHITE_WOOL: ["wool_colored_white.png", "white_wool.png"],
+    T_RED_WOOL: ["wool_colored_red.png", "red_wool.png"],
+    T_BLUE_WOOL: ["wool_colored_blue.png", "blue_wool.png"],
+    T_YELLOW_WOOL: ["wool_colored_yellow.png", "yellow_wool.png"],
+    T_GREEN_WOOL: ["wool_colored_green.png", "green_wool.png"],
+    T_BLACK_WOOL: ["wool_colored_black.png", "black_wool.png"],
+    T_IRON_BARS: ["iron_bars.png"],
+    T_GLASS_PANE: ["glass_pane_top.png"],
+    T_STONE_SLAB_SIDE: ["stone_slab_side.png"],
+    T_MYCELIUM_TOP: ["mycelium_top.png"],
+    T_COAL_ITEM: ["coal.png"],
+    T_IRON_INGOT: ["iron_ingot.png"],
+    T_GOLD_INGOT: ["gold_ingot.png"],
+    T_DIAMOND_ITEM: ["diamond.png"],
+    T_EMERALD_ITEM: ["emerald.png"],
+    T_REDSTONE_ITEM: ["redstone_dust.png"],
+    T_LAPIS_ITEM: ["lapis_lazuli.png"],
+    T_QUARTZ_ITEM: ["quartz.png"],
+    T_BREAD: ["bread.png"],
+    T_APPLE: ["apple.png"],
+    T_GOLDEN_APPLE: ["apple_golden.png"],
+    T_CARROT: ["carrot.png"],
+    T_POTATO: ["potato.png"],
+    T_RAW_BEEF: ["beef_raw.png"],
+    T_STEAK: ["beef_cooked.png"],
+    T_RAW_CHICKEN: ["chicken_raw.png"],
+    T_COOKED_CHICKEN: ["chicken_cooked.png"],
+    T_GUNPOWDER: ["gunpowder.png"],
+    T_STRING: ["string.png"],
+    T_FEATHER: ["feather.png"],
+    T_BONE: ["bone.png"],
+    T_ARROW: ["arrow.png"],
+    T_BOW: ["bow_standby.png", "bow.png"],
+    T_SNOWBALL: ["snowball.png"],
+    T_SLIMEBALL: ["slimeball.png"],
+    T_BLAZE_ROD: ["blaze_rod.png"],
+    T_GHAST_TEAR: ["ghast_tear.png"],
+    T_NETHER_STAR: ["nether_star.png"],
+    T_ENDER_PEARL: ["ender_pearl.png"],
+    T_LEATHER: ["leather.png"],
+    T_WHEAT_ITEM: ["wheat.png"],
+    T_FLINT: ["flint.png"],
+    T_BUCKET: ["bucket_empty.png", "bucket.png"],
+    T_WATER_BUCKET: ["bucket_water.png"],
+    T_LAVA_BUCKET: ["bucket_lava.png"],
+    T_MILK_BUCKET: ["bucket_milk.png"],
+    T_FLINT_AND_STEEL: ["flint_and_steel.png"],
+    T_SHEARS: ["shears.png"],
+    T_IRON_HELMET: ["iron_helmet.png"],
+    T_IRON_CHESTPLATE: ["iron_chestplate.png"],
+    T_IRON_LEGGINGS: ["iron_leggings.png"],
+    T_IRON_BOOTS: ["iron_boots.png"],
+    T_DIAMOND_HELMET: ["diamond_helmet.png"],
+    T_DIAMOND_CHESTPLATE: ["diamond_chestplate.png"],
+    T_DIAMOND_LEGGINGS: ["diamond_leggings.png"],
+    T_DIAMOND_BOOTS: ["diamond_boots.png"],
+    T_BED_ITEM: ["bed.png"],
+    T_DRAGON_EGG: ["dragon_egg.png"],
+}
 
 
 @dataclass
@@ -98,23 +417,23 @@ class TexturePackManager:
 
     def _inspect_pack(self, path: str, filename: str) -> Optional[ResourcePackInfo]:
         """Inspect a file or directory to determine if it is a valid resource pack."""
-        # Skip sample_pack if it's unconfigured
-        if filename == "sample_pack":
-            pass
-
         if os.path.isdir(path):
             mcmeta_path = os.path.join(path, "pack.mcmeta")
             desc = "Custom User Resource Pack"
             p_format = 1
+            pack_name = filename.replace("_", " ").title()
             if os.path.exists(mcmeta_path):
                 try:
                     with open(mcmeta_path, "r", encoding="utf-8") as f:
                         data = json.load(f)
-                    desc = data.get("pack", {}).get("description", desc)
-                    p_format = data.get("pack", {}).get("pack_format", 1)
+                    p_info = data.get("pack", {})
+                    d_val = p_info.get("description", desc)
+                    if isinstance(d_val, dict):
+                        d_val = d_val.get("text", desc)
+                    desc = str(d_val)
+                    p_format = p_info.get("pack_format", 1)
                 except Exception:
                     pass
-            pack_name = filename.replace("_", " ").title()
             return ResourcePackInfo(
                 pack_id=f"dir_{filename}",
                 name=pack_name,
@@ -131,11 +450,17 @@ class TexturePackManager:
             p_format = 1
             try:
                 with zipfile.ZipFile(path, "r") as zf:
-                    if "pack.mcmeta" in zf.namelist():
-                        meta_bytes = zf.read("pack.mcmeta")
-                        data = json.loads(meta_bytes.decode("utf-8"))
-                        desc = data.get("pack", {}).get("description", desc)
-                        p_format = data.get("pack", {}).get("pack_format", 1)
+                    for name in zf.namelist():
+                        if os.path.basename(name).lower() == "pack.mcmeta":
+                            meta_bytes = zf.read(name)
+                            data = json.loads(meta_bytes.decode("utf-8"))
+                            p_info = data.get("pack", {})
+                            d_val = p_info.get("description", desc)
+                            if isinstance(d_val, dict):
+                                d_val = d_val.get("text", desc)
+                            desc = str(d_val)
+                            p_format = p_info.get("pack_format", 1)
+                            break
             except Exception:
                 pass
             return ResourcePackInfo(
@@ -152,31 +477,24 @@ class TexturePackManager:
     def build_pack_atlas(self, pack_id: str) -> np.ndarray:
         """Construct the 256x256 RGBA atlas array for the specified pack."""
         if pack_id == "faithful":
-            # Higher contrast, punchier colors, enhanced brick and ore definitions
             base = build_atlas(seed=1337).astype(np.float32)
-            # Enhance contrast: stretch away from middle grey
             mean = 128.0
             enhanced = (base[..., :3] - mean) * 1.25 + mean
             base[..., :3] = np.clip(enhanced, 0, 255)
             return base.astype(np.uint8)
 
         elif pack_id == "retro":
-            # Alpha/Beta vibrant saturated greens and classic nostalgic colors
             base = build_atlas(seed=42).astype(np.float32)
-            # Boost green channel for grass/leaves (top left area)
             base[:32, :32, 1] = np.clip(base[:32, :32, 1] * 1.35, 0, 255)
-            # Boost water saturation
             base[..., 0] = np.clip(base[..., 0] * 1.05, 0, 255)
             return base.astype(np.uint8)
 
         elif pack_id == "dark_mode":
-            # Sleek dark theme
             base = build_atlas(seed=777).astype(np.float32)
-            # Darken stones and terrains by 30%
             base[..., :3] = np.clip(base[..., :3] * 0.72, 0, 255)
             return base.astype(np.uint8)
 
-        # Check if it's a custom directory/zip pack
+        # Check custom directory / zip packs
         for pack in self.list_packs():
             if pack.pack_id == pack_id and pack.path:
                 custom_atlas = self._load_custom_atlas(pack.path)
@@ -187,38 +505,100 @@ class TexturePackManager:
         return build_atlas(seed=7)
 
     def _load_custom_atlas(self, path: str) -> Optional[np.ndarray]:
-        """Try loading an atlas image from a folder or zip pack."""
-        # Try importing PIL if available
+        """Extract and compile textures from a custom resource pack directory or .zip archive."""
         try:
             from PIL import Image
         except ImportError:
             Image = None
 
-        target_size = (TILE * ATLAS_TILES, TILE * ATLAS_TILES)
+        if Image is None:
+            return None
 
-        if os.path.isdir(path) and Image:
-            for candidate in ["textures/atlas.png", "textures/terrain.png", "terrain.png", "pack.png"]:
+        # Start with default procedural pixel art as baseline
+        atlas = build_atlas(seed=7).copy()
+        target_tile_size = (16, 16)
+        matched_textures = 0
+
+        # Build index of texture files in pack
+        file_map: Dict[str, Tuple[str, Optional[zipfile.ZipFile]]] = {}
+
+        if os.path.isdir(path):
+            # Check for direct atlas image first
+            for candidate in ["textures/atlas.png", "textures/terrain.png", "terrain.png"]:
                 c_path = os.path.join(path, candidate)
                 if os.path.exists(c_path):
                     try:
                         im = Image.open(c_path).convert("RGBA")
-                        if im.size != target_size:
-                            im = im.resize(target_size, Image.NEAREST)
+                        if im.size != (256, 256):
+                            im = im.resize((256, 256), Image.NEAREST)
                         return np.array(im, dtype=np.uint8)
                     except Exception:
                         pass
 
-        if zipfile.is_zipfile(path) and Image:
+            for root, _, files in os.walk(path):
+                for f in files:
+                    if f.lower().endswith(".png"):
+                        base = f.lower()
+                        full = os.path.join(root, f)
+                        # Prefer blocks/ directory if there are duplicates
+                        if base not in file_map or "textures/block" in root.lower():
+                            file_map[base] = (full, None)
+
+        elif zipfile.is_zipfile(path):
             try:
-                with zipfile.ZipFile(path, "r") as zf:
-                    for candidate in ["textures/atlas.png", "textures/terrain.png", "terrain.png", "pack.png"]:
-                        if candidate in zf.namelist():
+                zf = zipfile.ZipFile(path, "r")
+                # Check for direct atlas image first
+                for candidate in ["textures/atlas.png", "textures/terrain.png", "terrain.png"]:
+                    if candidate in zf.namelist():
+                        try:
                             with zf.open(candidate) as f:
                                 im = Image.open(f).convert("RGBA")
-                                if im.size != target_size:
-                                    im = im.resize(target_size, Image.NEAREST)
+                                if im.size != (256, 256):
+                                    im = im.resize((256, 256), Image.NEAREST)
                                 return np.array(im, dtype=np.uint8)
+                        except Exception:
+                            pass
+
+                for name in zf.namelist():
+                    if name.lower().endswith(".png") and not name.endswith("/"):
+                        base = os.path.basename(name).lower()
+                        if base not in file_map or "textures/block" in name.lower():
+                            file_map[base] = (name, zf)
             except Exception:
-                pass
+                return None
+        else:
+            return None
+
+        # Compile individual block and item textures into the atlas
+        for tile_id, candidates in MINECRAFT_TILE_MAP.items():
+            for cand in candidates:
+                cand_lower = cand.lower()
+                if cand_lower in file_map:
+                    filepath_or_name, zf = file_map[cand_lower]
+                    try:
+                        if zf is not None:
+                            with zf.open(filepath_or_name) as f:
+                                im = Image.open(f).convert("RGBA")
+                        else:
+                            im = Image.open(filepath_or_name).convert("RGBA")
+
+                        # If texture is an animated strip (height > width, e.g. water_still.png), crop the top square frame
+                        if im.height > im.width:
+                            im = im.crop((0, 0, im.width, im.width))
+
+                        if im.size != target_tile_size:
+                            im = im.resize(target_tile_size, Image.NEAREST)
+
+                        img_arr = np.array(im, dtype=np.uint8)
+                        tx = (tile_id % 16) * 16
+                        ty = (tile_id // 16) * 16
+                        atlas[ty : ty + 16, tx : tx + 16] = img_arr
+                        matched_textures += 1
+                        break
+                    except Exception:
+                        continue
+
+        if matched_textures > 0:
+            return atlas
 
         return None
