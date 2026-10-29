@@ -345,9 +345,6 @@ class Renderer:
     def block_changed(self, x, z):
         """Rebuild the chunk holding (x, z), and its neighbor when the block sits on a chunk border."""
         cx, cz = x // CHUNK, z // CHUNK
-        if hasattr(self, "lod"):
-            self.lod.cache.pop((cx, cz, 1), None)
-            self.lod.cache.pop((cx, cz, 2), None)
         todo = {(cx, cz)}
         if x % CHUNK == 0:
             todo.add((cx - 1, cz))
@@ -357,6 +354,11 @@ class Renderer:
             todo.add((cx, cz - 1))
         if z % CHUNK == CHUNK - 1:
             todo.add((cx, cz + 1))
+        if hasattr(self, "lod"):
+            for k in todo:
+                for lvl in (1, 2, 3):
+                    self.lod.cache.pop((k[0], k[1], lvl), None)
+            self.lod.last_center = (-9999, -9999)
         with self.ctx:
             for key in todo:
                 if key in self.chunks:
