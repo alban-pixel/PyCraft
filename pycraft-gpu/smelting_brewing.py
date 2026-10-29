@@ -34,20 +34,34 @@ class FurnaceType(Enum):
 
 # Smelting Recipes: input_item -> output_item
 SMELT_RECIPES = {
-    blocks.IRON_ORE: blocks.ITEM_IRON_PICKAXE,  # or iron ingot
-    blocks.GOLD_ORE: blocks.GOLD_ORE,
-    blocks.SAND: blocks.GLASS,
     blocks.COBBLESTONE: blocks.STONE,
+    blocks.SAND: blocks.GLASS,
+    blocks.IRON_ORE: getattr(blocks, "ITEM_IRON_INGOT", blocks.ITEM_IRON_PICKAXE),
+    blocks.GOLD_ORE: getattr(blocks, "ITEM_GOLD_INGOT", blocks.GOLD_ORE),
+    getattr(blocks, "CLAY_BLOCK", 82): getattr(blocks, "BRICK", 45),
+    getattr(blocks, "NETHERRACK", 87): getattr(blocks, "NETHER_BRICKS", 112),
     blocks.ITEM_RAW_PORK: blocks.ITEM_COOKED_PORK,
+    getattr(blocks, "ITEM_RAW_BEEF", 363): getattr(blocks, "ITEM_STEAK", 364),
+    getattr(blocks, "ITEM_RAW_CHICKEN", 365): getattr(blocks, "ITEM_COOKED_CHICKEN", 366),
+    getattr(blocks, "ITEM_RAW_MUTTON", 120): getattr(blocks, "ITEM_COOKED_MUTTON", 121),
+    getattr(blocks, "ITEM_RAW_RABBIT", 122): getattr(blocks, "ITEM_COOKED_RABBIT", 123),
+    getattr(blocks, "ITEM_POTATO", 392): getattr(blocks, "ITEM_BAKED_POTATO", 393),
+    blocks.LOG: getattr(blocks, "ITEM_CHARCOAL", 263),
 }
 
 # Fuel values in ticks
 FUEL_BURN_TICKS = {
     blocks.COAL_ORE: 80,
+    getattr(blocks, "ITEM_COAL", 263): 80,
+    getattr(blocks, "ITEM_CHARCOAL", 263): 80,
+    getattr(blocks, "COAL_BLOCK", 173): 800,
     blocks.PLANKS: 15,
     blocks.LOG: 15,
     blocks.ITEM_STICK: 5,
+    getattr(blocks, "ITEM_LAVA_BUCKET", 325): 1000,
     blocks.LAVA: 1000,
+    blocks.CRAFTING_TABLE: 15,
+    getattr(blocks, "WOODEN_TRAPDOOR", 96): 15,
 }
 
 
@@ -61,6 +75,10 @@ class FurnaceState:
     burn_time_remaining: int = 0
     burn_time_max: int = 0
     cook_progress: int = 0
+
+    @property
+    def is_burning(self) -> bool:
+        return self.burn_time_remaining > 0
 
     @property
     def cook_time_needed(self) -> int:

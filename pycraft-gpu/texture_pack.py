@@ -590,6 +590,45 @@ class TexturePackManager:
                             im = im.resize(target_tile_size, Image.NEAREST)
 
                         img_arr = np.array(im, dtype=np.uint8)
+
+                        # Minecraft biome-tinted textures (grayscale masks that need color multipliers)
+                        biome_tints = {
+                            T_GRASS_TOP: (95, 159, 53),
+                            T_LEAVES: (65, 150, 45),
+                            T_TALL_GRASS: (95, 159, 53),
+                            T_FERN: (95, 159, 53),
+                            T_VINE: (65, 150, 45),
+                            T_LILY_PAD: (50, 130, 40),
+                        }
+                        if tile_id in biome_tints:
+                            rgb = img_arr[..., :3].astype(float)
+                            max_diff = np.max(np.abs(rgb[..., 0] - rgb[..., 1])) + np.max(np.abs(rgb[..., 1] - rgb[..., 2]))
+                            if max_diff < 15.0:
+                                tint = np.array(biome_tints[tile_id], dtype=float) / 128.0
+                                img_arr[..., :3] = np.clip(rgb * tint, 0, 255).astype(np.uint8)
+
+                        # For grass side, if grass_side_overlay.png exists, composite it on top
+                        if tile_id == T_GRASS_SIDE and "grass_side_overlay.png" in file_map:
+                            try:
+                                ov_path, ov_zf = file_map["grass_side_overlay.png"]
+                                if ov_zf is not None:
+                                    with ov_zf.open(ov_path) as ov_f:
+                                        ov_im = Image.open(ov_f).convert("RGBA")
+                                else:
+                                    ov_im = Image.open(ov_path).convert("RGBA")
+                                if ov_im.size != target_tile_size:
+                                    ov_im = ov_im.resize(target_tile_size, Image.NEAREST)
+                                ov_arr = np.array(ov_im, dtype=np.uint8)
+                                ov_rgb = ov_arr[..., :3].astype(float)
+                                ov_diff = np.max(np.abs(ov_rgb[..., 0] - ov_rgb[..., 1])) + np.max(np.abs(ov_rgb[..., 1] - ov_rgb[..., 2]))
+                                if ov_diff < 15.0:
+                                    tint = np.array(biome_tints[T_GRASS_TOP], dtype=float) / 128.0
+                                    ov_arr[..., :3] = np.clip(ov_rgb * tint, 0, 255).astype(np.uint8)
+                                alpha_mask = ov_arr[..., 3] > 64
+                                img_arr[alpha_mask] = ov_arr[alpha_mask]
+                            except Exception:
+                                pass
+
                         tx = (tile_id % 16) * 16
                         ty = (tile_id // 16) * 16
                         atlas[ty : ty + 16, tx : tx + 16] = img_arr

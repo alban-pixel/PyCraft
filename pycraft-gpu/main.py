@@ -19,8 +19,10 @@ from blocks import (
     ITEM_RAW_PORK, ITEM_STICK, ITEM_STONE_PICKAXE, ITEM_STONE_SWORD, ITEM_WOOD_PICKAXE,
     ITEM_WOOD_SWORD, LOG, NON_STACKABLE, PICKAXES, PLACEABLE, PLANKS, TILE, UNBREAKABLE, WATER,
     build_atlas, get_item_name, get_item_tile,
+    FURNACE, LIT_FURNACE,
 )
 import crafting
+from smelting_brewing import FurnaceState, FurnaceType, SMELT_RECIPES, FUEL_BURN_TICKS
 from clock import GameClock, TICK_DURATION, TICKS_PER_DAY, interpolate_position
 from combat import CombatEngine, InvulnerabilityTracker
 from entities import EntityManager
@@ -321,12 +323,16 @@ class App:
         self.mining_target = None
         self.mining_time = 0.0
 
-        # Crafting
+        # Crafting, Creative Inventory & Furnaces
         self.craft_grid = [[0, 0] for _ in range(9)]
         self.craft_size = 2  # 2x2 in inventory, 3x3 on table
         self.craft_result = [0, 0]
         self.cursor_item = [0, 0]  # [item_id, count] held on mouse cursor
         self.creative_tab = "catalog"  # "catalog" or "survival" in Creative mode
+        self.creative_scroll_row = 0
+        self.furnaces: Dict[Tuple[int, int, int], FurnaceState] = {}
+        self.active_furnace: Optional[FurnaceState] = None
+        self.active_furnace_pos: Optional[Tuple[int, int, int]] = None
 
         # Multi-world selection & creation
         self.selected_world_idx = 0
@@ -634,7 +640,8 @@ class App:
         bank = np.frombuffer(pyxel.images[0].data_ptr(), dtype=np.uint8, count=256 * 256).reshape(256, 256)
         bank[:icons.shape[0], :icons.shape[1]] = icons
         if hasattr(self, "renderer") and self.renderer and hasattr(self.renderer, "texture") and self.renderer.texture:
-            self.renderer.texture.write(new_atlas.tobytes())
+            with self.renderer.ctx:
+                self.renderer.texture.write(new_atlas.tobytes())
         self.notify(f"Pack Loaded: {pack_id.capitalize()}")
 
     def open_packs_folder(self, step=1):
@@ -789,15 +796,55 @@ class App:
             else:
                 self.add_to_inventory(self.cursor_item[0], self.cursor_item[1])
                 self.cursor_item = [0, 0]
-        # Refund crafting grid items
-        for slot in self.craft_grid:
-            if slot[0] != 0 and slot[1] > 0:
-                self.add_to_inventory(slot[0], slot[1])
-                slot[0], slot[1] = 0, 0
+        # Refund crafting grid items (except in furnace where craft grid is not used)
+        if self.state != "furnace":
+            for slot in self.craft_grid:
+                if slot[0] != 0 and slot[1] > 0:
+                    self.add_to_inventory(slot[0], slot[1])
+                    slot[0], slot[1] = 0, 0
+        if self.state == "furnace":
+            self.active_furnace = None
+            self.active_furnace_pos = None
         self.set_state("playing")
+
+    def open_furnace_at(self, tx, ty, tz):
+        pos = (tx, ty, tz)
+        if pos not in self.furnaces:
+            self.furnaces[pos] = FurnaceState()
+        self.active_furnace = self.furnaces[pos]
+        self.active_furnace_pos = pos
+        self.set_state("furnace")
+
+    def tick_furnaces(self):
+        for pos, furnace in list(self.furnaces.items()):
+            x, y, z = pos
+            current_block = self.world.get(x, y, z)
+            if current_block not in (FURNACE, LIT_FURNACE):
+                continue
+            was_burning = furnace.is_burning
+            furnace.tick()
+            is_burning = furnace.is_burning
+            if is_burning != was_burning:
+                new_block = LIT_FURNACE if is_burning else FURNACE
+                if current_block != new_block:
+                    self.world.set(x, y, z, new_block)
+                    self.renderer.block_changed(x, z)
 
     def snapshot(self):
         p = self.player
+        furn_data = []
+        ftype_map = {FurnaceType.STANDARD: 1, FurnaceType.BLAST_FURNACE: 2, FurnaceType.SMOKER: 3}
+        for pos, st in self.furnaces.items():
+            furn_data.append([
+                pos[0], pos[1], pos[2],
+                ftype_map.get(st.furnace_type, 1),
+                st.input_slot[0], st.input_slot[1],
+                st.fuel_slot[0], st.fuel_slot[1],
+                st.output_slot[0], st.output_slot[1],
+                st.burn_time_remaining, st.burn_time_max,
+                st.cook_progress,
+            ])
+        f_arr = np.array(furn_data, dtype=np.int32) if furn_data else np.zeros((0, 13), dtype=np.int32)
         return {
             "player": np.array(p.pos + [p.yaw, p.pitch, float(p.flying), float(p.health)], dtype=np.float64),
             "time_of_day": self.time_of_day,
@@ -807,6 +854,7 @@ class App:
             "offhand": np.array([int(s) for s in getattr(p, "offhand_slot", [0, 0])[:2]], dtype=np.int32),
             "selected": self.selected,
             "mode": self.player.mode,
+            "furnaces": f_arr,
         }
 
     def save(self):
@@ -831,6 +879,10 @@ class App:
             self.inventory = [[0, 0] for _ in range(27)]
             self.selected, self.time_of_day = 0, 0.05
             self.clock.reset()
+            self.furnaces = {}
+            self.active_furnace = None
+            self.active_furnace_pos = None
+            self.creative_scroll_row = 0
             self.save()
         elif self.save_data is not None:
             data = self.save_data
@@ -872,6 +924,27 @@ class App:
                 self.player.armor_slots = [list(map(int, s)) for s in data["armor"]]
             if "offhand" in data:
                 self.player.offhand_slot = list(map(int, data["offhand"]))
+            if "furnaces" in data:
+                f_arr = data["furnaces"]
+                self.furnaces = {}
+                ftype_rev = {1: FurnaceType.STANDARD, 2: FurnaceType.BLAST_FURNACE, 3: FurnaceType.SMOKER}
+                for row in f_arr:
+                    if len(row) >= 13:
+                        pos = (int(row[0]), int(row[1]), int(row[2]))
+                        self.furnaces[pos] = FurnaceState(
+                            furnace_type=ftype_rev.get(int(row[3]), FurnaceType.STANDARD),
+                            input_slot=[int(row[4]), int(row[5])],
+                            fuel_slot=[int(row[6]), int(row[7])],
+                            output_slot=[int(row[8]), int(row[9])],
+                            burn_time_remaining=int(row[10]),
+                            burn_time_max=int(row[11]),
+                            cook_progress=int(row[12]),
+                        )
+            else:
+                self.furnaces = {}
+            self.active_furnace = None
+            self.active_furnace_pos = None
+            self.creative_scroll_row = 0
             self.selected = int(data.get("selected", 0))
             self.clock.reset(int(self.time_of_day * TICKS_PER_DAY))
             self.renderer.set_world(self.world, spawn_pos=self.player.pos, render_dist=self.settings.get("render_distance", 4))
@@ -1148,7 +1221,7 @@ class App:
                 self.set_state("title")
             else:
                 self.update_menu()
-        elif self.state in ("inventory", "crafting_table"):
+        elif self.state in ("inventory", "crafting_table", "furnace"):
             self.update_crafting_ui()
         elif self.state == "game_over":
             self.update_game_over()
@@ -1378,6 +1451,9 @@ class App:
                     self.add_to_inventory(drop_item, 1)
                     self.notify(f"Collected {get_item_name(drop_item)}")
 
+            # 20 Hz fixed furnace simulation
+            self.tick_furnaces()
+
         self.clock.advance(dt, tick_logic)
 
         # Update fluids & particles
@@ -1468,12 +1544,16 @@ class App:
                     self.notify(f"Ate {get_item_name(item_id)}")
                     return
 
-            # 2. Right click on Crafting Table in world (only if not sneaking)
+            # 2. Right click on Crafting Table or Furnace in world (only if not sneaking)
             if self.target and not self.player.sneaking:
                 tx, ty, tz = self.target[0]
-                if self.world.get(tx, ty, tz) == CRAFTING_TABLE:
+                tb = self.world.get(tx, ty, tz)
+                if tb == CRAFTING_TABLE:
                     self.craft_size = 3
                     self.set_state("crafting_table")
+                    return
+                elif tb in (FURNACE, LIT_FURNACE):
+                    self.open_furnace_at(tx, ty, tz)
                     return
 
             # 3. Place block
@@ -1503,15 +1583,30 @@ class App:
         col = BLOCK_COLORS.get(block_id, 7)
         for _ in range(12):
             self.particles.append(Particle(x + 0.5, y + 0.5, z + 0.5, col))
+        if block_id in (FURNACE, LIT_FURNACE) or target_pos in self.furnaces:
+            furn = self.furnaces.pop(target_pos, None)
+            if furn:
+                for f_slot in (furn.input_slot, furn.fuel_slot, furn.output_slot):
+                    if f_slot[0] != 0 and f_slot[1] > 0:
+                        if self.player.mode == "survival":
+                            if hasattr(self, "entity_mgr"):
+                                self.entity_mgr.spawn_dropped_item(
+                                    f_slot[0], f_slot[1], x + 0.5, y + 0.5, z + 0.5,
+                                    vx=random.uniform(-0.5, 0.5), vy=2.2, vz=random.uniform(-0.5, 0.5),
+                                    pickup_delay=0.3
+                                )
+                            else:
+                                self.add_to_inventory(f_slot[0], f_slot[1])
+        dropped_id = FURNACE if block_id == LIT_FURNACE else block_id
         if self.player.mode == "survival":
             if hasattr(self, "entity_mgr"):
                 self.entity_mgr.spawn_dropped_item(
-                    block_id, 1, x + 0.5, y + 0.5, z + 0.5,
+                    dropped_id, 1, x + 0.5, y + 0.5, z + 0.5,
                     vx=random.uniform(-0.5, 0.5), vy=2.2, vz=random.uniform(-0.5, 0.5),
                     pickup_delay=0.3
                 )
             else:
-                self.add_to_inventory(block_id, 1)
+                self.add_to_inventory(dropped_id, 1)
 
     def update_look(self):
         keys_yaw = pyxel.btn(pyxel.KEY_LEFT) - pyxel.btn(pyxel.KEY_RIGHT)
@@ -1542,6 +1637,38 @@ class App:
         s = self.get_ui_scale()
         slot_s = 18 * s
         size = self.craft_size
+
+        if getattr(self, "state", None) == "furnace":
+            pw, ph = 176 * s, 166 * s
+            px0 = (pyxel.width - pw) // 2
+            py0 = (pyxel.height - ph) // 2
+            in_x = px0 + 56 * s
+            in_y = py0 + 17 * s
+            flame_x = px0 + 56 * s + 2 * s
+            flame_y = py0 + 36 * s
+            fuel_x = px0 + 56 * s
+            fuel_y = py0 + 53 * s
+            arrow_x = px0 + 79 * s
+            arrow_y = py0 + 34 * s
+            out_x = px0 + 116 * s
+            out_y = py0 + 35 * s
+            out_s = 26 * s
+            ix0 = px0 + 8 * s
+            iy0 = py0 + 84 * s
+            hx0 = px0 + 8 * s
+            hy0 = py0 + 142 * s
+            return {
+                "type": "furnace",
+                "s": s, "slot_s": slot_s, "size": 0,
+                "pw": pw, "ph": ph, "px0": px0, "py0": py0,
+                "in_x": in_x, "in_y": in_y,
+                "flame_x": flame_x, "flame_y": flame_y,
+                "fuel_x": fuel_x, "fuel_y": fuel_y,
+                "arrow_x": arrow_x, "arrow_y": arrow_y,
+                "out_x": out_x, "out_y": out_y, "out_s": out_s,
+                "ix0": ix0, "iy0": iy0,
+                "hx0": hx0, "hy0": hy0,
+            }
 
         pw, ph = 176 * s, 166 * s
         px0 = (pyxel.width - pw) // 2
@@ -1575,19 +1702,39 @@ class App:
         else:
             is_creative = getattr(self.player, "mode", "survival") == "creative"
             if is_creative and getattr(self, "creative_tab", "catalog") == "catalog":
-                cat_x0 = px0 + 8 * s
+                pw_cat = 195 * s
+                px0_cat = (pyxel.width - pw_cat) // 2
+                cat_x0 = px0_cat + 9 * s
                 cat_y0 = py0 + 18 * s
-                trash_x = px0 + 150 * s
+                sb_x = px0_cat + 175 * s
+                sb_y = cat_y0
+                sb_w = 12 * s
+                sb_h = 5 * slot_s
+
+                total_items = len(CREATIVE_CATALOG)
+                total_rows = max(1, math.ceil(total_items / 9))
+                max_scroll = max(0, total_rows - 5)
+                thumb_h = max(15 * s, int(sb_h * (5 / total_rows)))
+                scroll_ratio = (self.creative_scroll_row / max_scroll) if max_scroll > 0 else 0.0
+                thumb_y = sb_y + int((sb_h - thumb_h) * scroll_ratio)
+
+                trash_x = px0_cat + 172 * s
                 trash_y = py0 + 114 * s
                 hy0_cat = py0 + 138 * s
+                hx0_cat = px0_cat + 9 * s
+                tab_cat_c = (px0_cat + 9 * s, py0 - 11 * s, 48 * s, 12 * s)
+                tab_surv_c = (px0_cat + 61 * s, py0 - 11 * s, 54 * s, 12 * s)
+
                 return {
                     "type": "creative_catalog",
                     "s": s, "slot_s": slot_s, "size": size,
-                    "pw": pw, "ph": ph, "px0": px0, "py0": py0,
+                    "pw": pw_cat, "ph": ph, "px0": px0_cat, "py0": py0,
                     "cat_x0": cat_x0, "cat_y0": cat_y0, "cat_rows": 5, "cat_cols": 9,
+                    "sb_x": sb_x, "sb_y": sb_y, "sb_w": sb_w, "sb_h": sb_h,
+                    "thumb_y": thumb_y, "thumb_h": thumb_h, "max_scroll": max_scroll,
                     "trash_x": trash_x, "trash_y": trash_y, "trash_w": slot_s, "trash_h": slot_s,
-                    "tab_cat": tab_cat, "tab_surv": tab_surv,
-                    "hx0": hx0, "hy0": hy0_cat,
+                    "tab_cat": tab_cat_c, "tab_surv": tab_surv_c,
+                    "hx0": hx0_cat, "hy0": hy0_cat,
                     "ix0": cat_x0, "iy0": cat_y0,
                     "rx": trash_x, "ry": trash_y, "rw": slot_s, "rh": slot_s,
                 }
@@ -1629,6 +1776,34 @@ class App:
         s, slot_s = lay["s"], lay["slot_s"]
         size = lay["size"]
 
+        if lay.get("type") == "furnace":
+            ox, oy, os_ = lay["out_x"], lay["out_y"], lay["out_s"]
+            if ox <= mx < ox + os_ and oy <= my < oy + os_:
+                return ("furnace_output", 0, ox, oy, os_, os_)
+
+            ix, iy = lay["in_x"], lay["in_y"]
+            if ix <= mx < ix + slot_s and iy <= my < iy + slot_s:
+                return ("furnace_input", 0, ix, iy, slot_s, slot_s)
+
+            fx, fy = lay["fuel_x"], lay["fuel_y"]
+            if fx <= mx < fx + slot_s and fy <= my < fy + slot_s:
+                return ("furnace_fuel", 0, fx, fy, slot_s, slot_s)
+
+            ix0, iy0 = lay["ix0"], lay["iy0"]
+            for r in range(3):
+                for c in range(9):
+                    sx, sy = ix0 + c * slot_s, iy0 + r * slot_s
+                    if sx <= mx < sx + slot_s and sy <= my < sy + slot_s:
+                        return ("inventory", r * 9 + c, sx, sy, slot_s, slot_s)
+
+            hx0, hy0 = lay["hx0"], lay["hy0"]
+            for c in range(9):
+                sx, sy = hx0 + c * slot_s, hy0
+                if sx <= mx < sx + slot_s and sy <= my < sy + slot_s:
+                    return ("hotbar", c, sx, sy, slot_s, slot_s)
+
+            return None
+
         # Check tabs if present
         if "tab_cat" in lay:
             tx, ty, tw, th = lay["tab_cat"]
@@ -1641,22 +1816,23 @@ class App:
 
         # Creative catalog screen
         if lay.get("type") == "creative_catalog":
-            # Trash slot
+            sb_x, sb_y, sb_w, sb_h = lay["sb_x"], lay["sb_y"], lay["sb_w"], lay["sb_h"]
+            if sb_x <= mx < sb_x + sb_w and sb_y <= my < sb_y + sb_h:
+                return ("scrollbar", 0, sb_x, sb_y, sb_w, sb_h)
+
             tx, ty, tw, th = lay["trash_x"], lay["trash_y"], lay["trash_w"], lay["trash_h"]
             if tx <= mx < tx + tw and ty <= my < ty + th:
                 return ("trash", 0, tx, ty, tw, th)
 
-            # Catalog grid (5 rows x 9 cols)
             cat_x0, cat_y0 = lay["cat_x0"], lay["cat_y0"]
             for r in range(lay["cat_rows"]):
                 for c in range(lay["cat_cols"]):
                     sx = cat_x0 + c * slot_s
                     sy = cat_y0 + r * slot_s
                     if sx <= mx < sx + slot_s and sy <= my < sy + slot_s:
-                        idx = r * lay["cat_cols"] + c
+                        idx = (self.creative_scroll_row + r) * lay["cat_cols"] + c
                         return ("creative_catalog", idx, sx, sy, slot_s, slot_s)
 
-            # Hotbar (1 row of 9)
             hx0, hy0 = lay["hx0"], lay["hy0"]
             for c in range(9):
                 sx, sy = hx0 + c * slot_s, hy0
@@ -1712,6 +1888,17 @@ class App:
             self.sfx(SND_CLICK)
             return
 
+        if slot_type == "scrollbar":
+            lay = self.craft_layout()
+            if lay.get("type") == "creative_catalog":
+                my = pyxel.mouse_y
+                sb_y, sb_h = lay["sb_y"], lay["sb_h"]
+                thumb_h = lay["thumb_h"]
+                rel_y = (my - sb_y - thumb_h // 2) / max(1, sb_h - thumb_h)
+                self.creative_scroll_row = int(round(max(0.0, min(1.0, rel_y)) * lay["max_scroll"]))
+                self.sfx(SND_CLICK)
+            return
+
         if slot_type == "trash":
             if is_shift_click:
                 for s in self.hotbar:
@@ -1762,6 +1949,52 @@ class App:
                     self.sfx(SND_CLICK)
             return
 
+        # Furnace Output Slot (take only)
+        if slot_type == "furnace_output":
+            if not self.active_furnace:
+                return
+            target = self.active_furnace.output_slot
+            if target[0] == 0 or target[1] <= 0:
+                return
+            if is_shift_click:
+                item_id, count = target[0], target[1]
+                moved = self.add_to_container(self.hotbar, item_id, count)
+                leftover = count - moved
+                if leftover > 0:
+                    leftover -= self.add_to_container(self.inventory, item_id, leftover)
+                target[1] = leftover
+                if target[1] <= 0:
+                    target[0] = 0
+                self.sfx(SND_CLICK)
+            elif is_right_click:
+                if self.cursor_item[0] == 0:
+                    take = (target[1] + 1) // 2
+                    self.cursor_item = [target[0], take]
+                    target[1] -= take
+                    if target[1] <= 0:
+                        target[0] = 0
+                    self.sfx(SND_CLICK)
+                elif self.cursor_item[0] == target[0] and self.cursor_item[1] < 64:
+                    self.cursor_item[1] += 1
+                    target[1] -= 1
+                    if target[1] <= 0:
+                        target[0] = 0
+                    self.sfx(SND_CLICK)
+            else:
+                if self.cursor_item[0] == 0:
+                    self.cursor_item = list(target)
+                    target[0], target[1] = 0, 0
+                    self.sfx(SND_CLICK)
+                elif self.cursor_item[0] == target[0]:
+                    space = 64 - self.cursor_item[1]
+                    add = min(space, target[1])
+                    self.cursor_item[1] += add
+                    target[1] -= add
+                    if target[1] <= 0:
+                        target[0] = 0
+                    self.sfx(SND_CLICK)
+            return
+
         # Target slot
         if slot_type == "grid":
             target = self.craft_grid[idx]
@@ -1773,7 +2006,14 @@ class App:
             target = self.player.armor_slots[idx]
         elif slot_type == "offhand":
             target = self.player.offhand_slot
+        elif slot_type == "furnace_input":
+            target = self.active_furnace.input_slot if self.active_furnace else None
+        elif slot_type == "furnace_fuel":
+            target = self.active_furnace.fuel_slot if self.active_furnace else None
         else:
+            return
+
+        if target is None:
             return
 
         # Shift + Left click: quick move or clear
@@ -1781,12 +2021,49 @@ class App:
             if target[0] != 0 and target[1] > 0:
                 lay = self.craft_layout()
                 if lay.get("type") == "creative_catalog" and slot_type == "hotbar":
-                    # In creative catalog, shift-clicking a hotbar slot clears it
                     target[0], target[1] = 0, 0
                     self.sfx(SND_CLICK)
                     return
                 item_id, count = target[0], target[1]
-                if slot_type == "hotbar":
+
+                # Shift-clicking inside furnace screen routes fuel/smeltables to furnace slots
+                if self.state == "furnace" and self.active_furnace and slot_type in ("inventory", "hotbar"):
+                    moved = 0
+                    if item_id in FUEL_BURN_TICKS:
+                        fuel_s = self.active_furnace.fuel_slot
+                        if fuel_s[0] == 0 or fuel_s[0] == item_id:
+                            space = 64 - fuel_s[1]
+                            to_move = min(count, space)
+                            if to_move > 0:
+                                fuel_s[0] = item_id
+                                fuel_s[1] += to_move
+                                moved = to_move
+                    if moved == 0 and item_id in SMELT_RECIPES:
+                        in_s = self.active_furnace.input_slot
+                        if in_s[0] == 0 or in_s[0] == item_id:
+                            space = 64 - in_s[1]
+                            to_move = min(count, space)
+                            if to_move > 0:
+                                in_s[0] = item_id
+                                in_s[1] += to_move
+                                moved = to_move
+
+                    if moved > 0:
+                        target[1] -= moved
+                        if target[1] <= 0:
+                            target[0] = 0
+                        self.sfx(SND_CLICK)
+                        return
+
+                if slot_type in ("furnace_input", "furnace_fuel"):
+                    moved = self.add_to_container(self.hotbar, item_id, count)
+                    leftover = count - moved
+                    if leftover > 0:
+                        leftover -= self.add_to_container(self.inventory, item_id, leftover)
+                    target[1] = leftover
+                    if target[1] <= 0:
+                        target[0] = 0
+                elif slot_type == "hotbar":
                     moved = self.add_to_container(self.inventory, item_id, count)
                     target[1] -= moved
                     if target[1] <= 0: target[0] = 0
@@ -1856,9 +2133,30 @@ class App:
             self.close_inventory()
             return
 
-        size = self.craft_size
-        res = crafting.check_craft(self.craft_grid, size, size)
-        self.craft_result = list(res) if res else [0, 0]
+        lay = self.craft_layout()
+
+        # Advance furnace simulation while viewing furnace screen
+        if self.state == "furnace":
+            self.clock.advance(self.dt, lambda t: self.tick_furnaces())
+        elif self.state in ("inventory", "crafting_table") and lay.get("type") != "creative_catalog":
+            size = self.craft_size
+            res = crafting.check_craft(self.craft_grid, size, size)
+            self.craft_result = list(res) if res else [0, 0]
+
+        # Creative catalog mouse wheel and scrollbar drag
+        if lay.get("type") == "creative_catalog":
+            if pyxel.mouse_wheel != 0:
+                self.creative_scroll_row = max(0, min(lay["max_scroll"], self.creative_scroll_row - pyxel.mouse_wheel))
+            if pyxel.btn(pyxel.MOUSE_BUTTON_LEFT):
+                mx, my = pyxel.mouse_x, pyxel.mouse_y
+                sb_x, sb_y, sb_w, sb_h = lay["sb_x"], lay["sb_y"], lay["sb_w"], lay["sb_h"]
+                if getattr(self, "is_dragging_scrollbar", False) or (sb_x <= mx < sb_x + sb_w and sb_y <= my < sb_y + sb_h):
+                    self.is_dragging_scrollbar = True
+                    thumb_h = lay["thumb_h"]
+                    rel_y = (my - sb_y - thumb_h // 2) / max(1, sb_h - thumb_h)
+                    self.creative_scroll_row = int(round(max(0.0, min(1.0, rel_y)) * lay["max_scroll"]))
+            else:
+                self.is_dragging_scrollbar = False
 
         is_left = pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT)
         is_right = pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT)
@@ -1869,8 +2167,10 @@ class App:
             if slot_info:
                 slot_type, idx = slot_info[0], slot_info[1]
                 self.handle_slot_click(slot_type, idx, is_right, is_shift)
-                res = crafting.check_craft(self.craft_grid, size, size)
-                self.craft_result = list(res) if res else [0, 0]
+                if self.state in ("inventory", "crafting_table") and lay.get("type") != "creative_catalog":
+                    size = self.craft_size
+                    res = crafting.check_craft(self.craft_grid, size, size)
+                    self.craft_result = list(res) if res else [0, 0]
 
     def quick_recipes(self):
         recipes = [
@@ -1943,7 +2243,7 @@ class App:
             self.draw_menu()
         elif self.state == "game_over":
             self.draw_game_over()
-        elif self.state in ("inventory", "crafting_table"):
+        elif self.state in ("inventory", "crafting_table", "furnace"):
             self.draw_crafting_screen()
         else:
             self.draw_hud()
@@ -2390,6 +2690,41 @@ class App:
         pyxel.tri(x + 14 * s, y, x + 22 * s, y + 6 * s, x + 14 * s, y + 12 * s, 5)
         pyxel.tri(x + 14 * s, y + s, x + 20 * s, y + 6 * s, x + 14 * s, y + 11 * s, 6)
 
+    def draw_furnace_flame(self, x, y, pct):
+        s = self.get_ui_scale()
+        w, h = 14 * s, 14 * s
+        pyxel.rect(x, y, w, h, 5)
+        pyxel.rect(x + s, y + s, w - 2 * s, h - 2 * s, 13)
+        if pct <= 0.0:
+            return
+        fill_h = max(1, min(h - 2 * s, int((h - 2 * s) * pct)))
+        fy = y + h - s - fill_h
+        pyxel.rect(x + 2 * s, fy, w - 4 * s, fill_h, 8)
+        if fill_h > 2 * s:
+            pyxel.rect(x + 3 * s, fy + s, w - 6 * s, fill_h - s, 9)
+        if fill_h > 4 * s:
+            pyxel.rect(x + 4 * s, fy + 2 * s, w - 8 * s, fill_h - 2 * s, 10)
+        if fill_h > 6 * s:
+            pyxel.rect(x + 5 * s, fy + 4 * s, w - 10 * s, fill_h - 4 * s, 7)
+
+    def draw_furnace_arrow(self, x, y, pct):
+        s = self.get_ui_scale()
+        pyxel.rect(x, y + 5 * s, 15 * s, 6 * s, 5)
+        pyxel.rect(x + s, y + 6 * s, 13 * s, 4 * s, 6)
+        pyxel.tri(x + 15 * s, y + s, x + 23 * s, y + 8 * s, x + 15 * s, y + 15 * s, 5)
+        pyxel.tri(x + 15 * s, y + 3 * s, x + 21 * s, y + 8 * s, x + 15 * s, y + 13 * s, 6)
+        if pct <= 0.0:
+            return
+        fill_w = max(1, min(23 * s, int(23 * s * pct)))
+        if fill_w > 0:
+            stem_fill = min(fill_w, 14 * s)
+            if stem_fill > s:
+                pyxel.rect(x + s, y + 6 * s, stem_fill - s, 4 * s, 11)
+            if fill_w > 14 * s:
+                tri_prog = (fill_w - 14 * s) / (9 * s)
+                tx_tip = x + 14 * s + int(7 * s * tri_prog)
+                pyxel.tri(x + 15 * s, y + 3 * s, tx_tip, y + 8 * s, x + 15 * s, y + 13 * s, 11)
+
     def draw_tooltip(self, x, y, text):
         if not text:
             return
@@ -2440,19 +2775,76 @@ class App:
         # Main panel
         self.draw_minecraft_panel(lay["px0"], lay["py0"], lay["pw"], lay["ph"])
 
-        if lay.get("type") == "creative_catalog":
+        if self.state == "furnace":
+            self.draw_text(lay["px0"] + 8 * s, lay["py0"] + 6 * s, "Furnace", 5, scale=s)
+            self.draw_text(lay["ix0"], lay["iy0"] - 10 * s, "Inventory", 5, scale=s)
+
+            furn = self.active_furnace
+            # Input slot
+            in_s = furn.input_slot if furn else [0, 0]
+            is_in_hov = (hovered_slot_type == "furnace_input")
+            self.draw_slot(lay["in_x"], lay["in_y"], slot_s, in_s[0], in_s[1], is_hovered=is_in_hov)
+
+            # Animated flame
+            burn_pct = (furn.burn_time_remaining / max(1, furn.burn_time_max)) if (furn and furn.burn_time_max > 0) else 0.0
+            self.draw_furnace_flame(lay["flame_x"], lay["flame_y"], burn_pct)
+
+            # Fuel slot
+            fuel_s = furn.fuel_slot if furn else [0, 0]
+            is_fuel_hov = (hovered_slot_type == "furnace_fuel")
+            self.draw_slot(lay["fuel_x"], lay["fuel_y"], slot_s, fuel_s[0], fuel_s[1], is_hovered=is_fuel_hov)
+
+            # Animated cook arrow
+            cook_pct = (furn.cook_progress / max(1, furn.cook_time_needed)) if (furn and furn.cook_time_needed > 0) else 0.0
+            self.draw_furnace_arrow(lay["arrow_x"], lay["arrow_y"], cook_pct)
+
+            # Output slot
+            out_s = furn.output_slot if furn else [0, 0]
+            is_out_hov = (hovered_slot_type == "furnace_output")
+            self.draw_slot(lay["out_x"], lay["out_y"], lay["out_s"], out_s[0], out_s[1], is_hovered=is_out_hov)
+
+            # Inventory (3 rows x 9 cols)
+            ix0, iy0 = lay["ix0"], lay["iy0"]
+            for r in range(3):
+                for c in range(9):
+                    idx = r * 9 + c
+                    sx, sy = ix0 + c * slot_s, iy0 + r * slot_s
+                    slot = self.inventory[idx]
+                    is_hovered = (hovered_slot_type == "inventory" and hovered_slot_idx == idx)
+                    self.draw_slot(sx, sy, slot_s, slot[0], slot[1], is_hovered=is_hovered)
+
+            # Hotbar (1 row x 9 cols)
+            hx0, hy0 = lay["hx0"], lay["hy0"]
+            for c in range(9):
+                sx, sy = hx0 + c * slot_s, hy0
+                slot = self.hotbar[c]
+                is_hovered = (hovered_slot_type == "hotbar" and hovered_slot_idx == c)
+                self.draw_slot(sx, sy, slot_s, slot[0], slot[1], is_selected=(c == self.selected), is_hovered=is_hovered)
+
+        elif lay.get("type") == "creative_catalog":
             # 1. Creative Catalog Screen
-            self.draw_text(lay["px0"] + 8 * s, lay["py0"] + 6 * s, "Item Catalog", 5, scale=s)
+            self.draw_text(lay["px0"] + 9 * s, lay["py0"] + 6 * s, "Item Catalog", 5, scale=s)
 
             # 5x9 catalog slots
             cat_x0, cat_y0 = lay["cat_x0"], lay["cat_y0"]
             for r in range(lay["cat_rows"]):
                 for c in range(lay["cat_cols"]):
-                    idx = r * lay["cat_cols"] + c
+                    idx = (self.creative_scroll_row + r) * lay["cat_cols"] + c
                     sx, sy = cat_x0 + c * slot_s, cat_y0 + r * slot_s
                     item_id = CREATIVE_CATALOG[idx] if idx < len(CREATIVE_CATALOG) else 0
                     is_hovered = (hovered_slot_type == "creative_catalog" and hovered_slot_idx == idx)
                     self.draw_slot(sx, sy, slot_s, item_id, 1 if item_id else 0, is_hovered=is_hovered)
+
+            # Scrollbar track & thumb
+            sb_x, sb_y, sb_w, sb_h = lay["sb_x"], lay["sb_y"], lay["sb_w"], lay["sb_h"]
+            thumb_y, thumb_h = lay["thumb_y"], lay["thumb_h"]
+            pyxel.rect(sb_x, sb_y, sb_w, sb_h, 0)
+            pyxel.rect(sb_x + s, sb_y + s, sb_w - 2 * s, sb_h - 2 * s, 1)
+            pyxel.rect(sb_x + s, thumb_y, sb_w - 2 * s, thumb_h, 6)
+            pyxel.rect(sb_x + s, thumb_y, sb_w - 2 * s, s, 7)
+            pyxel.rect(sb_x + s, thumb_y, s, thumb_h, 7)
+            pyxel.rect(sb_x + s, thumb_y + thumb_h - s, sb_w - 2 * s, s, 5)
+            pyxel.rect(sb_x + sb_w - 2 * s, thumb_y, s, thumb_h, 5)
 
             # Trash / Destroy slot
             tx, ty = lay["trash_x"], lay["trash_y"]
@@ -2544,6 +2936,18 @@ class App:
             elif hovered_slot_type == "creative_catalog":
                 if hovered_slot_idx < len(CREATIVE_CATALOG):
                     item_id = CREATIVE_CATALOG[hovered_slot_idx]
+                    self.draw_tooltip(pyxel.mouse_x, pyxel.mouse_y, get_item_name(item_id))
+            elif hovered_slot_type == "furnace_input":
+                item_id = self.active_furnace.input_slot[0] if self.active_furnace else 0
+                if item_id > 0:
+                    self.draw_tooltip(pyxel.mouse_x, pyxel.mouse_y, get_item_name(item_id))
+            elif hovered_slot_type == "furnace_fuel":
+                item_id = self.active_furnace.fuel_slot[0] if self.active_furnace else 0
+                if item_id > 0:
+                    self.draw_tooltip(pyxel.mouse_x, pyxel.mouse_y, get_item_name(item_id))
+            elif hovered_slot_type == "furnace_output":
+                item_id = self.active_furnace.output_slot[0] if self.active_furnace else 0
+                if item_id > 0:
                     self.draw_tooltip(pyxel.mouse_x, pyxel.mouse_y, get_item_name(item_id))
             else:
                 item_id = 0

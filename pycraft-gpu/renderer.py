@@ -437,20 +437,20 @@ class Renderer:
             c_uv = (c_tile_xy[:, None, :] + UV_INSET + CORNER_UV[None] * (1 - 2 * UV_INSET)) / ATLAS_TILES
             c_base = np.stack([ci + x0, cj, ck + z0], axis=1).astype(np.float32)
 
-            # Diagonal 1: (0.15, 0, 0.15) to (0.85, 1, 0.85)
+            # Diagonal 1: upright cross-quad
             p1 = c_base[:, None, :] + np.array([
-                [0.15, 0.0, 0.15],
-                [0.85, 0.0, 0.85],
-                [0.85, 1.0, 0.85],
                 [0.15, 1.0, 0.15],
+                [0.85, 1.0, 0.85],
+                [0.85, 0.0, 0.85],
+                [0.15, 0.0, 0.15],
             ], dtype=np.float32)[None]
 
-            # Diagonal 2: (0.85, 0, 0.15) to (0.15, 1, 0.85)
+            # Diagonal 2: upright cross-quad
             p2 = c_base[:, None, :] + np.array([
-                [0.85, 0.0, 0.15],
-                [0.15, 0.0, 0.85],
-                [0.15, 1.0, 0.85],
                 [0.85, 1.0, 0.15],
+                [0.15, 1.0, 0.85],
+                [0.15, 0.0, 0.85],
+                [0.85, 0.0, 0.15],
             ], dtype=np.float32)[None]
 
             for diag_p in (p1, p2):

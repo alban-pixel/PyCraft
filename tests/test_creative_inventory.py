@@ -196,3 +196,50 @@ def test_creative_inventory_close_clears_cursor(headless_app):
     app.close_inventory()
     assert app.cursor_item == [0, 0]
     assert app.state == "playing"
+
+
+def test_creative_catalog_scrolling(headless_app):
+    """Verify mouse scrolling and scrollbar track bounds for all 244 catalog items."""
+    app = headless_app
+    app.player.mode = "creative"
+    app.craft_size = 2
+    app.creative_tab = "catalog"
+    app.creative_scroll_row = 0
+
+    lay = app.craft_layout()
+    assert "max_scroll" in lay
+    assert lay["max_scroll"] >= 20  # For 244 items in 9 cols: 28 rows - 5 visible = 23 max_scroll
+
+    # Scroll down 5 rows
+    app.creative_scroll_row = 5
+    lay_scrolled = app.craft_layout()
+    assert lay_scrolled["thumb_y"] > lay["thumb_y"]
+
+    # Slot at row 0, col 0 when scrolled by 5 corresponds to index 5*9 = 45 in CREATIVE_CATALOG
+    cat_x, cat_y = lay["cat_x0"], lay["cat_y0"]
+    found = app.get_slot_under_mouse(cat_x + 2, cat_y + 2)
+    assert found is not None
+    assert found[0] == "creative_catalog"
+    assert found[1] == 45  # Index 45
+
+    # Clicking slot 45 spawns CREATIVE_CATALOG[45]
+    expected_item = CREATIVE_CATALOG[45]
+    app.cursor_item = [0, 0]
+    app.handle_slot_click("creative_catalog", 45, is_right_click=False, is_shift_click=False)
+    assert app.cursor_item[0] == expected_item
+
+    # Scrollbar click at bottom of track scrolls to max_scroll
+    sb_x, sb_y, sb_w, sb_h = lay["sb_x"], lay["sb_y"], lay["sb_w"], lay["sb_h"]
+    found_sb = app.get_slot_under_mouse(sb_x + 2, sb_y + 2)
+    assert found_sb is not None
+    assert found_sb[0] == "scrollbar"
+
+    # Simulate click at bottom of track
+    pyxel.mouse_y = sb_y + sb_h - 2
+    app.handle_slot_click("scrollbar", 0, is_right_click=False, is_shift_click=False)
+    assert app.creative_scroll_row == lay["max_scroll"]
+
+    # When at max scroll, the last visible slot gives item near end of CREATIVE_CATALOG
+    last_idx = (app.creative_scroll_row + 4) * 9 + 8
+    assert last_idx >= len(CREATIVE_CATALOG) - 9
+
