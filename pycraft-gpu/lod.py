@@ -215,7 +215,7 @@ class LODManager:
             self.vbo = None
         self.last_center = (-9999, -9999)
 
-    def update(self, player_x: float, player_z: float, near_chunks: Set[Tuple[int, int]], render_dist: int = 4, max_lod_dist: int = 16):
+    def update(self, player_x: float, player_z: float, near_chunks: Set[Tuple[int, int]], render_dist: int = 12, max_lod_dist: int = 48):
         """Update distant LOD chunks outside the near chunks radius."""
         pcx = int(math.floor(player_x / CHUNK))
         pcz = int(math.floor(player_z / CHUNK))
@@ -225,8 +225,8 @@ class LODManager:
 
         needed_lods: List[Tuple[int, int, int]] = []  # (cx, cz, level)
         r_near = render_dist
-        r_mid = render_dist + 8
-        r_max = min(max_lod_dist, render_dist + 16)
+        r_mid = render_dist + 12
+        r_max = max(max_lod_dist, render_dist + 36)
 
         r_near2 = (r_near + 0.5) ** 2
         r_mid2 = (r_mid + 0.5) ** 2

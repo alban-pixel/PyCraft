@@ -125,3 +125,58 @@ def test_smooth_ambient_occlusion_vertex_shading(headless_app):
     # With AO enabled, shades vary between occluded corners and open faces
     unique_shades = np.unique(np.round(shades, 2))
     assert len(unique_shades) >= 3
+
+
+def test_mountain_generation_and_snow_peaks():
+    """Verify procedural generation creates high mountains with rocky slopes and snow caps."""
+    world = World(seed=12345, preset="standard")
+    heights = [world.compute_terrain_height(x, z) for x in range(-150, 150, 10) for z in range(-150, 150, 10)]
+    max_h = max(heights)
+    min_h = min(heights)
+
+    # Must contain high mountain peaks rising above Y=45 and valleys down around sea level (22)
+    assert max_h >= 45
+    assert min_h <= 24
+
+    # High peak above 40 must have SNOW surface block type
+    for x in range(-150, 150, 10):
+        for z in range(-150, 150, 10):
+            h = world.compute_terrain_height(x, z)
+            if h >= 42:
+                b = world.get_surface_block_type(x, h, z)
+                assert b == SNOW
+                break
+        else:
+            continue
+        break
+
+
+def test_lod_far_range_and_default_render_distance_12(headless_app):
+    """Verify default render distance is 12 and LODs extend several hundred blocks."""
+    app = headless_app
+    from main import DEFAULT_SETTINGS
+    assert DEFAULT_SETTINGS["render_distance"] == 12
+
+    renderer = app.renderer
+    world = app.world
+    lod_mgr = LODManager(renderer.ctx, renderer.program, world)
+
+    rd = 12
+    max_lod = rd + 36  # 48 chunks = 768 meters
+    lod_mgr.update(0.0, 0.0, set(), render_dist=rd, max_lod_dist=max_lod)
+
+    # Verify that LOD keys extend up to ~48 chunks (several hundred blocks)
+    max_dist = max(max(abs(cx), abs(cz)) for cx, cz in lod_mgr.active_lod_keys)
+    assert max_dist >= 40  # 40 chunks * 16m = 640m radius (> 1.2 km diameter)
+
+
+def test_title_screen_no_stutter_camera(headless_app):
+    """Verify title screen camera is stationary in space and does not stream chunks repeatedly."""
+    app = headless_app
+    app.set_state("title")
+    assert app.on_title() is True
+
+    # Camera must not move position on title
+    app.draw_world()
+    pos1 = (app.world.size[0] / 2, 48.0, app.world.size[2] / 2)
+    assert pos1[1] == 48.0

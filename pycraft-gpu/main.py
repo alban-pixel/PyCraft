@@ -46,7 +46,7 @@ RESOLUTIONS = [
 ]
 FRAME_RATES = [30, 60, 75, 120, 144, 165, 240]
 FOVS = [60, 70, 80, 90]
-RENDER_DISTANCES = [2, 4, 6, 8, 10, 12, 16]
+RENDER_DISTANCES = [2, 4, 6, 8, 10, 12, 16, 20, 24]
 SENSITIVITIES = [0.12, 0.18, 0.25, 0.35, 0.50]
 SENS_NAMES = {0.12: "Low", 0.18: "Medium", 0.25: "Normal", 0.35: "High", 0.50: "Very High"}
 GUI_SCALES = ["Auto", "1x", "2x", "3x", "4x"]
@@ -54,7 +54,7 @@ DEFAULT_SETTINGS = {
     "resolution": (320, 180),
     "fps": 60,
     "fov": 70,
-    "render_distance": 4,
+    "render_distance": 12,
     "sensitivity": 0.25,
     "music": True,
     "fullscreen": False,
@@ -284,6 +284,7 @@ class App:
         self.new_world_seed = ""
         self.active_text_field = None  # None, "world_name", or "seed"
         self.current_world_info = None
+        self.world_list_cache = None
 
         # Deterministic 20 Hz Clock, Presets & Combat
         self.clock = GameClock()
@@ -1776,9 +1777,10 @@ class App:
     def draw_world(self):
         if self.on_title():
             sx, _, sz = self.world.size
-            angle = pyxel.frame_count * 0.002
-            eye = (sx / 2 + math.cos(angle) * sx * 0.45, 52.0, sz / 2 + math.sin(angle) * sz * 0.45)
-            forward = (sx / 2 - eye[0], 24 - eye[1], sz / 2 - eye[2])
+            angle = pyxel.frame_count * 0.0015
+            # Smooth panorama rotating in place: eliminates 2-second chunk streaming stutter
+            eye = (sx / 2, 48.0, sz / 2)
+            forward = (math.cos(angle), -0.15, math.sin(angle))
             light, zenith, horizon, sun_dir = sky_at(0.12)
             target = None
         else:
@@ -1786,11 +1788,12 @@ class App:
             light, zenith, horizon, sun_dir = sky_at(self.time_of_day)
             target = self.target[0] if self.target and self.state == "playing" else None
 
-        rd = self.settings.get("render_distance", 4)
+        rd = self.settings.get("render_distance", 12)
         max_dist = rd * 16.0
-        lod_max_dist = min(800.0, (rd + 16) * 16.0)
+        # LOD extends several hundred blocks into the distance (700m to 1000m+)
+        lod_max_dist = max(720.0, (rd + 36) * 16.0)
         fog_end = lod_max_dist
-        fog_start = max(max_dist, lod_max_dist - 80.0)
+        fog_start = max(max_dist, lod_max_dist - 160.0)
 
         if not self.on_title() and self.player.head_in_water(self.world):
             fog = (tuple(c * light for c in UNDERWATER_FOG), 0.0, 9.0)
@@ -1811,6 +1814,7 @@ class App:
             crack_stage=crack_stage,
             render_dist=rd,
             alpha=self.clock.sub_frame_alpha,
+            is_title=self.on_title(),
         )
 
         # 3D Break particles

@@ -249,7 +249,7 @@ class Renderer:
     def set_fov(self, fov):
         self.fov = fov
         width, height = self.size
-        self.projection = perspective(self.fov, width / height, 0.05, 1200)
+        self.projection = perspective(self.fov, width / height, 0.05, 1400.0)
 
     def set_world(self, world, spawn_pos=None, render_dist=4):
         """Use a new world (after loading or generating one) and build all of its chunks."""
@@ -328,7 +328,7 @@ class Renderer:
                 self.chunk_centers.pop(key, None)
 
         if hasattr(self, "lod"):
-            self.lod.update(player_x, player_z, set(self.chunks.keys()), render_dist=render_dist, max_lod_dist=render_dist + 16)
+            self.lod.update(player_x, player_z, set(self.chunks.keys()), render_dist=render_dist, max_lod_dist=render_dist + 36)
 
     def set_environment(self, light, zenith, horizon, sun_dir, fog_color, fog_start, fog_end):
         self.light = light
@@ -542,9 +542,10 @@ class Renderer:
         data = np.concatenate(boxes, axis=0).astype("f4")
         return data, len(data)
 
-    def render(self, screen, eye, forward, target=None, entities=None, mining_target=None, crack_stage=-1, render_dist=4, alpha=0.0):
+    def render(self, screen, eye, forward, target=None, entities=None, mining_target=None, crack_stage=-1, render_dist=4, alpha=0.0, is_title=False):
         """Draw the world seen from eye into screen (a (height, width) uint8 view of pyxel.screen)."""
-        self.update_streaming(eye[0], eye[2], render_dist=render_dist)
+        if not is_title:
+            self.update_streaming(eye[0], eye[2], render_dist=render_dist)
         vp = self.projection @ look_at(eye, forward)
         mvp = vp.T.copy().tobytes()
         fog_color, fog_start, fog_end = self.fog

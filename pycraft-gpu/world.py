@@ -106,6 +106,27 @@ class World:
         self.chunks[key] = chunk
         return chunk
 
+    def compute_terrain_height(self, x: float, z: float) -> int:
+        """Deterministic terrain height with plains, valleys, rolling hills, and majestic mountain ranges."""
+        if self.preset == WorldPreset.SUPERFLAT:
+            return 4
+
+        # Base plains and lowlands
+        n_base = pyxel.noise(x * 0.012, z * 0.012)
+        base = SEA_LEVEL + 4.0 + n_base * 5.0
+
+        # Mountain ranges and ridges (continental mountain mask + sharp ridged noise)
+        m_noise = pyxel.noise(x * 0.005 + 50.0, z * 0.005 + 50.0)
+        ridge = 1.0 - abs(pyxel.noise(x * 0.010 + 200.0, z * 0.010 + 200.0))
+        m_strength = max(0.0, m_noise - 0.05) * 1.85
+        mountains = (ridge ** 2.2) * 28.0 * m_strength
+
+        # Fine terrain detail
+        detail = pyxel.noise(x * 0.040 + 100.0, z * 0.040 + 100.0) * 2.5
+
+        h = base + mountains + detail
+        return min(max(int(h), 4), self.sy - 6)
+
     def _generate_chunk(self, cx, cz):
         sy = self.sy
         if self.preset == WorldPreset.SUPERFLAT:
@@ -126,8 +147,7 @@ class World:
             x = cx * 16 + lx
             for lz in range(16):
                 z = cz * 16 + lz
-                n = pyxel.noise(x * 0.022, z * 0.022) + 0.5 * pyxel.noise(x * 0.07 + 100, z * 0.07 + 100)
-                heights[lx, lz] = min(max(int(SEA_LEVEL + 3 + n * 14), 4), sy - 12)
+                heights[lx, lz] = self.compute_terrain_height(x, z)
 
         ys = np.arange(sy)[None, :, None]
         h = heights[:, None, :]
@@ -146,7 +166,10 @@ class World:
         chunk[stone & (roll > 0.996) & (ys < 18)] = GOLD_ORE
         chunk[stone & (roll > 0.9982) & (ys < 12)] = DIAMOND_ORE
 
-        snow_caps = top & (h > 33)
+        # Mountain slopes and snow caps
+        stone_slopes = top & (h >= 35) & (h < 40)
+        chunk[stone_slopes] = STONE
+        snow_caps = top & (h >= 40)
         chunk[snow_caps] = SNOW
 
         chunk[:, 0, :] = BEDROCK
@@ -155,7 +178,7 @@ class World:
         for _ in range(rng.integers(0, 3)):
             tx, tz = int(rng.integers(2, 14)), int(rng.integers(2, 14))
             th = heights[tx, tz]
-            if chunk[tx, th - 1, tz] == GRASS and chunk[tx, th, tz] == AIR:
+            if th < 35 and chunk[tx, th - 1, tz] == GRASS and chunk[tx, th, tz] == AIR:
                 trunk = int(rng.integers(4, 6))
                 for dy in range(-2, 2):
                     rad = 2 if dy < 0 else 1
@@ -239,8 +262,7 @@ class World:
             return int(solid_ys[-1]) + 1 if solid_ys.size > 0 else SEA_LEVEL
 
         # Standard preset: compute height with the EXACT SAME formula as _generate_chunk
-        n = pyxel.noise(x * 0.022, z * 0.022) + 0.5 * pyxel.noise(x * 0.07 + 100, z * 0.07 + 100)
-        return min(max(int(SEA_LEVEL + 3 + n * 14), 4), self.sy - 12)
+        return self.compute_terrain_height(x, z)
 
     def get_surface_block_type(self, x, h, z) -> int:
         """Return dominant surface block type at column (x, z) with ground height h."""
@@ -251,8 +273,10 @@ class World:
             return WATER
         if h <= SEA_LEVEL + 1:
             return SAND
-        if h > 33:
+        if h >= 40:
             return SNOW
+        if h >= 35:
+            return STONE
         return GRASS
 
     # --- Generation ----------------------------------------------------------------------------
@@ -283,8 +307,7 @@ class World:
         heights = np.zeros((sx, sz), dtype=int)
         for x in range(sx):
             for z in range(sz):
-                n = pyxel.noise(x * 0.022, z * 0.022) + 0.5 * pyxel.noise(x * 0.07 + 100, z * 0.07 + 100)
-                heights[x, z] = min(max(int(SEA_LEVEL + 3 + n * 14), 4), sy - 12)
+                heights[x, z] = self.compute_terrain_height(x, z)
 
         # Layers: stone, then 3-4 blocks of dirt, then grass (or sand near and under water)
         ys = np.arange(sy)[None, :, None]
@@ -305,8 +328,10 @@ class World:
         inner[stone & (roll > 0.996) & (ys < 18)] = GOLD_ORE
         inner[stone & (roll > 0.9982) & (ys < 12)] = DIAMOND_ORE
 
-        # Snow caps on higher terrain
-        snow_caps = top & (h > 33)
+        # Mountain rocky slopes and snowy peaks
+        stone_slopes = top & (h >= 35) & (h < 40)
+        inner[stone_slopes] = STONE
+        snow_caps = top & (h >= 40)
         inner[snow_caps] = SNOW
 
         # Caves: tunnels where two smooth noise fields both cross their middle value
@@ -327,7 +352,7 @@ class World:
         for _ in range(sx * sz // 120):
             x, z = int(rng.integers(3, sx - 3)), int(rng.integers(3, sz - 3))
             h = int(heights[x, z])
-            if self.get(x, h - 1, z) != GRASS or self.get(x, h, z) != AIR:
+            if h >= 35 or self.get(x, h - 1, z) != GRASS or self.get(x, h, z) != AIR:
                 continue
             trunk = int(rng.integers(4, 6))
             for dy in range(-2, 2):
