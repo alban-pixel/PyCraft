@@ -4,6 +4,7 @@ import math
 import pyxel
 
 from blocks import WATER
+from metabolism import Metabolism, EXHAUSTION_JUMP, EXHAUSTION_SPRINT_JUMP, EXHAUSTION_SPRINT_PER_M
 
 
 def _btn(key):
@@ -58,6 +59,10 @@ class Player:
         self.hurt_timer = 0.0
         self.swing_progress = 0.0
 
+        # Deterministic sub-frame interpolation & metabolism
+        self.prev_pos = [float(x), float(y), float(z)]
+        self.metabolism = Metabolism(max_health=self.max_health)
+
     @property
     def is_dead(self):
         return self.health <= 0
@@ -83,6 +88,17 @@ class Player:
         return (x < px + HALF_WIDTH and x + 1 > px - HALF_WIDTH and y < py + HEIGHT and y + 1 > py
                 and z < pz + HALF_WIDTH and z + 1 > pz - HALF_WIDTH)
 
+    def _overlaps_world(self, world):
+        px, py, pz = self.pos
+        lo = (px - HALF_WIDTH, py, pz - HALF_WIDTH)
+        hi = (px + HALF_WIDTH, py + HEIGHT, pz + HALF_WIDTH)
+        for bx in range(math.floor(lo[0]), math.floor(hi[0] - 1e-6) + 1):
+            for by in range(math.floor(lo[1]), math.floor(hi[1] - 1e-6) + 1):
+                for bz in range(math.floor(lo[2]), math.floor(hi[2] - 1e-6) + 1):
+                    if world.is_solid(bx, by, bz):
+                        return True
+        return False
+
     def swing(self):
         """Trigger hand/tool swing animation."""
         self.swing_progress = 1.0
@@ -92,16 +108,23 @@ class Player:
         if self.mode == "creative" or self.health <= 0:
             return False
         self.health = max(0, self.health - amount)
+        self.metabolism.health = self.health
         self.hurt_timer = 0.35
         return True
 
     def heal(self, amount):
         if self.health > 0:
             self.health = min(self.max_health, self.health + amount)
+            self.metabolism.health = self.health
 
     def respawn(self, spawn_pos):
         self.pos = list(spawn_pos)
+        self.prev_pos = list(spawn_pos)
         self.health = self.max_health
+        self.metabolism.health = self.max_health
+        self.metabolism.food = 20
+        self.metabolism.saturation = 5.0
+        self.metabolism.exhaustion = 0.0
         self.air = self.max_air
         self.vel_y = 0.0
         self.fall_start_y = float(self.pos[1])
@@ -118,11 +141,21 @@ class Player:
     def update(self, world, dt):
         """Move the player for one frame. Returns the set of sound events."""
         events = set()
+        self.prev_pos = list(self.pos)
 
         if self.hurt_timer > 0:
             self.hurt_timer = max(0.0, self.hurt_timer - dt)
         if self.swing_progress > 0:
             self.swing_progress = max(0.0, self.swing_progress - dt * 4.5)
+
+        # Metabolism tick in survival mode
+        if self.mode == "survival":
+            healed, damaged = self.metabolism.tick()
+            if healed > 0:
+                self.health = self.metabolism.health
+            if damaged > 0:
+                self.health = self.metabolism.health
+                events.add("hurt")
 
         # Flying toggle (Creative mode only)
         if _btnp(pyxel.KEY_F):
@@ -158,13 +191,16 @@ class Player:
         move_r = _btn(pyxel.KEY_D) - (_btn(pyxel.KEY_A) or _btn(pyxel.KEY_Q))
         dx, dz = fx * move_f + rx * move_r, fz * move_f + rz * move_r
         length = math.hypot(dx, dz)
+        is_sprint = _btn(pyxel.KEY_LCTRL) and (self.mode == "creative" or self.metabolism.can_sprint)
         if length:
             if self.flying:
                 speed = FLY_SPEED
             elif self.in_water:
                 speed = SWIM_SPEED
-            elif _btn(pyxel.KEY_LCTRL):
+            elif is_sprint:
                 speed = SPRINT_SPEED
+                if self.mode == "survival":
+                    self.metabolism.add_exhaustion(length * dt * EXHAUSTION_SPRINT_PER_M)
             else:
                 speed = WALK_SPEED
             dx, dz = dx / length * speed * dt, dz / length * speed * dt
@@ -182,16 +218,37 @@ class Player:
                 if _btn(pyxel.KEY_SPACE):
                     self.vel_y = JUMP_SPEED
                     events.add("jump")
+                    if self.mode == "survival":
+                        self.metabolism.add_exhaustion(EXHAUSTION_SPRINT_JUMP if is_sprint else EXHAUSTION_JUMP)
             else:
                 # Track highest point when falling
                 if self.pos[1] > self.fall_start_y:
                     self.fall_start_y = self.pos[1]
             self.vel_y = max(self.vel_y - GRAVITY * dt, -MAX_FALL_SPEED)
 
+        was_on_ground = self.on_ground
         hit_x = self._move_axis(world, 0, dx)
         hit_z = self._move_axis(world, 2, dz)
+
+        # Auto-step up to 0.60m for slabs/stairs/steps
+        if (hit_x or hit_z) and was_on_ground and not self.flying and not self.in_water and (dx != 0 or dz != 0):
+            step_h = 0.60
+            orig_x, orig_y, orig_z = self.pos
+            self.pos[1] += step_h
+            if not self._overlaps_world(world):
+                step_x = self._move_axis(world, 0, dx)
+                step_z = self._move_axis(world, 2, dz)
+                self._move_axis(world, 1, -step_h - 1e-4)
+                if self.pos[1] > orig_y + 1e-4:
+                    hit_x = False
+                    hit_z = False
+                    self.on_ground = True
+                else:
+                    self.pos = [orig_x, orig_y, orig_z]
+            else:
+                self.pos[1] = orig_y
+
         self.against_wall = hit_x or hit_z
-        was_on_ground = self.on_ground
         self.on_ground = False
         if self._move_axis(world, 1, self.vel_y * dt):
             if self.vel_y < 0:

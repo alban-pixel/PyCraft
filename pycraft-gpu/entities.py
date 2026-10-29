@@ -17,6 +17,7 @@ class Entity:
         self.vel = [0.0, 0.0, 0.0]
         self.yaw = random.uniform(0, 360)
         self.pitch = 0.0
+        self.prev_pos = [float(x), float(y), float(z)]
         self.on_ground = False
         self.against_wall = False
         self.is_alive = True
@@ -93,6 +94,7 @@ class Entity:
         if not self.is_alive:
             return []
 
+        self.prev_pos = list(self.pos)
         events = []
         if self.hurt_timer > 0:
             self.hurt_timer = max(0.0, self.hurt_timer - dt)
@@ -239,6 +241,11 @@ class EntityManager:
         events = []
         dead_drops = []
         for ent in self.entities:
+            dist = math.hypot(ent.pos[0] - player_pos[0], ent.pos[2] - player_pos[2])
+            if dist > 128.0:
+                ent.is_alive = False
+                continue
+
             evts = ent.update(world, dt, player_pos, daylight)
             events.extend(evts)
             if not ent.is_alive:

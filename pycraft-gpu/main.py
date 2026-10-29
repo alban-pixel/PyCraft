@@ -20,7 +20,12 @@ from blocks import (
     build_atlas, get_item_name, get_item_tile,
 )
 import crafting
+from clock import GameClock, TICK_DURATION, interpolate_position
+from combat import CombatEngine, InvulnerabilityTracker
 from entities import EntityManager
+from generator import WorldPreset, parse_seed
+from mining import MiningEngine
+from physics import DDARaycast, SweptAABBPhysics, REACH_MINE, REACH_PLACE
 from player import Player
 from renderer import Renderer, look_at
 from world import World
@@ -234,6 +239,11 @@ class App:
         # Crafting
         self.craft_grid = [[0, 0] for _ in range(9)]
         self.craft_size = 2  # 2x2 in inventory, 3x3 on table
+
+        # Deterministic 20 Hz Clock, Presets & Combat
+        self.clock = GameClock()
+        self.current_preset = WorldPreset.STANDARD
+        self.invulnerability = InvulnerabilityTracker()
 
         # Mobs & Fluids
         self.entity_mgr = EntityManager()
@@ -478,15 +488,17 @@ class App:
         self.last_save = self.play_time
         self.world_is_fresh = False
 
-    def start_game(self, new_world, mode="survival"):
+    def start_game(self, new_world, mode="survival", preset=None, seed=None):
         if new_world:
-            if not self.world_is_fresh:
-                self.world = World(seed=random.randrange(1 << 30))
-                self.renderer.set_world(self.world)
+            preset = preset or self.current_preset
+            seed_val = random.randrange(1 << 30) if seed is None else seed
+            self.world = World(seed=seed_val, preset=preset)
+            self.renderer.set_world(self.world)
             self.player = Player(*self.world.find_spawn(), mode=mode)
             self.hotbar = [[b, 64] for b in DEFAULT_HOTBAR]
             self.inventory = [[0, 0] for _ in range(27)]
             self.selected, self.time_of_day = 0, 0.05
+            self.clock.reset()
             self.save()
         elif self.save_data is not None:
             data = self.save_data
@@ -538,6 +550,10 @@ class App:
     def on_title(self):
         return self.state == "title" or (self.state == "settings" and self.settings_parent == "title")
 
+    def change_preset(self, step=1):
+        i = WorldPreset.ALL.index(self.current_preset)
+        self.current_preset = WorldPreset.ALL[(i + step) % len(WorldPreset.ALL)]
+
     def menu_items(self):
         if self.state == "title":
             items = []
@@ -545,6 +561,8 @@ class App:
                 items.append(("Continue", lambda: self.start_game(new_world=False)))
             items.append(("New World (Survival)", lambda: self.start_game(new_world=True, mode="survival")))
             items.append(("New World (Creative)", lambda: self.start_game(new_world=True, mode="creative")))
+            preset_name = self.current_preset.capitalize().replace("_", " ")
+            items.append((f"Preset: {preset_name}", self.change_preset))
             items.append(("Settings", self.open_settings))
             items.append(("Quit", pyxel.quit))
             return items
@@ -636,22 +654,29 @@ class App:
         if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT) and hovered is not None:
             chosen = hovered
 
-        if self.state == "settings":
-            is_setting = self.menu_index < len(items) - 1
-            if is_setting and (pyxel.btnp(pyxel.KEY_RIGHT) or pyxel.btnp(pyxel.KEY_D)):
+        if self.state in ("settings", "title"):
+            has_steps = (self.state == "settings" and self.menu_index < len(items) - 1) or (
+                self.state == "title" and "Preset:" in items[self.menu_index][0]
+            )
+            if has_steps and (pyxel.btnp(pyxel.KEY_RIGHT) or pyxel.btnp(pyxel.KEY_D)):
                 chosen = self.menu_index
-            if is_setting and (pyxel.btnp(pyxel.KEY_LEFT) or pyxel.btnp(pyxel.KEY_A) or pyxel.btnp(pyxel.KEY_Q)):
+            if has_steps and (pyxel.btnp(pyxel.KEY_LEFT) or pyxel.btnp(pyxel.KEY_A) or pyxel.btnp(pyxel.KEY_Q)):
                 chosen, step = self.menu_index, -1
-            if pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT) and hovered is not None and hovered < len(items) - 1:
-                chosen, step = hovered, -1
+            if pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT) and hovered is not None:
+                hovered_has_steps = (self.state == "settings" and hovered < len(items) - 1) or (
+                    self.state == "title" and "Preset:" in items[hovered][0]
+                )
+                if hovered_has_steps:
+                    chosen, step = hovered, -1
 
         if chosen is not None:
             self.sfx(SND_CLICK)
-            if self.state == "settings":
-                self.menu_index = chosen
-                items[chosen][1](step)
-            else:
-                items[chosen][1]()
+            self.menu_index = chosen
+            cb = items[chosen][1]
+            try:
+                cb(step)
+            except TypeError:
+                cb()
 
     def button_rect(self, i):
         s = self.get_ui_scale()
@@ -720,23 +745,39 @@ class App:
             self.show_debug = not self.show_debug
 
         self.update_look()
-        events = self.player.update(self.world, dt)
-        for event in events:
-            if event == "jump":
-                self.sfx(SND_JUMP)
-            elif event == "step":
-                self.sfx(SND_STEP)
-            elif event == "splash":
-                self.sfx(SND_SPLASH)
-            elif event == "hurt":
-                self.sfx(SND_HURT)
-
-        if self.player.health <= 0:
-            self.sfx(SND_HURT)
-            self.set_state("game_over")
-            return
-
         self.update_hotbar_keys()
+
+        # Deterministic 20 Hz fixed clock advancement
+        def tick_logic(world_tick):
+            self.time_of_day = self.clock.time_of_day
+            self.invulnerability.tick()
+
+            events = self.player.update(self.world, TICK_DURATION)
+            for event in events:
+                if event == "jump":
+                    self.sfx(SND_JUMP)
+                elif event == "step":
+                    self.sfx(SND_STEP)
+                elif event == "splash":
+                    self.sfx(SND_SPLASH)
+                elif event == "hurt":
+                    self.sfx(SND_HURT)
+
+            # Mobs update
+            daylight = (math.sin(self.time_of_day * 2 * math.pi) + 1.0) * 0.5
+            mob_events, mob_drops = self.entity_mgr.update(self.world, TICK_DURATION, self.player.pos, daylight)
+            for me in mob_events:
+                if me == "zombie_attack":
+                    net_dmg = CombatEngine.compute_total_mitigated_damage(3.0, armor=0.0)
+                    actual_dmg = self.invulnerability.attempt_damage(net_dmg)
+                    if actual_dmg > 0 and self.player.take_damage(int(round(actual_dmg))):
+                        self.sfx(SND_HURT)
+                        self.notify("Zombie attacked you!")
+            for drop_item, drop_pos in mob_drops:
+                self.add_to_inventory(drop_item, 1)
+                self.notify(f"Collected {get_item_name(drop_item)}")
+
+        self.clock.advance(dt, tick_logic)
 
         # Update fluids & particles
         self.fluid_timer += dt
@@ -746,25 +787,18 @@ class App:
             for cx, cz in updated_chunks:
                 self.renderer.block_changed(cx * 16, cz * 16)
 
+        if self.player.health <= 0:
+            self.sfx(SND_HURT)
+            self.set_state("game_over")
+            return
+
         if self.particles:
             self.particles = [p for p in self.particles if p.update(dt)]
 
-        # Mobs update
-        daylight = (math.sin(self.time_of_day * 2 * math.pi) + 1.0) * 0.5
-        mob_events, mob_drops = self.entity_mgr.update(self.world, dt, self.player.pos, daylight)
-        for me in mob_events:
-            if me == "zombie_attack":
-                if self.player.take_damage(3):
-                    self.sfx(SND_HURT)
-                    self.notify("Zombie attacked you!")
-            elif me == "zombie_burn":
-                pass
-        for drop_item, drop_pos in mob_drops:
-            self.add_to_inventory(drop_item, 1)
-            self.notify(f"Collected {get_item_name(drop_item)}")
-
         # Interaction & Mining / Attack
-        self.target = self.world.raycast(self.player.eye(), self.player.forward(), REACH)
+        ray_res = DDARaycast.raycast(self.world, self.player.eye(), self.player.forward(), max_reach=REACH_MINE)
+        self.target = (ray_res[0], ray_res[1]) if ray_res else None
+
         if not self.mouse_captured:
             if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT):
                 self.capture_mouse()
@@ -781,6 +815,7 @@ class App:
                 held_item = self.hotbar[self.selected][0]
                 dmg = ATTACK_DAMAGE.get(held_item, 1)
                 mob.take_damage(dmg, knockback_src=self.player.pos)
+                self.player.metabolism.add_exhaustion(0.10)
                 self.sfx(SND_SWORD if held_item in ATTACK_DAMAGE else SND_HURT)
                 return
 
@@ -795,12 +830,18 @@ class App:
                     if self.player.mode == "creative":
                         self.break_target_block(target_pos, block_id)
                     else:
-                        held_item = self.hotbar[self.selected][0]
-                        tool_mult = PICKAXES.get(held_item, 1.0) if block_id in (3, 4, 12, 13, 15, 16) else 1.0
-                        hardness = BLOCK_HARDNESS.get(block_id, 1.0)
-                        self.mining_time += dt * tool_mult
-                        if self.mining_time >= hardness:
+                        slot = self.hotbar[self.selected]
+                        held_item = slot[0]
+                        p_tick = MiningEngine.compute_damage_per_tick(
+                            held_item, block_id,
+                            in_water=self.player.in_water,
+                            on_ground=self.player.on_ground
+                        )
+                        self.mining_time += p_tick * (dt / TICK_DURATION)
+                        if self.mining_time >= 1.0 or p_tick >= 1.0:
                             self.break_target_block(target_pos, block_id)
+                            MiningEngine.apply_tool_wear(slot, block_id)
+                            self.player.metabolism.add_exhaustion(0.005)
                             self.mining_target = None
                             self.mining_time = 0.0
             else:
@@ -817,8 +858,8 @@ class App:
 
             # 1. Eat food
             if item_id in FOOD_HEAL and self.player.mode == "survival":
-                if self.player.health < self.player.max_health:
-                    self.player.heal(FOOD_HEAL[item_id])
+                if self.player.metabolism.eat(item_id):
+                    self.player.health = self.player.metabolism.health
                     self.sfx(SND_EAT)
                     slot[1] -= 1
                     if slot[1] <= 0:
@@ -835,11 +876,13 @@ class App:
                     return
 
             # 3. Place block
-            if self.target and item_id < 20 and item_id != 0:
+            if self.target and item_id in PLACEABLE and item_id != 0:
                 if self.player.mode == "creative" or slot[1] > 0:
                     x, y, z = self.target[1]
                     free = self.world.inside(x, y, z) and self.world.get(x, y, z) in (0, WATER)
-                    if free and (item_id == WATER or not self.player.overlaps(x, y, z)):
+                    living_aabbs = [self.player_aabb()] + [e.aabb for e in self.entity_mgr.entities]
+                    can_place = DDARaycast.can_place_block(self.world, (x, y, z), living_aabbs)
+                    if free and (item_id == WATER or can_place):
                         self.world.set(x, y, z, item_id)
                         self.world.trigger_water(x, y, z)
                         self.renderer.block_changed(x, z)
@@ -1194,9 +1237,17 @@ class App:
         if not self.mouse_captured and self.state == "playing":
             self.center_text(cy + 12 * s, "Click to capture the mouse", 10, shadow=True, scale=s)
 
+    def player_aabb(self):
+        px, py, pz = self.player.pos
+        hw, h = 0.3, 1.8
+        return (px - hw, py, pz - hw, px + hw, py + h, pz + hw)
+
     def draw_status_bars(self, x0, y0):
         s = self.get_ui_scale()
-        # 10 Hearts (2 HP per heart)
+        slot = 20 * s
+        total_w = slot * len(self.hotbar)
+
+        # 10 Hearts on the left (2 HP per heart)
         for i in range(10):
             hx = x0 + i * 8 * s
             hy = y0
@@ -1222,13 +1273,46 @@ class App:
                 # Empty heart
                 pyxel.rect(hx + s, hy + s, 5 * s, 4 * s, 13)
 
-        # 10 Air bubbles
+        # 10 Hunger drumsticks on the right (2 food units per drumstick)
+        food = self.player.metabolism.food
+        for i in range(10):
+            fx = x0 + total_w - (10 - i) * 8 * s
+            fy = y0
+            f_val = (i + 1) * 2
+            # Drumstick outline
+            pyxel.rect(fx + s, fy, 5 * s, 6 * s, 0)
+            pyxel.rect(fx, fy + s, 7 * s, 4 * s, 0)
+            if food >= f_val:
+                # Full drumstick (brown/orange)
+                pyxel.rect(fx + s, fy + s, 5 * s, 4 * s, 9)
+                pyxel.rect(fx + 2 * s, fy + 2 * s, 3 * s, 2 * s, 4)
+                pyxel.rect(fx + 5 * s, fy + 4 * s, s, s, 7)
+            elif food == f_val - 1:
+                # Half drumstick
+                pyxel.rect(fx + 3 * s, fy + s, 3 * s, 4 * s, 9)
+                pyxel.rect(fx + 5 * s, fy + 4 * s, s, s, 7)
+            else:
+                # Empty drumstick
+                pyxel.rect(fx + s, fy + s, 5 * s, 4 * s, 13)
+
+        # Experience bar & Level
+        xp_y = y0 + 8 * s
+        pyxel.rect(x0, xp_y, total_w, 2 * s, 0)
+        progress = self.player.metabolism.level_progress
+        fill_w = int(total_w * progress)
+        if fill_w > 0:
+            pyxel.rect(x0, xp_y, fill_w, 2 * s, 11)
+
+        lvl = self.player.metabolism.level
+        if lvl > 0:
+            self.center_text(xp_y - 6 * s, str(lvl), 11, shadow=True, scale=s)
+
+        # 10 Air bubbles above hunger bar
         if self.player.air < self.player.max_air:
             bubbles = int(math.ceil(self.player.air))
-            slot = 20 * s
             for i in range(bubbles):
-                bx = x0 + slot * len(self.hotbar) - (10 - i) * 8 * s
-                by = y0
+                bx = x0 + total_w - (10 - i) * 8 * s
+                by = y0 - 8 * s
                 pyxel.circb(bx + 3 * s, by + 3 * s, 3 * s, 12)
                 pyxel.rect(bx + 2 * s, by + 2 * s, s, s, 7)
 

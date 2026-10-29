@@ -5,20 +5,24 @@ import numpy as np
 import pyxel
 
 from blocks import (AIR, BEDROCK, COAL_ORE, DIAMOND_ORE, DIRT, GLOWSTONE, GOLD_ORE, GRASS,
-                    IRON_ORE, LEAVES, LOG, SAND, SNOW, SOLID, STONE, TARGETABLE, WATER)
+                    IRON_ORE, LEAVES, LOG, SAND, SNOW, SOLID, STONE, TARGETABLE, WATER, LAVA, OBSIDIAN, COBBLESTONE)
+from generator import ProceduralGenerator, WorldPreset, parse_seed
+from fluids import FluidAutomata
 
 SEA_LEVEL = 22  # water fills every empty block below this height that is open to the sky
 
 
 class World:
-    def __init__(self, size=(128, 64, 128), seed=1, generate=True):
+    def __init__(self, size=(128, 64, 128), seed=1, generate=True, preset=WorldPreset.STANDARD):
         self.size = tuple(int(s) for s in size)
-        self.seed = int(seed)
+        self.seed = parse_seed(seed)
+        self.preset = preset
         sx, sy, sz = self.size
         # One block of air padding on every side, so meshing never goes out of bounds.
         # World block (x, y, z) is stored at blocks[x + 1, y + 1, z + 1].
         self.blocks = np.zeros((sx + 2, sy + 2, sz + 2), dtype=np.uint8)
         self.active_water = set()
+        self.fluid_automata = FluidAutomata(self)
         if generate:
             self.generate()
 
@@ -81,9 +85,26 @@ class World:
 
     def generate(self):
         sx, sy, sz = self.size
+        inner = self.inner
+
+        if self.preset == WorldPreset.SUPERFLAT:
+            inner[:, 0, :] = BEDROCK
+            inner[:, 1:3, :] = DIRT
+            inner[:, 3, :] = GRASS
+            return
+
+        if self.preset != WorldPreset.STANDARD:
+            gen = ProceduralGenerator(seed=self.seed, preset=self.preset)
+            col = gen.generate_column_blocks(0, 0, height=min(sy, 128))
+            # Tile or fit into world dimensions
+            for cx in range(0, sx, 16):
+                for cz in range(0, sz, 16):
+                    c = gen.generate_column_blocks(cx // 16, cz // 16, height=min(sy, 128))
+                    inner[cx:cx + 16, :min(sy, 128), cz:cz + 16] = c[:min(16, sx - cx), :, :min(16, sz - cz)]
+            return
+
         pyxel.nseed(self.seed)
         rng = np.random.default_rng(self.seed)
-        inner = self.inner
 
         heights = np.zeros((sx, sz), dtype=int)
         for x in range(sx):
@@ -157,13 +178,16 @@ class World:
         xs, zs = np.meshgrid(np.arange(sx), np.arange(sz), indexing="ij")
         dist = (xs - sx // 2) ** 2 + (zs - sz // 2) ** 2.0
         dist[top_block != GRASS] = np.inf
+        if np.all(np.isinf(dist)):
+            dist = (xs - sx // 2) ** 2 + (zs - sz // 2) ** 2.0
+            dist[top_block == AIR] = np.inf
         x, z = np.unravel_index(np.argmin(dist), dist.shape)
         return [float(x) + 0.5, float(top_y[x, z] + 1), float(z) + 0.5]
 
     # --- Saving --------------------------------------------------------------------------------
 
     def save(self, path, **extra):
-        np.savez_compressed(path, blocks=self.inner, seed=self.seed, **extra)
+        np.savez_compressed(path, blocks=self.inner, seed=self.seed, preset=self.preset, **extra)
 
     @classmethod
     def load(cls, path):
@@ -171,7 +195,8 @@ class World:
         with np.load(path) as f:
             data = {key: f[key] for key in f.files}
         blocks = data.pop("blocks")
-        world = cls(blocks.shape, int(data.pop("seed")), generate=False)
+        preset = str(data.pop("preset", WorldPreset.STANDARD))
+        world = cls(blocks.shape, int(data.pop("seed")), generate=False, preset=preset)
         world.inner[...] = blocks
         return world, data
 

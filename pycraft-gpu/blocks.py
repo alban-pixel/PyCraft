@@ -5,14 +5,15 @@ import numpy as np
 TILE = 16
 ATLAS_TILES = 8  # 8x8 tiles = 128x128 pixels
 
-# Block IDs (0 to 19)
+# Block IDs (0 to 23)
 (AIR, GRASS, DIRT, STONE, COBBLESTONE, PLANKS, LOG, LEAVES, SAND, BRICK,
- GLASS, WATER, COAL_ORE, IRON_ORE, BEDROCK, GOLD_ORE, DIAMOND_ORE, GLOWSTONE, SNOW, CRAFTING_TABLE) = range(20)
+ GLASS, WATER, COAL_ORE, IRON_ORE, BEDROCK, GOLD_ORE, DIAMOND_ORE, GLOWSTONE, SNOW, CRAFTING_TABLE,
+ ICE, SLIME, OBSIDIAN, LAVA) = range(24)
 
 BLOCK_NAMES = [
     "Air", "Grass", "Dirt", "Stone", "Cobblestone", "Planks", "Log", "Leaves", "Sand", "Brick",
     "Glass", "Water", "Coal ore", "Iron ore", "Bedrock", "Gold ore", "Diamond ore", "Glowstone", "Snow",
-    "Crafting table",
+    "Crafting table", "Ice", "Slime", "Obsidian", "Lava",
 ]
 NUM_BLOCKS = len(BLOCK_NAMES)
 
@@ -39,6 +40,7 @@ ITEM_NAMES = {
 PLACEABLE = [
     GRASS, DIRT, STONE, COBBLESTONE, PLANKS, LOG, LEAVES, SAND, BRICK,
     GLASS, WATER, COAL_ORE, IRON_ORE, GOLD_ORE, DIAMOND_ORE, GLOWSTONE, SNOW, CRAFTING_TABLE,
+    ICE, SLIME, OBSIDIAN, LAVA,
 ]
 DEFAULT_HOTBAR = [GRASS, DIRT, STONE, COBBLESTONE, PLANKS, LOG, LEAVES, GLASS, CRAFTING_TABLE]
 
@@ -49,11 +51,11 @@ def _flags(*blocks):
     return table
 
 
-OPAQUE = ~_flags(AIR, LEAVES, GLASS, WATER)
-SOLID = ~_flags(AIR, WATER)
-CUTOUT = _flags(LEAVES, GLASS)
-SELF_CULL = _flags(GLASS, WATER)
-TARGETABLE = ~_flags(AIR, WATER)
+OPAQUE = ~_flags(AIR, LEAVES, GLASS, WATER, ICE, SLIME, LAVA)
+SOLID = ~_flags(AIR, WATER, LAVA)
+CUTOUT = _flags(LEAVES, GLASS, ICE, SLIME)
+SELF_CULL = _flags(GLASS, WATER, ICE, LAVA)
+TARGETABLE = ~_flags(AIR, WATER, LAVA)
 UNBREAKABLE = _flags(BEDROCK)
 
 # Atlas tile indices
@@ -96,6 +98,10 @@ BLOCK_TILES = np.array([
     _faces(T_GLOWSTONE),
     _faces(T_SNOW_SIDE, T_SNOW, T_DIRT),
     _faces(T_CRAFT_SIDE, T_CRAFT_TOP, T_PLANKS),
+    _faces(T_GLASS),   # ICE
+    _faces(T_LEAVES),  # SLIME
+    _faces(T_BEDROCK), # OBSIDIAN
+    _faces(T_GOLD),    # LAVA
 ], dtype=np.int32)
 
 ITEM_TILES = {
@@ -116,6 +122,7 @@ BLOCK_COLORS = {
     GRASS: 3, DIRT: 4, STONE: 6, COBBLESTONE: 13, PLANKS: 4, LOG: 4, LEAVES: 11,
     SAND: 10, BRICK: 2, GLASS: 7, WATER: 12, COAL_ORE: 0, IRON_ORE: 15,
     BEDROCK: 0, GOLD_ORE: 10, DIAMOND_ORE: 12, GLOWSTONE: 9, SNOW: 7, CRAFTING_TABLE: 4,
+    ICE: 12, SLIME: 3, OBSIDIAN: 0, LAVA: 9,
 }
 
 # Mining hardness in seconds with bare hand
@@ -124,6 +131,7 @@ BLOCK_HARDNESS = {
     GLOWSTONE: 0.4, PLANKS: 1.2, LOG: 1.4, CRAFTING_TABLE: 1.2,
     STONE: 2.2, COBBLESTONE: 2.2, BRICK: 2.2,
     COAL_ORE: 2.8, IRON_ORE: 3.2, GOLD_ORE: 3.5, DIAMOND_ORE: 4.0,
+    ICE: 0.5, SLIME: 0.2, OBSIDIAN: 50.0, LAVA: 100.0,
 }
 
 PICKAXES = {
