@@ -24,7 +24,7 @@ from clock import GameClock, TICK_DURATION, TICKS_PER_DAY, interpolate_position
 from combat import CombatEngine, InvulnerabilityTracker
 from entities import EntityManager
 from generator import WorldPreset, parse_seed
-from mining import MiningEngine
+from mining import MiningEngine, TOOL_DURABILITY_TABLE
 from physics import DDARaycast, SweptAABBPhysics, REACH_MINE, REACH_PLACE
 from player import Player
 from renderer import Renderer, look_at
@@ -32,9 +32,21 @@ from world import World
 from world_manager import WorldManager
 
 BASE_WIDTH, BASE_HEIGHT = 320, 180
-RESOLUTIONS = [(320, 180), (384, 216), (480, 270), (640, 360), (800, 450), (960, 540), (1280, 720)]
+RESOLUTIONS = [
+    (320, 180),
+    (384, 216),
+    (480, 270),
+    (640, 360),
+    (800, 450),
+    (960, 540),
+    (1280, 720),
+    (1600, 900),
+    (1920, 1080),
+    (2560, 1440),
+]
 FRAME_RATES = [30, 60, 75, 120, 144, 165, 240]
 FOVS = [60, 70, 80, 90]
+RENDER_DISTANCES = [2, 4, 6, 8, 10, 12, 16]
 SENSITIVITIES = [0.12, 0.18, 0.25, 0.35, 0.50]
 SENS_NAMES = {0.12: "Low", 0.18: "Medium", 0.25: "Normal", 0.35: "High", 0.50: "Very High"}
 GUI_SCALES = ["Auto", "1x", "2x", "3x", "4x"]
@@ -42,6 +54,7 @@ DEFAULT_SETTINGS = {
     "resolution": (320, 180),
     "fps": 60,
     "fov": 70,
+    "render_distance": 4,
     "sensitivity": 0.25,
     "music": True,
     "fullscreen": False,
@@ -330,6 +343,8 @@ class App:
             resolution = saved.get("resolution")
             if isinstance(resolution, list) and tuple(resolution) in RESOLUTIONS:
                 settings["resolution"] = tuple(resolution)
+            if saved.get("render_distance") in RENDER_DISTANCES:
+                settings["render_distance"] = saved["render_distance"]
             if saved.get("fps") in FRAME_RATES:
                 settings["fps"] = saved["fps"]
             if saved.get("fov") in FOVS:
@@ -406,6 +421,15 @@ class App:
         i = FRAME_RATES.index(self.settings["fps"])
         self.settings["fps"] = FRAME_RATES[(i + step) % len(FRAME_RATES)]
         self.save_settings()
+
+    def change_render_distance(self, step):
+        rd = self.settings.get("render_distance", 4)
+        if rd not in RENDER_DISTANCES:
+            rd = 4
+        i = RENDER_DISTANCES.index(rd)
+        self.settings["render_distance"] = RENDER_DISTANCES[(i + step) % len(RENDER_DISTANCES)]
+        self.save_settings()
+        self.notify(f"Render Distance: {self.settings['render_distance']} Chunks")
 
     def change_fov(self, step):
         i = FOVS.index(self.settings["fov"])
@@ -591,7 +615,7 @@ class App:
             self.world = World(seed=seed_val, preset=preset)
             spawn_pos = self.world.find_spawn()
             self.player = Player(*spawn_pos, mode=mode)
-            self.renderer.set_world(self.world, spawn_pos=spawn_pos)
+            self.renderer.set_world(self.world, spawn_pos=spawn_pos, render_dist=self.settings.get("render_distance", 4))
             self.hotbar = [[b, 64] for b in DEFAULT_HOTBAR]
             self.inventory = [[0, 0] for _ in range(27)]
             self.selected, self.time_of_day = 0, 0.05
@@ -609,13 +633,20 @@ class App:
             self.time_of_day = float(data.get("time_of_day", 0.05))
             if "hotbar" in data:
                 hb = data["hotbar"]
-                if hb.ndim == 2:
-                    self.hotbar = [[int(s[0]), int(s[1])] for s in hb]
-                else:
-                    self.hotbar = [[int(b), 64] for b in hb]
+                self.hotbar = []
+                for s in hb:
+                    if hasattr(s, "__len__") and len(s) >= 2:
+                        slot_item = [int(s[0]), int(s[1])]
+                        if len(s) >= 3:
+                            slot_item.append(int(s[2]))
+                        self.hotbar.append(slot_item)
+                    else:
+                        self.hotbar.append([int(s), 64])
+                while len(self.hotbar) < 9:
+                    self.hotbar.append([0, 0])
             self.selected = int(data.get("selected", 0))
             self.clock.reset(int(self.time_of_day * TICKS_PER_DAY))
-            self.renderer.set_world(self.world, spawn_pos=self.player.pos)
+            self.renderer.set_world(self.world, spawn_pos=self.player.pos, render_dist=self.settings.get("render_distance", 4))
         self.save_data = None
         self.play_time = self.last_save = 0.0
         self.show_help = True
@@ -809,9 +840,11 @@ class App:
             sens_label = SENS_NAMES.get(sens, "Normal")
             fs_label = "ON" if self.fullscreen_enabled else "OFF"
             gui_label = self.settings.get("gui_scale", "Auto")
+            rd = self.settings.get("render_distance", 4)
             return [
                 (f"Resolution: {w} x {h}", self.change_resolution),
                 (f"Fullscreen: {fs_label}", lambda step: self.toggle_fullscreen()),
+                (f"Render Distance: {rd} Chunks", self.change_render_distance),
                 (f"GUI Scale: {gui_label}", self.change_gui_scale),
                 (f"Frame rate: {self.settings['fps']} FPS", self.change_fps),
                 (f"Field of view: {self.settings['fov']} deg", self.change_fov),
@@ -1517,10 +1550,15 @@ class App:
             light, zenith, horizon, sun_dir = sky_at(self.time_of_day)
             target = self.target[0] if self.target and self.state == "playing" else None
 
+        rd = self.settings.get("render_distance", 4)
+        max_dist = rd * 16.0
+        fog_end = max_dist
+        fog_start = max(10.0, max_dist - 24.0)
+
         if not self.on_title() and self.player.head_in_water(self.world):
             fog = (tuple(c * light for c in UNDERWATER_FOG), 0.0, 9.0)
         else:
-            fog = (horizon, 40.0, 90.0)
+            fog = (horizon, fog_start, fog_end)
 
         crack_stage = -1
         if self.mining_target and self.player.mode == "survival":
@@ -1534,6 +1572,7 @@ class App:
             entities=self.entity_mgr.entities if not self.on_title() else None,
             mining_target=self.mining_target if self.state == "playing" else None,
             crack_stage=crack_stage,
+            render_dist=rd,
         )
 
         # 3D Break particles
@@ -1690,7 +1729,8 @@ class App:
         pyxel.dither(0.5)
         pyxel.rect(x0 - s, y0 - s, slot * len(self.hotbar) + 2 * s, slot + 2 * s, 0)
         pyxel.dither(1.0)
-        for i, (b_id, cnt) in enumerate(self.hotbar):
+        for i, slot_data in enumerate(self.hotbar):
+            b_id, cnt = slot_data[0], slot_data[1]
             bx, by = x0 + i * slot, y0
             pyxel.rectb(bx, by, slot, slot, 7 if i == self.selected else 13)
             if b_id > 0 and cnt > 0:
@@ -1698,6 +1738,16 @@ class App:
                 if cnt > 1:
                     cs = str(cnt)
                     self.draw_text(bx + slot - len(cs) * 4 * s - s, by + slot - 6 * s - s, cs, 7, scale=s)
+                max_dur = TOOL_DURABILITY_TABLE.get(b_id)
+                if max_dur and len(slot_data) > 2 and slot_data[2] < max_dur:
+                    dur = max(0, slot_data[2])
+                    ratio = dur / max_dur
+                    bar_w = int((slot - 4 * s) * ratio)
+                    bar_y = by + slot - 3 * s
+                    bar_col = 11 if ratio > 0.5 else (10 if ratio > 0.2 else 8)
+                    pyxel.rect(bx + 2 * s, bar_y, slot - 4 * s, s, 0)
+                    if bar_w > 0:
+                        pyxel.rect(bx + 2 * s, bar_y, bar_w, s, bar_col)
 
         cur_item = self.hotbar[self.selected][0]
         cur_cnt = self.hotbar[self.selected][1]

@@ -104,3 +104,51 @@ def test_scaled_text_drawing(headless_app):
         app.draw_text(10, 10, "High DPI Scaling Test", 7, scale=s)
         app.shadow_text(10, 30, "Shadow Text Test", 10, scale=s)
         app.center_text(50, "Centered Text Test", 12, shadow=True, scale=s)
+
+
+def test_2k_resolution_available_and_resize(headless_app):
+    """2K (2560x1440) is in RESOLUTIONS and can be set successfully."""
+    app = headless_app
+    assert (2560, 1440) in RESOLUTIONS
+    app.set_resolution(2560, 1440)
+    assert pyxel.width == 2560
+    assert pyxel.height == 1440
+    assert app.get_ui_scale() >= 4
+
+    # Restore base resolution
+    app.set_resolution(320, 180)
+
+
+def test_render_distance_settings(headless_app):
+    """Render distance can be cycled in settings and is visible in menu items."""
+    app = headless_app
+    app.set_state("settings")
+
+    initial_rd = app.settings["render_distance"]
+    app.change_render_distance(1)
+    assert app.settings["render_distance"] != initial_rd
+
+    items = [label for label, _ in app.menu_items()]
+    assert any("Render Distance:" in lbl and "Chunks" in lbl for lbl in items)
+
+    # Restore default
+    app.settings["render_distance"] = 4
+    app.set_state("title")
+
+
+def test_hotbar_with_tool_durability_draw_hud(headless_app):
+    """Hotbar slots with 3 elements [item_id, count, durability] must not raise ValueError in draw_hud."""
+    app = headless_app
+    import blocks
+    # Slot 0 has a damaged stone pickaxe [item_id, count, durability]
+    app.hotbar[0] = [blocks.ITEM_STONE_PICKAXE, 1, 65]
+    app.hotbar[1] = [blocks.ITEM_IRON_SWORD, 1, 10]
+    app.set_state("playing")
+
+    # Must draw without throwing ValueError: too many values to unpack
+    app.draw_hud()
+
+    # Reset
+    app.hotbar[0] = [blocks.GRASS, 64]
+    app.hotbar[1] = [blocks.DIRT, 64]
+    app.set_state("title")

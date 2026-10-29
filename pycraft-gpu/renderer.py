@@ -212,7 +212,7 @@ class Renderer:
         width, height = self.size
         self.projection = perspective(self.fov, width / height, 0.05, 300)
 
-    def set_world(self, world, spawn_pos=None):
+    def set_world(self, world, spawn_pos=None, render_dist=4):
         """Use a new world (after loading or generating one) and build all of its chunks."""
         self.world = world
         sx, sy, sz = world.size
@@ -230,7 +230,7 @@ class Renderer:
                 sp_z = spawn_pos[2] if spawn_pos else sz / 2
                 pcx = int(math.floor(sp_x / CHUNK))
                 pcz = int(math.floor(sp_z / CHUNK))
-                r = 4
+                r = render_dist
                 for dcx in range(-r, r + 1):
                     for dcz in range(-r, r + 1):
                         if dcx * dcx + dcz * dcz <= (r + 0.5) ** 2:
@@ -463,9 +463,9 @@ class Renderer:
         data = np.concatenate(boxes, axis=0).astype("f4")
         return data, len(data)
 
-    def render(self, screen, eye, forward, target=None, entities=None, mining_target=None, crack_stage=-1):
+    def render(self, screen, eye, forward, target=None, entities=None, mining_target=None, crack_stage=-1, render_dist=4):
         """Draw the world seen from eye into screen (a (height, width) uint8 view of pyxel.screen)."""
-        self.update_streaming(eye[0], eye[2], render_dist=4)
+        self.update_streaming(eye[0], eye[2], render_dist=render_dist)
         vp = self.projection @ look_at(eye, forward)
         mvp = vp.T.copy().tobytes()
         fog_color, fog_start, fog_end = self.fog
