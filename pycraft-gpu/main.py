@@ -30,6 +30,7 @@ from player import Player
 from renderer import Renderer, look_at
 from world import World
 from world_manager import WorldManager
+from texture_pack import TexturePackManager
 
 BASE_WIDTH, BASE_HEIGHT = 320, 180
 RESOLUTIONS = [
@@ -59,6 +60,7 @@ DEFAULT_SETTINGS = {
     "music": True,
     "fullscreen": False,
     "gui_scale": "Auto",
+    "active_resource_pack": "default",
 }
 MAX_DT = 0.1
 REACH = 5.5
@@ -199,15 +201,6 @@ class App:
         pyxel.colors[:] = make_palette()
         self.headless = headless
 
-        atlas = build_atlas()
-        icons = atlas_to_indices(atlas)
-        bank = np.frombuffer(pyxel.images[0].data_ptr(), dtype=np.uint8, count=256 * 256).reshape(256, 256)
-        bank[:icons.shape[0], :icons.shape[1]] = icons
-        pyxel.images[1].cls(0)
-        pyxel.images[1].text(0, 0, "PYCRAFT", 7)
-        self.text_scratch = pyxel.Image(1024, 64)
-        self.init_sounds()
-
         data_dir = pyxel.user_data_dir("PyCraft", "PyCraft GPU")
         self.saves_dir = os.path.join(data_dir, "saves")
         self.world_mgr = WorldManager(self.saves_dir)
@@ -215,6 +208,20 @@ class App:
         self.world_mgr.migrate_legacy_save(self.save_path)
         self.settings_path = os.path.join(data_dir, "settings.json")
         self.settings = self.load_settings()
+
+        self.resource_packs_dir = os.path.join(data_dir, "resourcepacks")
+        self.texture_pack_mgr = TexturePackManager(self.resource_packs_dir)
+        self.active_resource_pack = self.settings.get("active_resource_pack", "default")
+
+        atlas = self.texture_pack_mgr.build_pack_atlas(self.active_resource_pack)
+        self.atlas = atlas
+        icons = atlas_to_indices(atlas)
+        bank = np.frombuffer(pyxel.images[0].data_ptr(), dtype=np.uint8, count=256 * 256).reshape(256, 256)
+        bank[:icons.shape[0], :icons.shape[1]] = icons
+        pyxel.images[1].cls(0)
+        pyxel.images[1].text(0, 0, "PYCRAFT", 7)
+        self.text_scratch = pyxel.Image(1024, 64)
+        self.init_sounds()
 
         self.fullscreen_enabled = bool(self.settings.get("fullscreen", False))
         if self.fullscreen_enabled and not headless:
@@ -420,6 +427,8 @@ class App:
                 settings["fullscreen"] = saved["fullscreen"]
             if saved.get("gui_scale") in GUI_SCALES:
                 settings["gui_scale"] = saved["gui_scale"]
+            if isinstance(saved.get("active_resource_pack"), str):
+                settings["active_resource_pack"] = saved["active_resource_pack"]
         return settings
 
     def save_settings(self):
@@ -518,6 +527,33 @@ class App:
     def close_settings(self):
         self.set_state(self.settings_parent)
         self.menu_index = [label for label, _ in self.menu_items()].index("Settings")
+
+    def open_resource_packs(self, step=1):
+        self.set_state("resource_packs")
+
+    def set_resource_pack(self, pack_id):
+        self.active_resource_pack = pack_id
+        self.settings["active_resource_pack"] = pack_id
+        self.save_settings()
+        new_atlas = self.texture_pack_mgr.build_pack_atlas(pack_id)
+        self.atlas = new_atlas
+        icons = atlas_to_indices(new_atlas)
+        bank = np.frombuffer(pyxel.images[0].data_ptr(), dtype=np.uint8, count=256 * 256).reshape(256, 256)
+        bank[:icons.shape[0], :icons.shape[1]] = icons
+        if hasattr(self, "renderer") and self.renderer and hasattr(self.renderer, "texture") and self.renderer.texture:
+            self.renderer.texture.write(new_atlas.tobytes())
+        self.notify(f"Pack Loaded: {pack_id.capitalize()}")
+
+    def open_packs_folder(self, step=1):
+        self.notify(f"Resource packs: {self.texture_pack_mgr.packs_dir}")
+        try:
+            import subprocess
+            if sys.platform == "darwin":
+                subprocess.Popen(["open", self.texture_pack_mgr.packs_dir])
+            elif sys.platform.startswith("linux"):
+                subprocess.Popen(["xdg-open", self.texture_pack_mgr.packs_dir])
+        except Exception:
+            pass
 
     # --- Sound ---------------------------------------------------------------------------------
 
@@ -882,7 +918,7 @@ class App:
             pyxel.mouse(True)
 
     def on_title(self):
-        return self.state in ("title", "select_world", "create_world", "multiplayer") or (
+        return self.state in ("title", "select_world", "create_world", "multiplayer", "resource_packs") or (
             self.state == "settings" and self.settings_parent == "title"
         )
 
@@ -951,8 +987,18 @@ class App:
                 (f"Field of view: {self.settings['fov']} deg", self.change_fov),
                 (f"Mouse speed: {sens_label}", self.change_sensitivity),
                 ("Music: " + ("on" if self.settings["music"] else "off"), lambda step: self.toggle_music()),
+                ("Resource Packs...", self.open_resource_packs),
                 ("Done", lambda step: self.close_settings()),
             ]
+        if self.state == "resource_packs":
+            packs = self.texture_pack_mgr.list_packs()
+            items = []
+            for p in packs:
+                status = " [ACTIVE]" if p.pack_id == self.active_resource_pack else ""
+                items.append((f"{p.name}{status}", (lambda pid: lambda step: self.set_resource_pack(pid))(p.pack_id)))
+            items.append(("Open Resource Pack Folder", self.open_packs_folder))
+            items.append(("Done", lambda step: self.set_state("settings")))
+            return items
         return []
 
     def toggle_player_mode(self):
@@ -980,11 +1026,13 @@ class App:
             self.set_state("game_over")
             return
 
-        if self.state in ("title", "paused", "settings", "select_world", "create_world", "multiplayer"):
+        if self.state in ("title", "paused", "settings", "select_world", "create_world", "multiplayer", "resource_packs"):
             if self.state == "paused" and pyxel.btnp(pyxel.KEY_ESCAPE):
                 self.set_state("playing")
             elif self.state == "settings" and pyxel.btnp(pyxel.KEY_ESCAPE):
                 self.close_settings()
+            elif self.state == "resource_packs" and pyxel.btnp(pyxel.KEY_ESCAPE):
+                self.set_state("settings")
             elif self.state == "select_world" and pyxel.btnp(pyxel.KEY_ESCAPE):
                 self.set_state("title")
             elif self.state == "create_world" and pyxel.btnp(pyxel.KEY_ESCAPE):
@@ -1761,9 +1809,14 @@ class App:
             self.draw_create_world()
         elif self.state == "multiplayer":
             self.draw_multiplayer()
-        elif self.state in ("paused", "settings"):
+        elif self.state in ("paused", "settings", "resource_packs"):
             self.dim_screen()
-            title = "Settings" if self.state == "settings" else "Game paused"
+            if self.state == "resource_packs":
+                title = "Resource Packs"
+            elif self.state == "settings":
+                title = "Settings"
+            else:
+                title = "Game paused"
             title_y = self.get_title_y()
             self.center_text(title_y, title, 7, shadow=True, scale=s)
             self.draw_menu()

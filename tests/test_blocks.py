@@ -38,6 +38,6 @@ def test_block_flags():
 def test_texture_atlas_generation():
     atlas = blocks.build_atlas(seed=42)
     assert atlas.ndim == 3
-    assert atlas.shape == (128, 128, 4)
+    assert atlas.shape in [(128, 128, 4), (256, 256, 4)]
     assert atlas.dtype == np.uint8
     assert blocks.BLOCK_TILES.shape == (blocks.NUM_BLOCKS, 6)

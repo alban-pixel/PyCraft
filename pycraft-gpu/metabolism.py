@@ -45,6 +45,12 @@ FOOD_PROPERTIES: Dict[int, FoodItem] = {
     113: FoodItem(food=6, saturation=14.4),  # Golden Carrot
     114: FoodItem(food=4, saturation=9.6),   # Golden Apple
     115: FoodItem(food=4, saturation=0.8),   # Rotten Flesh
+    # 1.8 Food items
+    120: FoodItem(food=2, saturation=1.2),   # ITEM_RAW_MUTTON
+    121: FoodItem(food=6, saturation=9.6),   # ITEM_COOKED_MUTTON
+    122: FoodItem(food=3, saturation=1.8),   # ITEM_RAW_RABBIT
+    123: FoodItem(food=5, saturation=6.0),   # ITEM_COOKED_RABBIT
+    124: FoodItem(food=10, saturation=12.0), # ITEM_RABBIT_STEW
 }
 
 

@@ -13,14 +13,14 @@ SEA_LEVEL = 22  # water fills every empty block below this height that is open t
 
 
 class World:
-    def __init__(self, size=(128, 64, 128), seed=1, generate=True, preset=WorldPreset.STANDARD, infinite=None):
+    def __init__(self, size=(128, 256, 128), seed=1, generate=True, preset=WorldPreset.STANDARD, infinite=None):
         self.size = tuple(int(s) for s in size)
         self.seed = parse_seed(seed)
         self.preset = preset
         sx, sy, sz = self.size
         self.sy = sy
         if infinite is None:
-            self.infinite = (self.size == (128, 64, 128))
+            self.infinite = (self.size == (128, 256, 128) or self.size == (128, 64, 128))
         else:
             self.infinite = bool(infinite)
 
@@ -107,7 +107,7 @@ class World:
         return chunk
 
     def compute_terrain_height(self, x: float, z: float) -> int:
-        """Deterministic terrain height with plains, valleys, rolling hills, and majestic mountain ranges."""
+        """Deterministic terrain height with plains, valleys, rolling hills, and majestic Everest mountain ranges."""
         if self.preset == WorldPreset.SUPERFLAT:
             return 4
 
@@ -115,14 +115,24 @@ class World:
         n_base = pyxel.noise(x * 0.012, z * 0.012)
         base = SEA_LEVEL + 4.0 + n_base * 5.0
 
-        # Mountain ranges and ridges (continental mountain mask + sharp ridged noise)
-        m_noise = pyxel.noise(x * 0.005 + 50.0, z * 0.005 + 50.0)
-        ridge = 1.0 - abs(pyxel.noise(x * 0.010 + 200.0, z * 0.010 + 200.0))
-        m_strength = max(0.0, m_noise - 0.05) * 1.85
-        mountains = (ridge ** 2.2) * 28.0 * m_strength
+        if self.sy >= 128:
+            # Massive continental mountain ranges (Everest scale up to Y ~ 240)
+            m_noise = pyxel.noise(x * 0.0035 + 50.0, z * 0.0035 + 50.0)
+            ridge = 1.0 - abs(pyxel.noise(x * 0.008 + 200.0, z * 0.008 + 200.0))
+            crags = 1.0 - abs(pyxel.noise(x * 0.02 + 400.0, z * 0.02 + 400.0))
+            combined_ridge = (ridge * 0.75 + crags * 0.25)
 
-        # Fine terrain detail
-        detail = pyxel.noise(x * 0.040 + 100.0, z * 0.040 + 100.0) * 2.5
+            m_strength = max(0.0, m_noise - 0.02) * 2.0
+            max_mountain_h = (self.sy - 16.0 - base)
+            mountains = (combined_ridge ** 2.4) * max_mountain_h * m_strength
+            detail = pyxel.noise(x * 0.040 + 100.0, z * 0.040 + 100.0) * 3.0
+        else:
+            # Scaled proportionally for smaller test worlds
+            m_noise = pyxel.noise(x * 0.005 + 50.0, z * 0.005 + 50.0)
+            ridge = 1.0 - abs(pyxel.noise(x * 0.010 + 200.0, z * 0.010 + 200.0))
+            m_strength = max(0.0, m_noise - 0.05) * 1.85
+            mountains = (ridge ** 2.2) * min(28.0, max(4.0, self.sy - 10.0 - base)) * m_strength
+            detail = pyxel.noise(x * 0.040 + 100.0, z * 0.040 + 100.0) * 2.5
 
         h = base + mountains + detail
         return min(max(int(h), 4), self.sy - 6)
@@ -167,10 +177,18 @@ class World:
         chunk[stone & (roll > 0.9982) & (ys < 12)] = DIAMOND_ORE
 
         # Mountain slopes and snow caps
-        stone_slopes = top & (h >= 35) & (h < 40)
-        chunk[stone_slopes] = STONE
-        snow_caps = top & (h >= 40)
-        chunk[snow_caps] = SNOW
+        if self.sy >= 128:
+            stone_slopes = top & (h >= 55) & (h < 95)
+            chunk[stone_slopes] = STONE
+            snow_caps = top & (h >= 95)
+            chunk[snow_caps] = SNOW
+            chunk[(ys >= h - 2) & (ys < h) & (h >= 95)] = SNOW
+            chunk[(ys >= h - dirt_depth) & (ys < h) & (h >= 55) & (h < 95)] = STONE
+        else:
+            stone_slopes = top & (h >= 35) & (h < 40)
+            chunk[stone_slopes] = STONE
+            snow_caps = top & (h >= 40)
+            chunk[snow_caps] = SNOW
 
         chunk[:, 0, :] = BEDROCK
         chunk[(ys >= h) & (ys < SEA_LEVEL)] = WATER
@@ -273,10 +291,16 @@ class World:
             return WATER
         if h <= SEA_LEVEL + 1:
             return SAND
-        if h >= 40:
-            return SNOW
-        if h >= 35:
-            return STONE
+        if self.sy >= 128:
+            if h >= 95:
+                return SNOW
+            if h >= 55:
+                return STONE
+        else:
+            if h >= 40:
+                return SNOW
+            if h >= 35:
+                return STONE
         return GRASS
 
     # --- Generation ----------------------------------------------------------------------------
@@ -329,10 +353,18 @@ class World:
         inner[stone & (roll > 0.9982) & (ys < 12)] = DIAMOND_ORE
 
         # Mountain rocky slopes and snowy peaks
-        stone_slopes = top & (h >= 35) & (h < 40)
-        inner[stone_slopes] = STONE
-        snow_caps = top & (h >= 40)
-        inner[snow_caps] = SNOW
+        if self.sy >= 128:
+            stone_slopes = top & (h >= 55) & (h < 95)
+            inner[stone_slopes] = STONE
+            snow_caps = top & (h >= 95)
+            inner[snow_caps] = SNOW
+            inner[(ys >= h - 2) & (ys < h) & (h >= 95)] = SNOW
+            inner[(ys >= h - dirt_depth) & (ys < h) & (h >= 55) & (h < 95)] = STONE
+        else:
+            stone_slopes = top & (h >= 35) & (h < 40)
+            inner[stone_slopes] = STONE
+            snow_caps = top & (h >= 40)
+            inner[snow_caps] = SNOW
 
         # Caves: tunnels where two smooth noise fields both cross their middle value
         n1 = _value_noise(rng, inner.shape, 14)

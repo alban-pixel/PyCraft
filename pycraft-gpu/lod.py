@@ -1,13 +1,16 @@
-"""Level-of-Detail (LOD) manager for seamless distant terrain rendering.
+"""Level-of-Detail (LOD) manager for seamless distant terrain rendering with vertical quality gradient.
 
 Inspired by Distant Horizons & Voxy:
 - Unified Depth Space: Renders into the main depth buffer using the same projection matrix.
-- Macro-Voxel Representation: Distant chunks outside the near render distance are drawn as
-  downsampled voxel columns (Level 1: 4x4 cells, Level 2: 16x16 macro-boxes).
+- Hierarchical Quality Gradient:
+  * Level 1 (Close LOD, r_near to r_near + 8): 2x2 micro-columns capturing sharp mountain ridges.
+  * Level 2 (Mid LOD, r_near + 8 to r_near + 22): 4x4 sub-cells with stepped vertical faces.
+  * Level 3 (Far Silhouette, r_near + 22 to r_max): 16x16 macro-boxes with deep vertical skirts
+    covering mountain silhouettes up to Y=256 without gaps or lag.
 - Seamless Boundary Skirts: Vertical downward geometry on cell and chunk boundaries guarantees
   zero gaps, zero seams, and zero holes with active near chunks.
 - Single GPU Draw Call: Consolidates all distant chunk quads into a unified VBO/VAO.
-- Early-Z Occlusion: Active near chunks render first and naturally occlude any overlapping LODs.
+- Early-Z Occlusion: Active near chunks render first and naturally occlude overlapping LODs.
 """
 import math
 from typing import Dict, List, Optional, Set, Tuple
@@ -39,16 +42,14 @@ def make_quad(corners, tile_id: int, shade: float, kind: float = 0.0) -> np.ndar
 
 
 class LODChunkBuilder:
-    """Builds macro-voxel geometry for a distant chunk column."""
+    """Builds multi-tier macro-voxel geometry for distant chunk columns."""
 
     @staticmethod
-    def build_chunk_lod1(world, cx: int, cz: int) -> Optional[np.ndarray]:
-        """Level 1 LOD: 4x4 sub-cells of 4x4 blocks with top quads and vertical skirts."""
+    def _build_subcell_grid(world, cx: int, cz: int, cell_size: int) -> Optional[np.ndarray]:
+        """Builds a grid of sub-cells (e.g. 2x2 for LOD1 or 4x4 for LOD2) with vertical skirts."""
         x0, z0 = cx * CHUNK, cz * CHUNK
         quads = []
 
-        # 4x4 grid of sampled heights and block types
-        cell_size = 4
         num_cells = CHUNK // cell_size
         heights = np.zeros((num_cells, num_cells), dtype=np.int32)
         block_types = np.zeros((num_cells, num_cells), dtype=np.int32)
@@ -61,7 +62,6 @@ class LODChunkBuilder:
                 heights[u, v] = h
                 block_types[u, v] = world.get_surface_block_type(mx, h, mz)
 
-        # Generate top faces and inter-cell skirts
         for u in range(num_cells):
             for v in range(num_cells):
                 bx0 = x0 + u * cell_size
@@ -88,7 +88,7 @@ class LODChunkBuilder:
                 ]
                 quads.append(make_quad(top_corners, top_tile, shade=1.0, kind=kind))
 
-                # 2. Skirts and step-downs to adjacent cells (proper outward CCW winding)
+                # 2. Skirts and step-downs to adjacent cells (outward CCW winding)
                 mid_z = bz0 + cell_size // 2
                 mid_x = bx0 + cell_size // 2
 
@@ -156,9 +156,19 @@ class LODChunkBuilder:
             return None
         return np.concatenate(quads, axis=0).astype(np.float32)
 
+    @classmethod
+    def build_chunk_lod1(cls, world, cx: int, cz: int) -> Optional[np.ndarray]:
+        """Level 1 LOD: Fine 2x2 micro-columns (64 sub-cells per chunk) for close high-detail terrain."""
+        return cls._build_subcell_grid(world, cx, cz, cell_size=2)
+
+    @classmethod
+    def build_chunk_lod2(cls, world, cx: int, cz: int) -> Optional[np.ndarray]:
+        """Level 2 LOD: Medium 4x4 sub-cells (16 sub-cells per chunk) for mid-distance terrain."""
+        return cls._build_subcell_grid(world, cx, cz, cell_size=4)
+
     @staticmethod
-    def build_chunk_lod2(world, cx: int, cz: int) -> Optional[np.ndarray]:
-        """Level 2 LOD: 1 macro-box per 16x16 chunk for very far terrain."""
+    def build_chunk_lod3(world, cx: int, cz: int) -> Optional[np.ndarray]:
+        """Level 3 LOD: 1 macro-box per 16x16 chunk with deep vertical skirts for mountain silhouettes."""
         x0, z0 = cx * CHUNK, cz * CHUNK
         mx, mz = x0 + CHUNK // 2, z0 + CHUNK // 2
         h = float(world.get_column_height(mx, mz))
@@ -170,25 +180,33 @@ class LODChunkBuilder:
         side_tile = int(BLOCK_TILES[b_type, 0])
         x1, z1 = x0 + CHUNK, z0 + CHUNK
         h_top = (h - 0.125) if is_water else h
-        h_base = max(1.0, h - 8.0)
+
+        # Boundary neighbor heights to cover deep vertical drops down to valleys
+        h_e = float(world.get_column_height(x1 + 1, mz))
+        h_w = float(world.get_column_height(x0 - 1, mz))
+        h_s = float(world.get_column_height(mx, z1 + 1))
+        h_n = float(world.get_column_height(mx, z0 - 1))
 
         quads = [
             # Top (+Y)
             make_quad([(x0, h_top, z0), (x1, h_top, z0), (x1, h_top, z1), (x0, h_top, z1)], top_tile, 1.0, kind=kind),
-            # East (+X)
-            make_quad([(x1, h, z0), (x1, h, z1), (x1, h_base, z1), (x1, h_base, z0)], side_tile, 0.8, kind=kind),
-            # West (-X)
-            make_quad([(x0, h, z1), (x0, h, z0), (x0, h_base, z0), (x0, h_base, z1)], side_tile, 0.8, kind=kind),
-            # South (+Z)
-            make_quad([(x1, h, z1), (x0, h, z1), (x0, h_base, z1), (x1, h_base, z1)], side_tile, 0.65, kind=kind),
-            # North (-Z)
-            make_quad([(x0, h, z0), (x1, h, z0), (x1, h_base, z0), (x0, h_base, z0)], side_tile, 0.65, kind=kind),
         ]
+
+        # Vertical skirts reaching down to adjacent lower neighbors
+        if h > h_e:
+            quads.append(make_quad([(x1, h, z0), (x1, h, z1), (x1, max(1.0, h_e), z1), (x1, max(1.0, h_e), z0)], side_tile, 0.8, kind=kind))
+        if h > h_w:
+            quads.append(make_quad([(x0, h, z1), (x0, h, z0), (x0, max(1.0, h_w), z0), (x0, max(1.0, h_w), z1)], side_tile, 0.8, kind=kind))
+        if h > h_s:
+            quads.append(make_quad([(x1, h, z1), (x0, h, z1), (x0, max(1.0, h_s), z1), (x1, max(1.0, h_s), z1)], side_tile, 0.65, kind=kind))
+        if h > h_n:
+            quads.append(make_quad([(x0, h, z0), (x1, h, z0), (x1, max(1.0, h_n), z0), (x0, max(1.0, h_n), z0)], side_tile, 0.65, kind=kind))
+
         return np.concatenate(quads, axis=0).astype(np.float32)
 
 
 class LODManager:
-    """Manages distant chunk LOD generation, streaming, and GPU buffers."""
+    """Manages distant chunk LOD generation, streaming, and GPU buffers with a 3-tier gradient."""
 
     def __init__(self, ctx: moderngl.Context, program: moderngl.Program, world):
         self.ctx = ctx
@@ -216,7 +234,7 @@ class LODManager:
         self.last_center = (-9999, -9999)
 
     def update(self, player_x: float, player_z: float, near_chunks: Set[Tuple[int, int]], render_dist: int = 12, max_lod_dist: int = 48):
-        """Update distant LOD chunks outside the near chunks radius."""
+        """Update distant LOD chunks using a 3-tier quality gradient."""
         pcx = int(math.floor(player_x / CHUNK))
         pcz = int(math.floor(player_z / CHUNK))
 
@@ -225,11 +243,13 @@ class LODManager:
 
         needed_lods: List[Tuple[int, int, int]] = []  # (cx, cz, level)
         r_near = render_dist
-        r_mid = render_dist + 12
-        r_max = max(max_lod_dist, render_dist + 36)
+        r_lod1 = render_dist + 8   # Level 1: 2x2 micro-columns
+        r_lod2 = render_dist + 20  # Level 2: 4x4 sub-cells
+        r_max = max(max_lod_dist, render_dist + 36) # Level 3: 16x16 macro-box
 
         r_near2 = (r_near + 0.5) ** 2
-        r_mid2 = (r_mid + 0.5) ** 2
+        r_lod1_2 = (r_lod1 + 0.5) ** 2
+        r_lod2_2 = (r_lod2 + 0.5) ** 2
         r_max2 = (r_max + 0.5) ** 2
 
         for dcx in range(-r_max, r_max + 1):
@@ -238,16 +258,18 @@ class LODManager:
                 if d2 > r_max2:
                     continue
                 if d2 <= r_near2:
-                    continue  # Strictly outside near render distance; near chunks are handled by block chunk mesher
+                    continue  # Strictly outside near render distance; near chunks handled by block mesher
                 cx, cz = pcx + dcx, pcz + dcz
 
-                if d2 <= r_mid2:
-                    needed_lods.append((cx, cz, 1))  # Level 1: 4x4 sub-cells
+                if d2 <= r_lod1_2:
+                    needed_lods.append((cx, cz, 1))  # Level 1: 2x2 fine micro-columns
+                elif d2 <= r_lod2_2:
+                    needed_lods.append((cx, cz, 2))  # Level 2: 4x4 medium cells
                 else:
-                    needed_lods.append((cx, cz, 2))  # Level 2: 16x16 macro-box
+                    needed_lods.append((cx, cz, 3))  # Level 3: 16x16 far macro-box
 
         # Evict old distant cache entries
-        if len(self.cache) > 2000:
+        if len(self.cache) > 3000:
             active_keys = set(needed_lods)
             self.cache = {k: v for k, v in self.cache.items() if k in active_keys}
 
@@ -259,8 +281,10 @@ class LODManager:
             if verts is None:
                 if lvl == 1:
                     verts = LODChunkBuilder.build_chunk_lod1(self.world, cx, cz)
-                else:
+                elif lvl == 2:
                     verts = LODChunkBuilder.build_chunk_lod2(self.world, cx, cz)
+                else:
+                    verts = LODChunkBuilder.build_chunk_lod3(self.world, cx, cz)
                 if verts is not None:
                     self.cache[key] = verts
             if verts is not None and len(verts) > 0:
