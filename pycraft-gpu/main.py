@@ -20,7 +20,7 @@ from blocks import (
     build_atlas, get_item_name, get_item_tile,
 )
 import crafting
-from clock import GameClock, TICK_DURATION, interpolate_position
+from clock import GameClock, TICK_DURATION, TICKS_PER_DAY, interpolate_position
 from combat import CombatEngine, InvulnerabilityTracker
 from entities import EntityManager
 from generator import WorldPreset, parse_seed
@@ -29,6 +29,7 @@ from physics import DDARaycast, SweptAABBPhysics, REACH_MINE, REACH_PLACE
 from player import Player
 from renderer import Renderer, look_at
 from world import World
+from world_manager import WorldManager
 
 BASE_WIDTH, BASE_HEIGHT = 320, 180
 RESOLUTIONS = [(320, 180), (384, 216), (480, 270), (640, 360), (800, 450), (960, 540), (1280, 720)]
@@ -195,7 +196,10 @@ class App:
         self.init_sounds()
 
         data_dir = pyxel.user_data_dir("PyCraft", "PyCraft GPU")
+        self.saves_dir = os.path.join(data_dir, "saves")
+        self.world_mgr = WorldManager(self.saves_dir)
         self.save_path = os.path.join(data_dir, "world.npz")
+        self.world_mgr.migrate_legacy_save(self.save_path)
         self.settings_path = os.path.join(data_dir, "settings.json")
         self.settings = self.load_settings()
 
@@ -208,11 +212,22 @@ class App:
 
         self.save_data = None
         self.world = None
-        if os.path.exists(self.save_path):
+        # Check active worlds or legacy save
+        saved_worlds = self.world_mgr.list_worlds()
+        if saved_worlds:
+            first_w = saved_worlds[0]
+            try:
+                self.world, self.save_data = World.load(first_w["save_path"])
+                self.save_path = first_w["save_path"]
+                self.current_world_info = first_w
+            except (OSError, ValueError, KeyError):
+                self.world = None
+        elif os.path.exists(self.save_path):
             try:
                 self.world, self.save_data = World.load(self.save_path)
             except (OSError, ValueError, KeyError):
                 self.world = None
+
         self.world_is_fresh = self.world is None
         if self.world is None:
             self.world = World(seed=random.randrange(1 << 30))
@@ -239,6 +254,20 @@ class App:
         # Crafting
         self.craft_grid = [[0, 0] for _ in range(9)]
         self.craft_size = 2  # 2x2 in inventory, 3x3 on table
+        self.craft_result = [0, 0]
+
+        # Multi-world selection & creation
+        self.selected_world_idx = 0
+        self.world_name_suggestions = [
+            "New World", "Survival Island", "Voxel Adventure",
+            "Alpine Peaks", "Mining Kingdom", "Infinite Plains"
+        ]
+        self.world_name_idx = 0
+        self.new_world_name = self.world_name_suggestions[0]
+        self.new_world_mode = "survival"
+        self.new_world_preset = WorldPreset.STANDARD
+        self.new_world_seed = ""
+        self.current_world_info = None
 
         # Deterministic 20 Hz Clock, Presets & Combat
         self.clock = GameClock()
@@ -487,6 +516,9 @@ class App:
         os.replace(tmp, self.save_path)
         self.last_save = self.play_time
         self.world_is_fresh = False
+        if self.current_world_info and "folder" in self.current_world_info:
+            self.current_world_info["last_played"] = time.time()
+            self.world_mgr.save_metadata(self.current_world_info["folder"], self.current_world_info)
 
     def start_game(self, new_world, mode="survival", preset=None, seed=None):
         if new_world:
@@ -509,7 +541,7 @@ class App:
             self.player = Player(x, y, z, mode=saved_mode)
             self.player.yaw, self.player.pitch, self.player.flying = yaw, pitch, bool(flying)
             self.player.health = int(hp)
-            self.time_of_day = float(data["time_of_day"])
+            self.time_of_day = float(data.get("time_of_day", 0.05))
             if "hotbar" in data:
                 hb = data["hotbar"]
                 if hb.ndim == 2:
@@ -517,12 +549,105 @@ class App:
                 else:
                     self.hotbar = [[int(b), 64] for b in hb]
             self.selected = int(data.get("selected", 0))
+            self.clock.reset(int(self.time_of_day * TICKS_PER_DAY))
+            self.renderer.set_world(self.world)
         self.save_data = None
         self.play_time = self.last_save = 0.0
         self.show_help = True
         self.particles = []
         self.entity_mgr = EntityManager()
         self.set_state("playing")
+
+    # --- Multi-world Management ----------------------------------------------------------------
+
+    def open_select_world(self):
+        self.selected_world_idx = 0
+        self.set_state("select_world")
+
+    def play_selected_world(self):
+        worlds = self.world_mgr.list_worlds()
+        if not worlds:
+            self.open_create_world()
+            return
+        idx = max(0, min(self.selected_world_idx, len(worlds) - 1))
+        w_info = worlds[idx]
+        self.load_and_play_world(w_info)
+
+    def load_and_play_world(self, w_info):
+        save_path = w_info["save_path"]
+        try:
+            self.world, self.save_data = World.load(save_path)
+            self.save_path = save_path
+            self.current_world_info = dict(w_info)
+            self.current_preset = w_info.get("preset", WorldPreset.STANDARD)
+            self.world_is_fresh = False
+            self.start_game(new_world=False)
+            self.notify(f"Loaded {w_info['name']}")
+        except Exception as e:
+            self.notify(f"Error loading world: {e}")
+
+    def delete_selected_world(self):
+        worlds = self.world_mgr.list_worlds()
+        if not worlds:
+            return
+        idx = max(0, min(self.selected_world_idx, len(worlds) - 1))
+        target = worlds[idx]
+        self.world_mgr.delete_world(target["folder"])
+        self.notify(f"Deleted {target['name']}")
+        self.selected_world_idx = max(0, idx - 1)
+
+    def cycle_selected_world(self, step=1):
+        worlds = self.world_mgr.list_worlds()
+        if worlds:
+            self.selected_world_idx = (self.selected_world_idx + step) % len(worlds)
+
+    def open_create_world(self):
+        worlds = self.world_mgr.list_worlds()
+        existing = {w["name"] for w in worlds}
+        for name in self.world_name_suggestions:
+            if name not in existing:
+                self.new_world_name = name
+                break
+        else:
+            self.new_world_name = f"World {len(worlds) + 1}"
+        self.set_state("create_world")
+
+    def cycle_new_world_name(self, step=1):
+        self.world_name_idx = (self.world_name_idx + step) % len(self.world_name_suggestions)
+        self.new_world_name = self.world_name_suggestions[self.world_name_idx]
+
+    def toggle_new_world_mode(self, step=1):
+        self.new_world_mode = "creative" if self.new_world_mode == "survival" else "survival"
+
+    def cycle_new_world_preset(self, step=1):
+        i = WorldPreset.ALL.index(self.new_world_preset)
+        self.new_world_preset = WorldPreset.ALL[(i + step) % len(WorldPreset.ALL)]
+
+    def cycle_new_world_seed(self, step=1):
+        seeds = ["", "12345", "42", "888888", "1337", "9999999"]
+        cur = self.new_world_seed
+        i = seeds.index(cur) if cur in seeds else 0
+        self.new_world_seed = seeds[(i + step) % len(seeds)]
+
+    def confirm_create_world(self):
+        if self.new_world_seed:
+            try:
+                seed_val = int(self.new_world_seed)
+            except ValueError:
+                seed_val = hash(self.new_world_seed) & 0x7FFFFFFF
+        else:
+            seed_val = random.randrange(1 << 30)
+
+        name = self.new_world_name.strip() or "New World"
+        mode = self.new_world_mode
+        preset = self.new_world_preset
+
+        meta = self.world_mgr.create_world_entry(name, mode, preset, seed_val)
+        self.save_path = meta["save_path"]
+        self.current_world_info = meta
+        self.current_preset = preset
+        self.start_game(new_world=True, mode=mode, preset=preset, seed=seed_val)
+        self.notify(f"Created {name}")
 
     # --- States & Menus ------------------------------------------------------------------------
 
@@ -548,7 +673,9 @@ class App:
             pyxel.mouse(True)
 
     def on_title(self):
-        return self.state == "title" or (self.state == "settings" and self.settings_parent == "title")
+        return self.state in ("title", "select_world", "create_world", "multiplayer") or (
+            self.state == "settings" and self.settings_parent == "title"
+        )
 
     def change_preset(self, step=1):
         i = WorldPreset.ALL.index(self.current_preset)
@@ -556,16 +683,39 @@ class App:
 
     def menu_items(self):
         if self.state == "title":
+            return [
+                ("Singleplayer", self.open_select_world),
+                ("Multiplayer", lambda: self.set_state("multiplayer")),
+                ("Settings", self.open_settings),
+                ("Quit Game", pyxel.quit),
+            ]
+        if self.state == "select_world":
+            worlds = self.world_mgr.list_worlds()
             items = []
-            if not self.world_is_fresh:
-                items.append(("Continue", lambda: self.start_game(new_world=False)))
-            items.append(("New World (Survival)", lambda: self.start_game(new_world=True, mode="survival")))
-            items.append(("New World (Creative)", lambda: self.start_game(new_world=True, mode="creative")))
-            preset_name = self.current_preset.capitalize().replace("_", " ")
-            items.append((f"Preset: {preset_name}", self.change_preset))
-            items.append(("Settings", self.open_settings))
-            items.append(("Quit", pyxel.quit))
+            if worlds:
+                items.append(("Play Selected World", self.play_selected_world))
+                if len(worlds) > 1:
+                    items.append(("Switch World (< / >)", self.cycle_selected_world))
+            items.append(("Create New World", self.open_create_world))
+            if worlds:
+                items.append(("Delete World", self.delete_selected_world))
+            items.append(("Cancel", lambda: self.set_state("title")))
             return items
+        if self.state == "create_world":
+            preset_name = self.new_world_preset.capitalize().replace("_", " ")
+            seed_disp = self.new_world_seed if self.new_world_seed else "Random"
+            return [
+                (f"World Name: {self.new_world_name}", self.cycle_new_world_name),
+                (f"Game Mode: {self.new_world_mode.capitalize()}", self.toggle_new_world_mode),
+                (f"World Type: {preset_name}", self.cycle_new_world_preset),
+                (f"Seed: {seed_disp}", self.cycle_new_world_seed),
+                ("Create New World", self.confirm_create_world),
+                ("Cancel", lambda: self.set_state("select_world")),
+            ]
+        if self.state == "multiplayer":
+            return [
+                ("Back", lambda: self.set_state("title")),
+            ]
         if self.state == "paused":
             return [
                 ("Resume", lambda: self.set_state("playing")),
@@ -617,11 +767,17 @@ class App:
             self.set_state("game_over")
             return
 
-        if self.state in ("title", "paused", "settings"):
+        if self.state in ("title", "paused", "settings", "select_world", "create_world", "multiplayer"):
             if self.state == "paused" and pyxel.btnp(pyxel.KEY_ESCAPE):
                 self.set_state("playing")
             elif self.state == "settings" and pyxel.btnp(pyxel.KEY_ESCAPE):
                 self.close_settings()
+            elif self.state == "select_world" and pyxel.btnp(pyxel.KEY_ESCAPE):
+                self.set_state("title")
+            elif self.state == "create_world" and pyxel.btnp(pyxel.KEY_ESCAPE):
+                self.set_state("select_world")
+            elif self.state == "multiplayer" and pyxel.btnp(pyxel.KEY_ESCAPE):
+                self.set_state("title")
             else:
                 self.update_menu()
         elif self.state in ("inventory", "crafting_table"):
@@ -633,6 +789,8 @@ class App:
 
     def update_menu(self):
         items = self.menu_items()
+        if not items:
+            return
         if self.warp_to_button:
             self.warp_to_button = False
             if not self.headless:
@@ -654,20 +812,25 @@ class App:
         if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT) and hovered is not None:
             chosen = hovered
 
-        if self.state in ("settings", "title"):
-            has_steps = (self.state == "settings" and self.menu_index < len(items) - 1) or (
-                self.state == "title" and "Preset:" in items[self.menu_index][0]
+        label = items[self.menu_index][0] if 0 <= self.menu_index < len(items) else ""
+        has_steps = (
+            (self.state == "settings" and self.menu_index < len(items) - 1)
+            or (self.state == "create_world" and (":" in label or "Mode" in label))
+            or (self.state == "select_world" and ("< / >" in label or "Switch" in label))
+        )
+        if has_steps and (pyxel.btnp(pyxel.KEY_RIGHT) or pyxel.btnp(pyxel.KEY_D)):
+            chosen = self.menu_index
+        if has_steps and (pyxel.btnp(pyxel.KEY_LEFT) or pyxel.btnp(pyxel.KEY_A) or pyxel.btnp(pyxel.KEY_Q)):
+            chosen, step = self.menu_index, -1
+        if pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT) and hovered is not None:
+            hover_label = items[hovered][0] if 0 <= hovered < len(items) else ""
+            hovered_has_steps = (
+                (self.state == "settings" and hovered < len(items) - 1)
+                or (self.state == "create_world" and (":" in hover_label or "Mode" in hover_label))
+                or (self.state == "select_world" and ("< / >" in hover_label or "Switch" in hover_label))
             )
-            if has_steps and (pyxel.btnp(pyxel.KEY_RIGHT) or pyxel.btnp(pyxel.KEY_D)):
-                chosen = self.menu_index
-            if has_steps and (pyxel.btnp(pyxel.KEY_LEFT) or pyxel.btnp(pyxel.KEY_A) or pyxel.btnp(pyxel.KEY_Q)):
-                chosen, step = self.menu_index, -1
-            if pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT) and hovered is not None:
-                hovered_has_steps = (self.state == "settings" and hovered < len(items) - 1) or (
-                    self.state == "title" and "Preset:" in items[hovered][0]
-                )
-                if hovered_has_steps:
-                    chosen, step = hovered, -1
+            if hovered_has_steps:
+                chosen, step = hovered, -1
 
         if chosen is not None:
             self.sfx(SND_CLICK)
@@ -678,13 +841,29 @@ class App:
             except TypeError:
                 cb()
 
+    def get_title_y(self):
+        s = self.get_ui_scale()
+        items = self.menu_items()
+        h, spacing = 13 * s, 3 * s
+        total_buttons_h = len(items) * (h + spacing) - spacing
+        title_h = 16 * s
+        return max(6 * s, (pyxel.height - (total_buttons_h + title_h)) // 2)
+
     def button_rect(self, i):
         s = self.get_ui_scale()
-        w, h = 140 * s, 13 * s
+        w, h = min(140 * s, pyxel.width - 24 * s), 13 * s
         items = self.menu_items()
         spacing = 3 * s
-        total_h = len(items) * (h + spacing) - spacing
-        y0 = (pyxel.height - total_h) // 2 + 8 * s
+        if self.state == "title":
+            y0 = max(44 * s, pyxel.height // 2 + 4 * s)
+        elif self.state == "select_world":
+            y0 = max(55 * s, pyxel.height // 2 + 6 * s)
+        elif self.state == "multiplayer":
+            title_y = max(8 * s, pyxel.height // 2 - 36 * s)
+            y0 = title_y + 48 * s
+        else:
+            title_y = self.get_title_y()
+            y0 = title_y + 16 * s
         return (pyxel.width - w) // 2, y0 + i * (h + spacing), w, h
 
     def button_at(self, mx, my, count):
@@ -706,9 +885,6 @@ class App:
 
     def update_game_over(self):
         rx, ry, rw, rh = self.game_over_button_rect()
-        if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT) and rx <= pyxel.mouse_x < rx + rw and ry <= pyxel.mouse_y < ry + rh:
-            self.sfx(SND_CLICK)
-            self.respawn_player()
         if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT) and rx <= pyxel.mouse_x < rx + rw and ry <= pyxel.mouse_y < ry + rh:
             self.sfx(SND_CLICK)
             self.respawn_player()
@@ -747,21 +923,26 @@ class App:
         self.update_look()
         self.update_hotbar_keys()
 
-        # Deterministic 20 Hz fixed clock advancement
+        # 1. Update player physics every frame at the full display framerate (smooth at ~180 FPS)
+        events = self.player.update(self.world, dt)
+        for event in events:
+            if event == "jump":
+                self.sfx(SND_JUMP)
+            elif event == "step":
+                self.sfx(SND_STEP)
+            elif event == "splash":
+                self.sfx(SND_SPLASH)
+            elif event == "hurt":
+                self.sfx(SND_HURT)
+
+        # 2. Deterministic 20 Hz fixed clock advancement for world simulation & metabolism
         def tick_logic(world_tick):
             self.time_of_day = self.clock.time_of_day
             self.invulnerability.tick()
 
-            events = self.player.update(self.world, TICK_DURATION)
-            for event in events:
-                if event == "jump":
-                    self.sfx(SND_JUMP)
-                elif event == "step":
-                    self.sfx(SND_STEP)
-                elif event == "splash":
-                    self.sfx(SND_SPLASH)
-                elif event == "hurt":
-                    self.sfx(SND_HURT)
+            metab_events = self.player.tick_metabolism()
+            if "hurt" in metab_events:
+                self.sfx(SND_HURT)
 
             # Mobs update
             daylight = (math.sin(self.time_of_day * 2 * math.pi) + 1.0) * 0.5
@@ -1050,10 +1231,17 @@ class App:
         s = self.get_ui_scale()
         if self.state == "title":
             self.draw_title()
+        elif self.state == "select_world":
+            self.draw_select_world()
+        elif self.state == "create_world":
+            self.draw_create_world()
+        elif self.state == "multiplayer":
+            self.draw_multiplayer()
         elif self.state in ("paused", "settings"):
             self.dim_screen()
             title = "Settings" if self.state == "settings" else "Game paused"
-            self.center_text(pyxel.height // 2 - 28 * s, title, 7, scale=s)
+            title_y = self.get_title_y()
+            self.center_text(title_y, title, 7, shadow=True, scale=s)
             self.draw_menu()
         elif self.state == "game_over":
             self.draw_game_over()
@@ -1112,16 +1300,73 @@ class App:
 
     def draw_title(self):
         cx = pyxel.width // 2
-        cy = pyxel.height // 2
         s = self.get_ui_scale()
         logo_scale = 5 * s
+        y0 = max(44 * s, pyxel.height // 2 + 4 * s)
+        logo_y = y0 - 42 * s
+        subtitle_y = y0 - 14 * s
         pyxel.pal(7, 0)
-        pyxel.blt(cx, cy - 50 * s + 3 * s, 1, 0, 0, 28, 6, colkey=0, scale=logo_scale)
+        pyxel.blt(cx, logo_y + 3 * s, 1, 0, 0, 28, 6, colkey=0, scale=logo_scale)
         pyxel.pal()
-        pyxel.blt(cx, cy - 50 * s, 1, 0, 0, 28, 6, colkey=0, scale=logo_scale)
-        self.center_text(cy - 28 * s, "Voxel Sandbox & Survival", 7, shadow=True, scale=s)
+        pyxel.blt(cx, logo_y, 1, 0, 0, 28, 6, colkey=0, scale=logo_scale)
+        self.center_text(subtitle_y, "Voxel Sandbox & Survival", 7, shadow=True, scale=s)
         self.draw_menu()
-        self.shadow_text(2 * s, pyxel.height - 8 * s, f"Seed {self.world.seed}", 13, scale=s)
+        self.shadow_text(2 * s, pyxel.height - 8 * s, "PyCraft GPU Edition", 13, scale=s)
+
+    def draw_select_world(self):
+        self.dim_screen()
+        s = self.get_ui_scale()
+        title_y = max(8 * s, pyxel.height // 2 - 70 * s)
+        self.center_text(title_y, "Select World", 7, shadow=True, scale=s)
+
+        worlds = self.world_mgr.list_worlds()
+        card_w = min(180 * s, pyxel.width - 24 * s)
+        card_h = 36 * s
+        card_x = (pyxel.width - card_w) // 2
+        card_y = title_y + 14 * s
+
+        if worlds:
+            idx = max(0, min(self.selected_world_idx, len(worlds) - 1))
+            w = worlds[idx]
+            pyxel.dither(0.85)
+            pyxel.rect(card_x, card_y, card_w, card_h, 1)
+            pyxel.dither(1.0)
+            pyxel.rectb(card_x, card_y, card_w, card_h, 10)
+
+            name_str = f"[{idx + 1}/{len(worlds)}] {w['name']}"
+            self.draw_text(card_x + 6 * s, card_y + 4 * s, name_str, 10, scale=s)
+
+            mode_str = w.get("mode", "survival").capitalize()
+            preset_str = w.get("preset", "standard").capitalize().replace("_", " ")
+            details = f"Mode: {mode_str} | Preset: {preset_str}"
+            self.draw_text(card_x + 6 * s, card_y + 15 * s, details, 7, scale=s)
+
+            seed_str = f"Seed: {w.get('seed', 0)}"
+            self.draw_text(card_x + 6 * s, card_y + 25 * s, seed_str, 13, scale=s)
+        else:
+            pyxel.dither(0.85)
+            pyxel.rect(card_x, card_y, card_w, card_h, 1)
+            pyxel.dither(1.0)
+            pyxel.rectb(card_x, card_y, card_w, card_h, 13)
+            self.center_text(card_y + 14 * s, "No saved worlds found.", 7, scale=s)
+
+        self.draw_menu()
+
+    def draw_create_world(self):
+        self.dim_screen()
+        s = self.get_ui_scale()
+        title_y = self.get_title_y()
+        self.center_text(title_y, "Create New World", 7, shadow=True, scale=s)
+        self.draw_menu()
+
+    def draw_multiplayer(self):
+        self.dim_screen()
+        s = self.get_ui_scale()
+        title_y = max(8 * s, pyxel.height // 2 - 36 * s)
+        self.center_text(title_y, "Play Multiplayer", 7, shadow=True, scale=s)
+        self.center_text(title_y + 18 * s, "Multiplayer is coming soon!", 10, scale=s)
+        self.center_text(title_y + 30 * s, "LAN & Dedicated Servers in development.", 13, scale=s)
+        self.draw_menu()
 
     def draw_menu(self):
         s = self.get_ui_scale()

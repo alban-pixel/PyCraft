@@ -138,7 +138,19 @@ class Player:
             self.mode = "survival"
             self.flying = False
 
-    def update(self, world, dt):
+    def tick_metabolism(self):
+        """Process 1 tick (20 Hz) of metabolism."""
+        events = set()
+        if self.mode == "survival":
+            healed, damaged = self.metabolism.tick()
+            if healed > 0:
+                self.health = self.metabolism.health
+            if damaged > 0:
+                self.health = self.metabolism.health
+                events.add("hurt")
+        return events
+
+    def update(self, world, dt, tick_metabolism=False):
         """Move the player for one frame. Returns the set of sound events."""
         events = set()
         self.prev_pos = list(self.pos)
@@ -149,13 +161,8 @@ class Player:
             self.swing_progress = max(0.0, self.swing_progress - dt * 4.5)
 
         # Metabolism tick in survival mode
-        if self.mode == "survival":
-            healed, damaged = self.metabolism.tick()
-            if healed > 0:
-                self.health = self.metabolism.health
-            if damaged > 0:
-                self.health = self.metabolism.health
-                events.add("hurt")
+        if tick_metabolism:
+            events.update(self.tick_metabolism())
 
         # Flying toggle (Creative mode only)
         if _btnp(pyxel.KEY_F):

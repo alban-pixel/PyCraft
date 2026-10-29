@@ -124,8 +124,10 @@ def test_app_fluid_tick_in_game(headless_app):
     app.set_state("playing")
     app.player.health = 20
 
-    # Place water block
-    px, py, pz = int(app.player.pos[0]), int(app.player.pos[1]) + 5, int(app.player.pos[2])
+    # Place water block within world bounds
+    px = max(1, min(int(app.player.pos[0]), app.world.size[0] - 2))
+    py = max(1, min(int(app.player.pos[1]) + 1, app.world.size[1] - 2))
+    pz = max(1, min(int(app.player.pos[2]), app.world.size[2] - 2))
     app.world.set(px, py, pz, blocks.WATER)
     app.world.trigger_water(px, py, pz)
     assert (px, py, pz) in app.world.active_water
