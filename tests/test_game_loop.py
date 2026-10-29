@@ -137,3 +137,40 @@ def test_app_fluid_tick_in_game(headless_app):
     app.update()
     # Water should have ticked and reset fluid_timer
     assert app.fluid_timer < 0.5
+
+
+def test_app_save_with_inhomogeneous_tool_durability(headless_app, tmp_path):
+    app = headless_app
+    app.set_state("playing")
+    app.save_dir = str(tmp_path)
+    app.world_name = "test_world"
+
+    # Set up inhomogeneous hotbar: some 2-element slots, some 3-element slots (with durability)
+    app.hotbar = [
+        [blocks.ITEM_IRON_PICKAXE, 1, 240],
+        [blocks.DIRT, 32],
+        [blocks.ITEM_DIAMOND_SWORD, 1, 1500],
+        [0, 0],
+        [0, 0],
+        [0, 0],
+        [0, 0],
+        [0, 0],
+        [0, 0],
+    ]
+    app.inventory = [[0, 0]] * 27
+    app.inventory[0] = [blocks.ITEM_WOOD_PICKAXE, 1, 45]
+    app.inventory[1] = [blocks.COBBLESTONE, 64]
+
+    # Verify snapshot succeeds without ValueError (inhomogeneous shape)
+    snap = app.snapshot()
+    assert snap["hotbar"].shape == (9, 3)
+    assert snap["inventory"].shape == (27, 3)
+    assert snap["hotbar"][0].tolist() == [blocks.ITEM_IRON_PICKAXE, 1, 240]
+    assert snap["hotbar"][1].tolist() == [blocks.DIRT, 32, 0]
+
+    # Test save execution
+    app.save()
+
+    # Reset state to title
+    app.set_state("title")
+

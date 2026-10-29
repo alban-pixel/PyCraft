@@ -591,9 +591,10 @@ class App:
     def snapshot(self):
         p = self.player
         return {
-            "player": np.array(p.pos + [p.yaw, p.pitch, float(p.flying), float(p.health)]),
+            "player": np.array(p.pos + [p.yaw, p.pitch, float(p.flying), float(p.health)], dtype=np.float64),
             "time_of_day": self.time_of_day,
-            "hotbar": np.array(self.hotbar),
+            "hotbar": np.array([[int(s[0]), int(s[1]), int(s[2]) if len(s) > 2 else 0] for s in self.hotbar], dtype=np.int32),
+            "inventory": np.array([[int(s[0]), int(s[1]), int(s[2]) if len(s) > 2 else 0] for s in self.inventory], dtype=np.int32),
             "selected": self.selected,
             "mode": self.player.mode,
         }
@@ -644,6 +645,19 @@ class App:
                         self.hotbar.append([int(s), 64])
                 while len(self.hotbar) < 9:
                     self.hotbar.append([0, 0])
+            if "inventory" in data:
+                inv = data["inventory"]
+                self.inventory = []
+                for s in inv:
+                    if hasattr(s, "__len__") and len(s) >= 2:
+                        slot_item = [int(s[0]), int(s[1])]
+                        if len(s) >= 3 and int(s[2]) > 0:
+                            slot_item.append(int(s[2]))
+                        self.inventory.append(slot_item)
+                    else:
+                        self.inventory.append([int(s), 64])
+                while len(self.inventory) < 27:
+                    self.inventory.append([0, 0])
             self.selected = int(data.get("selected", 0))
             self.clock.reset(int(self.time_of_day * TICKS_PER_DAY))
             self.renderer.set_world(self.world, spawn_pos=self.player.pos, render_dist=self.settings.get("render_distance", 4))
