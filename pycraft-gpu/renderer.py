@@ -212,7 +212,7 @@ class Renderer:
         width, height = self.size
         self.projection = perspective(self.fov, width / height, 0.05, 300)
 
-    def set_world(self, world):
+    def set_world(self, world, spawn_pos=None):
         """Use a new world (after loading or generating one) and build all of its chunks."""
         self.world = world
         sx, sy, sz = world.size
@@ -224,10 +224,67 @@ class Renderer:
                     chunk[1].release()
             self.chunks = {}
             self.chunk_centers = {}
-            for cx in range(math.ceil(sx / CHUNK)):
-                for cz in range(math.ceil(sz / CHUNK)):
-                    self.chunk_centers[(cx, cz)] = (cx * CHUNK + CHUNK / 2, sy / 2, cz * CHUNK + CHUNK / 2)
+
+            if getattr(world, "infinite", False):
+                sp_x = spawn_pos[0] if spawn_pos else sx / 2
+                sp_z = spawn_pos[2] if spawn_pos else sz / 2
+                pcx = int(math.floor(sp_x / CHUNK))
+                pcz = int(math.floor(sp_z / CHUNK))
+                r = 4
+                for dcx in range(-r, r + 1):
+                    for dcz in range(-r, r + 1):
+                        if dcx * dcx + dcz * dcz <= (r + 0.5) ** 2:
+                            cx, cz = pcx + dcx, pcz + dcz
+                            self.chunk_centers[(cx, cz)] = (cx * CHUNK + CHUNK / 2, sy / 2, cz * CHUNK + CHUNK / 2)
+                            self._build_chunk(cx, cz)
+            else:
+                for cx in range(math.ceil(sx / CHUNK)):
+                    for cz in range(math.ceil(sz / CHUNK)):
+                        self.chunk_centers[(cx, cz)] = (cx * CHUNK + CHUNK / 2, sy / 2, cz * CHUNK + CHUNK / 2)
+                        self._build_chunk(cx, cz)
+
+    def update_streaming(self, player_x, player_z, render_dist=4):
+        """Dynamically stream chunks around the player position."""
+        if not getattr(self.world, "infinite", False):
+            return
+
+        pcx = int(math.floor(player_x / CHUNK))
+        pcz = int(math.floor(player_z / CHUNK))
+        sy = getattr(self.world, "sy", 64)
+
+        needed = set()
+        r2 = (render_dist + 0.5) ** 2
+        for dcx in range(-render_dist, render_dist + 1):
+            for dcz in range(-render_dist, render_dist + 1):
+                if dcx * dcx + dcz * dcz <= r2:
+                    needed.add((pcx + dcx, pcz + dcz))
+
+        built_count = 0
+        with self.ctx:
+            for key in needed:
+                if key not in self.chunks:
+                    cx, cz = key
+                    self.chunk_centers[key] = (cx * CHUNK + CHUNK / 2, sy / 2, cz * CHUNK + CHUNK / 2)
                     self._build_chunk(cx, cz)
+                    built_count += 1
+                    if built_count >= 2:
+                        break
+
+            unload_dist = render_dist + 2
+            unload_r2 = unload_dist * unload_dist
+            to_remove = []
+            for (cx, cz), chunk in self.chunks.items():
+                dcx = cx - pcx
+                dcz = cz - pcz
+                if dcx * dcx + dcz * dcz > unload_r2:
+                    to_remove.append((cx, cz))
+
+            for key in to_remove:
+                chunk = self.chunks.pop(key, None)
+                if chunk:
+                    chunk[0].release()
+                    chunk[1].release()
+                self.chunk_centers.pop(key, None)
 
     def set_environment(self, light, zenith, horizon, sun_dir, fog_color, fog_start, fog_end):
         self.light = light
@@ -255,7 +312,10 @@ class Renderer:
         """Build the triangles for every visible block face in the chunk (NumPy, no Python loops)."""
         x0, z0 = cx * CHUNK, cz * CHUNK
         # Region of the padded array: the chunk plus a 1-block border of neighbors
-        region = self.world.blocks[x0:x0 + CHUNK + 2, :, z0:z0 + CHUNK + 2]
+        if hasattr(self.world, "get_mesh_region"):
+            region = self.world.get_mesh_region(cx, cz)
+        else:
+            region = self.world.blocks[x0:x0 + CHUNK + 2, :, z0:z0 + CHUNK + 2]
         core = region[1:-1, 1:-1, 1:-1]
         nx, ny, nz = core.shape
         water_above = region[1:-1, 2:, 1:-1] == WATER
@@ -405,6 +465,7 @@ class Renderer:
 
     def render(self, screen, eye, forward, target=None, entities=None, mining_target=None, crack_stage=-1):
         """Draw the world seen from eye into screen (a (height, width) uint8 view of pyxel.screen)."""
+        self.update_streaming(eye[0], eye[2], render_dist=4)
         vp = self.projection @ look_at(eye, forward)
         mvp = vp.T.copy().tobytes()
         fog_color, fog_start, fog_end = self.fog

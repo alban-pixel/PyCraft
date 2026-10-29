@@ -13,11 +13,19 @@ SEA_LEVEL = 22  # water fills every empty block below this height that is open t
 
 
 class World:
-    def __init__(self, size=(128, 64, 128), seed=1, generate=True, preset=WorldPreset.STANDARD):
+    def __init__(self, size=(128, 64, 128), seed=1, generate=True, preset=WorldPreset.STANDARD, infinite=None):
         self.size = tuple(int(s) for s in size)
         self.seed = parse_seed(seed)
         self.preset = preset
         sx, sy, sz = self.size
+        self.sy = sy
+        if infinite is None:
+            self.infinite = (self.size == (128, 64, 128))
+        else:
+            self.infinite = bool(infinite)
+
+        self.generator = ProceduralGenerator(seed=self.seed, preset=self.preset)
+        self.chunks = {}
         # One block of air padding on every side, so meshing never goes out of bounds.
         # World block (x, y, z) is stored at blocks[x + 1, y + 1, z + 1].
         self.blocks = np.zeros((sx + 2, sy + 2, sz + 2), dtype=np.uint8)
@@ -32,15 +40,33 @@ class World:
         return self.blocks[1:-1, 1:-1, 1:-1]
 
     def inside(self, x, y, z):
+        if self.infinite:
+            return 0 <= y < self.sy
         sx, sy, sz = self.size
         return 0 <= x < sx and 0 <= y < sy and 0 <= z < sz
 
     def get(self, x, y, z):
-        return int(self.blocks[x + 1, y + 1, z + 1]) if self.inside(x, y, z) else AIR
+        if not self.inside(x, y, z):
+            return AIR
+        sx, sy, sz = self.size
+        if 0 <= x < sx and 0 <= z < sz:
+            return int(self.blocks[x + 1, y + 1, z + 1])
+        cx, cz = x // 16, z // 16
+        chunk = self.get_chunk(cx, cz)
+        return int(chunk[x % 16, y, z % 16])
 
     def set(self, x, y, z, block):
-        if self.inside(x, y, z):
+        if not self.inside(x, y, z):
+            return
+        sx, sy, sz = self.size
+        if 0 <= x < sx and 0 <= z < sz:
             self.blocks[x + 1, y + 1, z + 1] = block
+        cx, cz = x // 16, z // 16
+        if (cx, cz) in self.chunks:
+            self.chunks[(cx, cz)][x % 16, y, z % 16] = block
+        elif not (0 <= x < sx and 0 <= z < sz):
+            chunk = self.get_chunk(cx, cz)
+            chunk[x % 16, y, z % 16] = block
 
     def trigger_water(self, x, y, z):
         """Wake up fluid simulation around position (x, y, z)."""
@@ -74,12 +100,125 @@ class World:
         self.active_water = next_active
         return modified_chunks
 
-    def is_solid(self, x, y, z):
-        # Invisible walls around the world and a solid floor, so the player can't fall out
+    def get_chunk(self, cx, cz):
+        key = (int(cx), int(cz))
+        if key in self.chunks:
+            return self.chunks[key]
+
         sx, sy, sz = self.size
-        if x < 0 or z < 0 or x >= sx or z >= sz or y < 0:
-            return True
-        return y < sy and SOLID[self.blocks[x + 1, y + 1, z + 1]]
+        if 0 <= cx < sx // 16 and 0 <= cz < sz // 16:
+            chunk = self.inner[cx * 16:(cx + 1) * 16, :, cz * 16:(cz + 1) * 16]
+            self.chunks[key] = chunk
+            return chunk
+
+        chunk = self._generate_chunk(cx, cz)
+        self.chunks[key] = chunk
+        return chunk
+
+    def _generate_chunk(self, cx, cz):
+        sy = self.sy
+        if self.preset == WorldPreset.SUPERFLAT:
+            chunk = np.zeros((16, sy, 16), dtype=np.uint8)
+            chunk[:, 0, :] = BEDROCK
+            chunk[:, 1:3, :] = DIRT
+            chunk[:, 3, :] = GRASS
+            return chunk
+
+        if self.preset != WorldPreset.STANDARD:
+            return self.generator.generate_column_blocks(cx, cz, height=sy)
+
+        chunk = np.zeros((16, sy, 16), dtype=np.uint8)
+        rng = np.random.default_rng(hash((self.seed, cx, cz)) & 0x7FFFFFFF)
+
+        heights = np.zeros((16, 16), dtype=int)
+        for lx in range(16):
+            x = cx * 16 + lx
+            for lz in range(16):
+                z = cz * 16 + lz
+                n = pyxel.noise(x * 0.022, z * 0.022) + 0.5 * pyxel.noise(x * 0.07 + 100, z * 0.07 + 100)
+                heights[lx, lz] = min(max(int(SEA_LEVEL + 3 + n * 14), 4), sy - 12)
+
+        ys = np.arange(sy)[None, :, None]
+        h = heights[:, None, :]
+        dirt_depth = rng.integers(3, 5, (16, 1, 16))
+        chunk[ys < h] = STONE
+        chunk[(ys >= h - dirt_depth) & (ys < h)] = DIRT
+        top = (ys == h - 1)
+        beach = (h <= SEA_LEVEL + 1)
+        chunk[top & ~beach] = GRASS
+        chunk[(ys >= h - 3) & (ys < h) & beach] = SAND
+
+        roll = rng.random(chunk.shape)
+        stone = chunk == STONE
+        chunk[stone & (roll < 0.014)] = COAL_ORE
+        chunk[stone & (roll > 0.991) & (ys < 28)] = IRON_ORE
+        chunk[stone & (roll > 0.996) & (ys < 18)] = GOLD_ORE
+        chunk[stone & (roll > 0.9982) & (ys < 12)] = DIAMOND_ORE
+
+        snow_caps = top & (h > 33)
+        chunk[snow_caps] = SNOW
+
+        chunk[:, 0, :] = BEDROCK
+        chunk[(ys >= h) & (ys < SEA_LEVEL)] = WATER
+
+        for _ in range(rng.integers(0, 3)):
+            tx, tz = int(rng.integers(2, 14)), int(rng.integers(2, 14))
+            th = heights[tx, tz]
+            if chunk[tx, th - 1, tz] == GRASS and chunk[tx, th, tz] == AIR:
+                trunk = int(rng.integers(4, 6))
+                for dy in range(-2, 2):
+                    rad = 2 if dy < 0 else 1
+                    for dx in range(-rad, rad + 1):
+                        for dz in range(-rad, rad + 1):
+                            if abs(dx) == rad and abs(dz) == rad and rng.random() < 0.6:
+                                continue
+                            ly = th + trunk + dy
+                            if 0 <= tx + dx < 16 and 0 <= tz + dz < 16 and 0 <= ly < sy:
+                                if chunk[tx + dx, ly, tz + dz] == AIR:
+                                    chunk[tx + dx, ly, tz + dz] = LEAVES
+                for y in range(th, min(sy, th + trunk)):
+                    chunk[tx, y, tz] = LOG
+                chunk[tx, th - 1, tz] = DIRT
+
+        return chunk
+
+    def get_mesh_region(self, cx, cz):
+        sx, sy, sz = self.size
+        x0, z0 = cx * 16, cz * 16
+        if not self.infinite and 0 <= cx < sx // 16 and 0 <= cz < sz // 16:
+            return self.blocks[x0:x0 + 18, :, z0:z0 + 18]
+
+        region = np.zeros((18, sy + 2, 18), dtype=np.uint8)
+        center = self.get_chunk(cx, cz)
+        region[1:17, 1:sy + 1, 1:17] = center
+
+        left = self.get_chunk(cx - 1, cz)
+        region[0, 1:sy + 1, 1:17] = left[15, :, :]
+
+        right = self.get_chunk(cx + 1, cz)
+        region[17, 1:sy + 1, 1:17] = right[0, :, :]
+
+        back = self.get_chunk(cx, cz - 1)
+        region[1:17, 1:sy + 1, 0] = back[:, :, 15]
+
+        front = self.get_chunk(cx, cz + 1)
+        region[1:17, 1:sy + 1, 17] = front[:, :, 0]
+
+        region[:, 0, :] = BEDROCK
+        return region
+
+    def is_solid(self, x, y, z):
+        if not self.infinite:
+            sx, sy, sz = self.size
+            if x < 0 or z < 0 or x >= sx or z >= sz or y < 0:
+                return True
+            return bool(y < sy and SOLID[self.blocks[x + 1, y + 1, z + 1]])
+        else:
+            if y < 0:
+                return True
+            if y >= self.sy:
+                return False
+            return bool(SOLID[self.get(x, y, z)])
 
     # --- Generation ----------------------------------------------------------------------------
 
@@ -187,7 +326,20 @@ class World:
     # --- Saving --------------------------------------------------------------------------------
 
     def save(self, path, **extra):
-        np.savez_compressed(path, blocks=self.inner, seed=self.seed, preset=self.preset, **extra)
+        extra_chunks = {}
+        sx, sy, sz = self.size
+        for (cx, cz), cdata in self.chunks.items():
+            if not (0 <= cx < sx // 16 and 0 <= cz < sz // 16):
+                extra_chunks[f"chunk_{cx}_{cz}"] = cdata
+        np.savez_compressed(
+            path,
+            blocks=self.inner,
+            seed=self.seed,
+            preset=self.preset,
+            infinite=self.infinite,
+            **extra_chunks,
+            **extra
+        )
 
     @classmethod
     def load(cls, path):
@@ -196,8 +348,14 @@ class World:
             data = {key: f[key] for key in f.files}
         blocks = data.pop("blocks")
         preset = str(data.pop("preset", WorldPreset.STANDARD))
-        world = cls(blocks.shape, int(data.pop("seed")), generate=False, preset=preset)
+        infinite = bool(data.pop("infinite", True)) if "infinite" in data else None
+        world = cls(blocks.shape, int(data.pop("seed")), generate=False, preset=preset, infinite=infinite)
         world.inner[...] = blocks
+        for key in list(data.keys()):
+            if key.startswith("chunk_"):
+                parts = key.split("_")
+                cx, cz = int(parts[1]), int(parts[2])
+                world.chunks[(cx, cz)] = data.pop(key)
         return world, data
 
     # --- Aiming --------------------------------------------------------------------------------

@@ -74,6 +74,11 @@ PICKAXE_EFFECTIVE_BLOCKS = {
     STONE, COBBLESTONE, BRICK, IRON_ORE, GOLD_ORE, COAL_ORE, DIAMOND_ORE, OBSIDIAN, ICE
 }
 
+# Blocks that strictly require a pickaxe to be harvested
+TOOL_REQUIRED_BLOCKS = {
+    STONE, COBBLESTONE, BRICK, IRON_ORE, GOLD_ORE, COAL_ORE, DIAMOND_ORE, OBSIDIAN
+}
+
 
 class MiningEngine:
     """Calculates tick-by-tick voxel destruction progress, penalties, and tool durability."""
@@ -82,6 +87,21 @@ class MiningEngine:
     def is_tool_adequate(tool_id: int, block_id: int) -> bool:
         """True if tool is the appropriate type for this block category."""
         if tool_id in TOOL_TIER_SPEEDS and block_id in PICKAXE_EFFECTIVE_BLOCKS:
+            return True
+        return False
+
+    @staticmethod
+    def can_harvest_block(tool_id: int, block_id: int) -> bool:
+        """True if block can be harvested by hand or with the currently held tool."""
+        if block_id not in TOOL_REQUIRED_BLOCKS:
+            return True
+        if tool_id == ITEM_DIAMOND_PICKAXE:
+            return True
+        if tool_id == ITEM_IRON_PICKAXE and block_id != OBSIDIAN:
+            return True
+        if tool_id == ITEM_STONE_PICKAXE and block_id not in (OBSIDIAN, DIAMOND_ORE, GOLD_ORE):
+            return True
+        if tool_id == ITEM_WOOD_PICKAXE and block_id in (STONE, COBBLESTONE, BRICK, COAL_ORE):
             return True
         return False
 
@@ -103,8 +123,9 @@ class MiningEngine:
         if hardness == 0.0:
             return 1.0  # Instabreak (Instant)
 
+        can_harvest = cls.can_harvest_block(tool_id, block_id)
         is_adequate = cls.is_tool_adequate(tool_id, block_id)
-        speed = TOOL_TIER_SPEEDS.get(tool_id, 1.0)
+        speed = TOOL_TIER_SPEEDS.get(tool_id, 1.0) if is_adequate else 1.0
 
         # Efficiency enchantment bonus: +(N^2 + 1)
         if efficiency_level > 0 and is_adequate:
@@ -116,8 +137,8 @@ class MiningEngine:
         if not on_ground:
             speed *= 0.20
 
-        # Divisor C: 30 if adequate tool, 100 otherwise
-        c = 30.0 if is_adequate else 100.0
+        # Divisor C: 30 if player can harvest the block, 100 if cannot harvest (e.g. mining stone with bare hands)
+        c = 30.0 if can_harvest else 100.0
 
         return speed / (hardness * c)
 

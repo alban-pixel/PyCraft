@@ -9,7 +9,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..",
 from mining import (
     MiningEngine, BLOCK_HARDNESS_TABLE, TOOL_DURABILITY_TABLE,
     ITEM_WOOD_PICKAXE, ITEM_STONE_PICKAXE, ITEM_DIAMOND_PICKAXE, ITEM_IRON_SWORD,
-    BEDROCK, STONE, DIRT, SLIME, OBSIDIAN
+    BEDROCK, STONE, DIRT, SLIME, OBSIDIAN, CRAFTING_TABLE
 )
 
 
@@ -26,6 +26,14 @@ def test_slime_instamine():
     ticks, instamine = MiningEngine.calculate_break_ticks(0, SLIME)
     assert ticks == 1
     assert instamine is True
+
+
+def test_crafting_table_break_ticks():
+    # Crafting table hardness = 2.5
+    # Bare hand: S=1.0, can_harvest=True, C=30 -> P_tick = 1.0 / (2.5 * 30) = 1/75 -> exactly 75 ticks = 3.75s!
+    ticks, insta = MiningEngine.calculate_break_ticks(0, CRAFTING_TABLE)
+    assert ticks == 75
+    assert insta is False
 
 
 def test_stone_mining_ticks_progression():

@@ -23,8 +23,10 @@ def _btnp(key):
 HALF_WIDTH = 0.3
 HEIGHT = 1.8
 EYE_HEIGHT = 1.62
+SNEAK_EYE_HEIGHT = 1.27
 WALK_SPEED = 4.3
 SPRINT_SPEED = 6.5
+SNEAK_SPEED = 1.3
 SWIM_SPEED = 2.6
 FLY_SPEED = 11.0
 GRAVITY = 28.0
@@ -44,10 +46,16 @@ class Player:
         self.pitch = 0.0  # degrees, positive looks up
         self.on_ground = False
         self.flying = False
+        self.sneaking = False
         self.in_water = False
         self.against_wall = False
         self.walked = 0.0
         self.mode = mode  # "survival" or "creative"
+
+        # Timers for double-tap detection
+        self.space_double_tap_timer = 0.0
+        self.w_double_tap_timer = 0.0
+        self.is_sprinting = False
 
         # Health & Survival
         self.max_health = 20
@@ -68,7 +76,8 @@ class Player:
         return self.health <= 0
 
     def eye(self):
-        return (self.pos[0], self.pos[1] + EYE_HEIGHT, self.pos[2])
+        h = SNEAK_EYE_HEIGHT if self.sneaking else EYE_HEIGHT
+        return (self.pos[0], self.pos[1] + h, self.pos[2])
 
     def forward(self):
         yaw, pitch = math.radians(self.yaw), math.radians(self.pitch)
@@ -164,11 +173,15 @@ class Player:
         if tick_metabolism:
             events.update(self.tick_metabolism())
 
-        # Flying toggle (Creative mode only)
-        if _btnp(pyxel.KEY_F):
-            if self.mode == "creative":
-                self.flying = not self.flying
-                self.vel_y = 0.0
+        # Double-tap Space for Creative flight toggle (< 0.30s)
+        self.space_double_tap_timer = max(0.0, self.space_double_tap_timer - dt)
+        if _btnp(pyxel.KEY_SPACE):
+            self.trigger_space_tap()
+
+        # Legacy shortcut fallback (F) for testing/convenience
+        if _btnp(pyxel.KEY_F) and self.mode == "creative":
+            self.flying = not self.flying
+            self.vel_y = 0.0
 
         px, py, pz = self.pos
         was_in_water = self.in_water
@@ -190,20 +203,38 @@ class Player:
                 self.air = min(self.max_air, self.air + dt * 4.0)
                 self.drown_timer = 0.0
 
+        # Double-tap W/Z for Sprint trigger (< 0.30s)
+        self.w_double_tap_timer = max(0.0, self.w_double_tap_timer - dt)
+        forward_btnp = _btnp(pyxel.KEY_W) or _btnp(pyxel.KEY_Z)
+        forward_btn = _btn(pyxel.KEY_W) or _btn(pyxel.KEY_Z)
+        if forward_btnp:
+            if self.w_double_tap_timer > 0.0 and (self.mode == "creative" or self.metabolism.can_sprint):
+                self.is_sprinting = True
+                self.w_double_tap_timer = 0.0
+            else:
+                self.w_double_tap_timer = 0.30
+        if not forward_btn:
+            self.is_sprinting = False
+
+        # Sneaking state (holding Left Shift while on ground)
+        self.sneaking = _btn(pyxel.KEY_LSHIFT) and self.on_ground and not self.flying and not self.in_water
+
         # Horizontal movement relative to look orientation
         yaw = math.radians(self.yaw)
         fx, fz = math.sin(yaw), math.cos(yaw)
         rx, rz = -fz, fx
-        move_f = (_btn(pyxel.KEY_W) or _btn(pyxel.KEY_Z)) - _btn(pyxel.KEY_S)
+        move_f = forward_btn - _btn(pyxel.KEY_S)
         move_r = _btn(pyxel.KEY_D) - (_btn(pyxel.KEY_A) or _btn(pyxel.KEY_Q))
         dx, dz = fx * move_f + rx * move_r, fz * move_f + rz * move_r
         length = math.hypot(dx, dz)
-        is_sprint = _btn(pyxel.KEY_LCTRL) and (self.mode == "creative" or self.metabolism.can_sprint)
+        is_sprint = (self.is_sprinting or _btn(pyxel.KEY_LCTRL)) and (self.mode == "creative" or self.metabolism.can_sprint) and not self.sneaking
         if length:
             if self.flying:
                 speed = FLY_SPEED
             elif self.in_water:
                 speed = SWIM_SPEED
+            elif self.sneaking:
+                speed = SNEAK_SPEED
             elif is_sprint:
                 speed = SPRINT_SPEED
                 if self.mode == "survival":
@@ -211,6 +242,13 @@ class Player:
             else:
                 speed = WALK_SPEED
             dx, dz = dx / length * speed * dt, dz / length * speed * dt
+
+        # Sneak Edge-Guard (prevent stepping off ledges/void)
+        if self.sneaking and self.on_ground and not self.flying:
+            if dx != 0 and not self._has_ground_support(world, px + dx, py, pz):
+                dx = 0.0
+            if dz != 0 and not self._has_ground_support(world, px, py, pz + dz):
+                dz = 0.0
 
         if self.flying:
             self.vel_y = (_btn(pyxel.KEY_SPACE) - _btn(pyxel.KEY_LSHIFT)) * FLY_SPEED
@@ -236,6 +274,8 @@ class Player:
         was_on_ground = self.on_ground
         hit_x = self._move_axis(world, 0, dx)
         hit_z = self._move_axis(world, 2, dz)
+        if hit_x or hit_z:
+            self.is_sprinting = False
 
         # Auto-step up to 0.60m for slabs/stairs/steps
         if (hit_x or hit_z) and was_on_ground and not self.flying and not self.in_water and (dx != 0 or dz != 0):
@@ -277,10 +317,53 @@ class Player:
                 events.add("step")
         return events
 
+    def trigger_space_tap(self):
+        if self.mode == "creative":
+            if self.space_double_tap_timer > 0.0:
+                self.flying = not self.flying
+                self.vel_y = 0.0
+                self.space_double_tap_timer = 0.0
+            else:
+                self.space_double_tap_timer = 0.30
+
+    def get_current_speed(self):
+        if self.flying:
+            return FLY_SPEED
+        if self.sneaking:
+            return SNEAK_SPEED
+        if self.is_sprinting:
+            return SPRINT_SPEED
+        return WALK_SPEED
+
+    def _has_ground_support(self, world, px, py, pz):
+        """Returns True if there is a solid block beneath the player's feet center."""
+        by = math.floor(py - 0.5)
+        bx = math.floor(px)
+        bz = math.floor(pz)
+        return world.is_solid(bx, by, bz)
+
     def _move_axis(self, world, axis, distance):
         """Move along one axis, then push back out of any block. Returns True on a collision."""
         if distance == 0:
             return False
+
+        # Sneak edge guard: prevent walking off ledges
+        if self.sneaking and self.on_ground and axis in (0, 2):
+            test_px = self.pos[0] + (distance if axis == 0 else 0)
+            test_pz = self.pos[2] + (distance if axis == 2 else 0)
+            if not self._has_ground_support(world, test_px, self.pos[1], test_pz):
+                step = 0.02 if distance > 0 else -0.02
+                curr = self.pos[axis]
+                while (curr + step < self.pos[axis] + distance if distance > 0 else curr + step > self.pos[axis] + distance):
+                    tx = curr + step if axis == 0 else self.pos[0]
+                    tz = curr + step if axis == 2 else self.pos[2]
+                    if self._has_ground_support(world, tx, self.pos[1], tz):
+                        curr += step
+                    else:
+                        break
+                self.pos[axis] = curr
+                return True
+
         self.pos[axis] += distance
         px, py, pz = self.pos
         lo = (px - HALF_WIDTH, py, pz - HALF_WIDTH)

@@ -255,6 +255,7 @@ class App:
         self.craft_grid = [[0, 0] for _ in range(9)]
         self.craft_size = 2  # 2x2 in inventory, 3x3 on table
         self.craft_result = [0, 0]
+        self.cursor_item = [0, 0]  # [item_id, count] held on mouse cursor
 
         # Multi-world selection & creation
         self.selected_world_idx = 0
@@ -267,6 +268,7 @@ class App:
         self.new_world_mode = "survival"
         self.new_world_preset = WorldPreset.STANDARD
         self.new_world_seed = ""
+        self.active_text_field = None  # None, "world_name", or "seed"
         self.current_world_info = None
 
         # Deterministic 20 Hz Clock, Presets & Combat
@@ -500,6 +502,68 @@ class App:
                 if count <= 0:
                     return
 
+    def add_to_container(self, container, item_id, count):
+        """Add items to a container list (hotbar or inventory). Returns amount added."""
+        added = 0
+        for slot in container:
+            if slot[0] == item_id and slot[1] < 64:
+                take = min(64 - slot[1], count)
+                slot[1] += take
+                count -= take
+                added += take
+                if count <= 0:
+                    return added
+        for slot in container:
+            if slot[0] == 0 or slot[1] <= 0:
+                slot[0] = item_id
+                take = min(64, count)
+                slot[1] = take
+                count -= take
+                added += take
+                if count <= 0:
+                    return added
+        return added
+
+    def pick_block(self, block_id):
+        if block_id == 0:
+            return
+        # 1. Hotbar check
+        for i in range(len(self.hotbar)):
+            if self.hotbar[i][0] == block_id and self.hotbar[i][1] > 0:
+                self.selected = i
+                return
+        # 2. Main inventory check -> swap into current hotbar slot
+        for i in range(len(self.inventory)):
+            if self.inventory[i][0] == block_id and self.inventory[i][1] > 0:
+                self.inventory[i], self.hotbar[self.selected] = self.hotbar[self.selected], self.inventory[i]
+                return
+        # 3. Creative mode -> clone stack of 64
+        if self.player.mode == "creative":
+            self.hotbar[self.selected] = [block_id, 64]
+
+    def drop_item(self):
+        slot = self.hotbar[self.selected]
+        if slot[0] != 0 and slot[1] > 0:
+            cnt = slot[1] if pyxel.btn(pyxel.KEY_LCTRL) else 1
+            slot[1] -= cnt
+            dropped_id = slot[0]
+            if slot[1] <= 0:
+                slot[0] = 0
+            self.notify(f"Dropped {get_item_name(dropped_id)} x{cnt}")
+            self.sfx(SND_CLICK)
+
+    def close_inventory(self):
+        # Refund cursor item
+        if self.cursor_item[0] != 0 and self.cursor_item[1] > 0:
+            self.add_to_inventory(self.cursor_item[0], self.cursor_item[1])
+            self.cursor_item = [0, 0]
+        # Refund crafting grid items
+        for slot in self.craft_grid:
+            if slot[0] != 0 and slot[1] > 0:
+                self.add_to_inventory(slot[0], slot[1])
+                slot[0], slot[1] = 0, 0
+        self.set_state("playing")
+
     def snapshot(self):
         p = self.player
         return {
@@ -525,8 +589,9 @@ class App:
             preset = preset or self.current_preset
             seed_val = random.randrange(1 << 30) if seed is None else seed
             self.world = World(seed=seed_val, preset=preset)
-            self.renderer.set_world(self.world)
-            self.player = Player(*self.world.find_spawn(), mode=mode)
+            spawn_pos = self.world.find_spawn()
+            self.player = Player(*spawn_pos, mode=mode)
+            self.renderer.set_world(self.world, spawn_pos=spawn_pos)
             self.hotbar = [[b, 64] for b in DEFAULT_HOTBAR]
             self.inventory = [[0, 0] for _ in range(27)]
             self.selected, self.time_of_day = 0, 0.05
@@ -550,7 +615,7 @@ class App:
                     self.hotbar = [[int(b), 64] for b in hb]
             self.selected = int(data.get("selected", 0))
             self.clock.reset(int(self.time_of_day * TICKS_PER_DAY))
-            self.renderer.set_world(self.world)
+            self.renderer.set_world(self.world, spawn_pos=self.player.pos)
         self.save_data = None
         self.play_time = self.last_save = 0.0
         self.show_help = True
@@ -616,6 +681,12 @@ class App:
         self.world_name_idx = (self.world_name_idx + step) % len(self.world_name_suggestions)
         self.new_world_name = self.world_name_suggestions[self.world_name_idx]
 
+    def focus_world_name(self, step=1):
+        if self.active_text_field == "world_name":
+            self.cycle_new_world_name(step)
+        else:
+            self.active_text_field = "world_name"
+
     def toggle_new_world_mode(self, step=1):
         self.new_world_mode = "creative" if self.new_world_mode == "survival" else "survival"
 
@@ -628,6 +699,12 @@ class App:
         cur = self.new_world_seed
         i = seeds.index(cur) if cur in seeds else 0
         self.new_world_seed = seeds[(i + step) % len(seeds)]
+
+    def focus_world_seed(self, step=1):
+        if self.active_text_field == "seed":
+            self.cycle_new_world_seed(step)
+        else:
+            self.active_text_field = "seed"
 
     def confirm_create_world(self):
         if self.new_world_seed:
@@ -704,11 +781,13 @@ class App:
         if self.state == "create_world":
             preset_name = self.new_world_preset.capitalize().replace("_", " ")
             seed_disp = self.new_world_seed if self.new_world_seed else "Random"
+            cursor_name = "_" if self.active_text_field == "world_name" and (pyxel.frame_count // 15) % 2 == 0 else ""
+            cursor_seed = "_" if self.active_text_field == "seed" and (pyxel.frame_count // 15) % 2 == 0 else ""
             return [
-                (f"World Name: {self.new_world_name}", self.cycle_new_world_name),
+                (f"World Name: {self.new_world_name}{cursor_name}", self.focus_world_name),
                 (f"Game Mode: {self.new_world_mode.capitalize()}", self.toggle_new_world_mode),
                 (f"World Type: {preset_name}", self.cycle_new_world_preset),
-                (f"Seed: {seed_disp}", self.cycle_new_world_seed),
+                (f"Seed: {seed_disp}{cursor_seed}", self.focus_world_seed),
                 ("Create New World", self.confirm_create_world),
                 ("Cancel", lambda: self.set_state("select_world")),
             ]
@@ -788,6 +867,31 @@ class App:
             self.update_playing()
 
     def update_menu(self):
+        # Handle free text typing when an input field is active in create_world
+        if self.state == "create_world" and self.active_text_field:
+            txt = getattr(pyxel, "input_text", "")
+            if txt:
+                filtered = "".join(ch for ch in txt if ch.isprintable() and ch not in "\r\n")
+                if filtered:
+                    if self.active_text_field == "world_name":
+                        if len(self.new_world_name) < 24:
+                            self.new_world_name += filtered
+                    elif self.active_text_field == "seed":
+                        if len(self.new_world_seed) < 20:
+                            self.new_world_seed += filtered
+
+            backspace_pressed = False
+            try:
+                backspace_pressed = pyxel.btnp(pyxel.KEY_BACKSPACE, hold=10, period=2)
+            except Exception:
+                backspace_pressed = pyxel.btnp(pyxel.KEY_BACKSPACE)
+
+            if backspace_pressed:
+                if self.active_text_field == "world_name" and self.new_world_name:
+                    self.new_world_name = self.new_world_name[:-1]
+                elif self.active_text_field == "seed" and self.new_world_seed:
+                    self.new_world_seed = self.new_world_seed[:-1]
+
         items = self.menu_items()
         if not items:
             return
@@ -836,6 +940,11 @@ class App:
             self.sfx(SND_CLICK)
             self.menu_index = chosen
             cb = items[chosen][1]
+            if self.state == "create_world":
+                if chosen != 0 and self.active_text_field == "world_name":
+                    self.active_text_field = None
+                if chosen != 3 and self.active_text_field == "seed":
+                    self.active_text_field = None
             try:
                 cb(step)
             except TypeError:
@@ -922,6 +1031,18 @@ class App:
 
         self.update_look()
         self.update_hotbar_keys()
+
+        # Pick Block with Middle Mouse Button (scroll wheel click)
+        if pyxel.btnp(pyxel.MOUSE_BUTTON_MIDDLE) and self.target:
+            tx, ty, tz = self.target[0]
+            tb = self.world.get(tx, ty, tz)
+            if tb != 0:
+                self.pick_block(tb)
+
+        # Drop item from active hotbar slot (Q on QWERTY, A on AZERTY)
+        is_azerty = pyxel.btn(pyxel.KEY_Z)
+        if (pyxel.btnp(pyxel.KEY_A) if is_azerty else pyxel.btnp(pyxel.KEY_Q)):
+            self.drop_item()
 
         # 1. Update player physics every frame at the full display framerate (smooth at ~180 FPS)
         events = self.player.update(self.world, dt)
@@ -1048,8 +1169,8 @@ class App:
                     self.notify(f"Ate {get_item_name(item_id)}")
                     return
 
-            # 2. Right click on Crafting Table in world
-            if self.target:
+            # 2. Right click on Crafting Table in world (only if not sneaking)
+            if self.target and not self.player.sneaking:
                 tx, ty, tz = self.target[0]
                 if self.world.get(tx, ty, tz) == CRAFTING_TABLE:
                     self.craft_size = 3
@@ -1113,71 +1234,204 @@ class App:
 
     def craft_layout(self):
         s = self.get_ui_scale()
-        w, h = pyxel.width, pyxel.height
+        slot_s = 18 * s
         size = self.craft_size
-        slot_s = 20 * s
 
-        # Quick recipes on left
-        qw, qh = 82 * s, 14 * s
-        qx = 8 * s
-        qy0 = 36 * s
+        pw, ph = 176 * s, 166 * s
+        px0 = (pyxel.width - pw) // 2
+        py0 = (pyxel.height - ph) // 2
 
-        # Main Inventory (3 rows of 9) + Hotbar (1 row of 9) at bottom
-        ix0 = (w - 9 * slot_s) // 2
-        iy0 = h - 5 * slot_s - 8 * s
+        ix0 = px0 + 8 * s
+        iy0 = py0 + 84 * s
+        hx0 = px0 + 8 * s
+        hy0 = py0 + 142 * s
 
-        # Crafting Grid in center above inventory
-        gx0 = w // 2 - (size * slot_s) // 2 - 15 * s
-        gy0 = max(qy0, (iy0 - size * slot_s) // 2)
+        if size == 3:
+            gx0 = px0 + 30 * s
+            gy0 = py0 + 17 * s
+            ax = px0 + 90 * s
+            ay = py0 + 35 * s
+            rx = px0 + 120 * s
+            ry = py0 + 31 * s
+            rw, rh = 26 * s, 26 * s
+            return {
+                "s": s, "slot_s": slot_s, "size": size,
+                "pw": pw, "ph": ph, "px0": px0, "py0": py0,
+                "gx0": gx0, "gy0": gy0,
+                "ax": ax, "ay": ay,
+                "rx": rx, "ry": ry, "rw": rw, "rh": rh,
+                "ix0": ix0, "iy0": iy0,
+                "hx0": hx0, "hy0": hy0,
+            }
+        else:
+            pvx = px0 + 26 * s
+            pvy = py0 + 8 * s
+            pvw = 48 * s
+            pvh = 70 * s
+            gx0 = px0 + 88 * s
+            gy0 = py0 + 18 * s
+            ax = px0 + 130 * s
+            ay = py0 + 28 * s
+            rx = px0 + 146 * s
+            ry = py0 + 23 * s
+            rw, rh = 24 * s, 24 * s
+            return {
+                "s": s, "slot_s": slot_s, "size": size,
+                "pw": pw, "ph": ph, "px0": px0, "py0": py0,
+                "pvx": pvx, "pvy": pvy, "pvw": pvw, "pvh": pvh,
+                "gx0": gx0, "gy0": gy0,
+                "ax": ax, "ay": ay,
+                "rx": rx, "ry": ry, "rw": rw, "rh": rh,
+                "ix0": ix0, "iy0": iy0,
+                "hx0": hx0, "hy0": hy0,
+            }
 
-        # Result slot
-        rx = gx0 + size * slot_s + 20 * s
-        ry = gy0 + (size * slot_s) // 2 - 10 * s
-        rw, rh = slot_s + 2 * s, slot_s + 2 * s
+    def get_slot_under_mouse(self, mx, my):
+        lay = self.craft_layout()
+        s, slot_s = lay["s"], lay["slot_s"]
+        size = lay["size"]
 
-        return {
-            "s": s, "slot_s": slot_s,
-            "gx0": gx0, "gy0": gy0,
-            "rx": rx, "ry": ry, "rw": rw, "rh": rh,
-            "ix0": ix0, "iy0": iy0,
-            "qx": qx, "qy0": qy0, "qw": qw, "qh": qh,
-        }
+        # 1. Result slot
+        rx, ry, rw, rh = lay["rx"], lay["ry"], lay["rw"], lay["rh"]
+        if rx <= mx < rx + rw and ry <= my < ry + rh:
+            return ("result", 0, rx, ry, rw, rh)
+
+        # 2. Craft grid
+        gx0, gy0 = lay["gx0"], lay["gy0"]
+        for r in range(size):
+            for c in range(size):
+                sx, sy = gx0 + c * slot_s, gy0 + r * slot_s
+                if sx <= mx < sx + slot_s and sy <= my < sy + slot_s:
+                    return ("grid", r * size + c, sx, sy, slot_s, slot_s)
+
+        # 3. Main inventory (3 rows of 9)
+        ix0, iy0 = lay["ix0"], lay["iy0"]
+        for r in range(3):
+            for c in range(9):
+                sx, sy = ix0 + c * slot_s, iy0 + r * slot_s
+                if sx <= mx < sx + slot_s and sy <= my < sy + slot_s:
+                    return ("inventory", r * 9 + c, sx, sy, slot_s, slot_s)
+
+        # 4. Hotbar (1 row of 9)
+        hx0, hy0 = lay["hx0"], lay["hy0"]
+        for c in range(9):
+            sx, sy = hx0 + c * slot_s, hy0
+            if sx <= mx < sx + slot_s and sy <= my < sy + slot_s:
+                return ("hotbar", c, sx, sy, slot_s, slot_s)
+
+        return None
+
+    def handle_slot_click(self, slot_type, idx, is_right_click, is_shift_click):
+        if slot_type == "result":
+            if self.craft_result[0] != 0:
+                res_id, res_cnt = self.craft_result[0], self.craft_result[1]
+                if self.cursor_item[0] == 0:
+                    self.cursor_item = [res_id, res_cnt]
+                    crafting.execute_craft(self.craft_grid, self.craft_size, self.craft_size)
+                    self.sfx(SND_CLICK)
+                elif self.cursor_item[0] == res_id and self.cursor_item[1] + res_cnt <= 64:
+                    self.cursor_item[1] += res_cnt
+                    crafting.execute_craft(self.craft_grid, self.craft_size, self.craft_size)
+                    self.sfx(SND_CLICK)
+            return
+
+        # Target slot
+        if slot_type == "grid":
+            target = self.craft_grid[idx]
+        elif slot_type == "inventory":
+            target = self.inventory[idx]
+        elif slot_type == "hotbar":
+            target = self.hotbar[idx]
+        else:
+            return
+
+        # Shift + Left click: quick move
+        if is_shift_click and not is_right_click:
+            if target[0] != 0 and target[1] > 0:
+                item_id, count = target[0], target[1]
+                if slot_type == "hotbar":
+                    moved = self.add_to_container(self.inventory, item_id, count)
+                    target[1] -= moved
+                    if target[1] <= 0: target[0] = 0
+                elif slot_type == "inventory":
+                    moved = self.add_to_container(self.hotbar, item_id, count)
+                    target[1] -= moved
+                    if target[1] <= 0: target[0] = 0
+                elif slot_type == "grid":
+                    moved = self.add_to_container(self.hotbar, item_id, count)
+                    leftover = count - moved
+                    if leftover > 0:
+                        leftover -= self.add_to_container(self.inventory, item_id, leftover)
+                    target[1] = leftover
+                    if target[1] <= 0: target[0] = 0
+                self.sfx(SND_CLICK)
+            return
+
+        # Right click: split stack or place single item
+        if is_right_click:
+            if self.cursor_item[0] == 0:
+                if target[0] != 0 and target[1] > 0:
+                    take = (target[1] + 1) // 2
+                    self.cursor_item = [target[0], take]
+                    target[1] -= take
+                    if target[1] <= 0: target[0] = 0
+                    self.sfx(SND_CLICK)
+            else:
+                if target[0] == 0:
+                    target[0] = self.cursor_item[0]
+                    target[1] = 1
+                    self.cursor_item[1] -= 1
+                    if self.cursor_item[1] <= 0: self.cursor_item = [0, 0]
+                    self.sfx(SND_CLICK)
+                elif target[0] == self.cursor_item[0] and target[1] < 64:
+                    target[1] += 1
+                    self.cursor_item[1] -= 1
+                    if self.cursor_item[1] <= 0: self.cursor_item = [0, 0]
+                    self.sfx(SND_CLICK)
+            return
+
+        # Left click: pick up all, place all, or swap
+        if self.cursor_item[0] == 0:
+            if target[0] != 0 and target[1] > 0:
+                self.cursor_item = list(target)
+                target[0], target[1] = 0, 0
+                self.sfx(SND_CLICK)
+        else:
+            if target[0] == 0:
+                target[0], target[1] = self.cursor_item[0], self.cursor_item[1]
+                self.cursor_item = [0, 0]
+                self.sfx(SND_CLICK)
+            elif target[0] == self.cursor_item[0]:
+                space = 64 - target[1]
+                add = min(space, self.cursor_item[1])
+                target[1] += add
+                self.cursor_item[1] -= add
+                if self.cursor_item[1] <= 0: self.cursor_item = [0, 0]
+                self.sfx(SND_CLICK)
+            else:
+                self.cursor_item, target[0], target[1] = [target[0], target[1]], self.cursor_item[0], self.cursor_item[1]
+                self.sfx(SND_CLICK)
 
     def update_crafting_ui(self):
         if pyxel.btnp(pyxel.KEY_E) or pyxel.btnp(pyxel.KEY_ESCAPE):
-            self.set_state("playing")
+            self.close_inventory()
             return
 
         size = self.craft_size
-        # Check recipe match
         res = crafting.check_craft(self.craft_grid, size, size)
         self.craft_result = list(res) if res else [0, 0]
 
-        lay = self.craft_layout()
-        rx, ry, rw, rh = lay["rx"], lay["ry"], lay["rw"], lay["rh"]
+        is_left = pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT)
+        is_right = pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT)
+        is_shift = pyxel.btn(pyxel.KEY_LSHIFT) or pyxel.btn(pyxel.KEY_RSHIFT)
 
-        # Click on result slot to craft
-        if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT):
-            if rx <= pyxel.mouse_x < rx + rw and ry <= pyxel.mouse_y < ry + rh:
-                if self.craft_result[0] != 0:
-                    crafted = crafting.execute_craft(self.craft_grid, size, size)
-                    if crafted:
-                        self.add_to_inventory(crafted[0], crafted[1])
-                        self.sfx(SND_CLICK)
-                        self.notify(f"Crafted {get_item_name(crafted[0])} x{crafted[1]}")
-                        return
-
-            # Click quick recipe shortcuts on left side
-            qx, qy0, qw, qh = lay["qx"], lay["qy0"], lay["qw"], lay["qh"]
-            for q_idx, (r_name, r_ingr, r_out) in enumerate(self.quick_recipes()):
-                qy = qy0 + q_idx * (qh + 2 * lay["s"])
-                if qx <= pyxel.mouse_x < qx + qw and qy <= pyxel.mouse_y < qy + qh:
-                    if self.has_ingredients(r_ingr):
-                        self.consume_ingredients(r_ingr)
-                        self.add_to_inventory(r_out[0], r_out[1])
-                        self.sfx(SND_CLICK)
-                        self.notify(f"Crafted {r_name}")
-                        return
+        if is_left or is_right:
+            slot_info = self.get_slot_under_mouse(pyxel.mouse_x, pyxel.mouse_y)
+            if slot_info:
+                slot_type, idx = slot_info[0], slot_info[1]
+                self.handle_slot_click(slot_type, idx, is_right, is_shift)
+                res = crafting.check_craft(self.craft_grid, size, size)
+                self.craft_result = list(res) if res else [0, 0]
 
     def quick_recipes(self):
         recipes = [
@@ -1585,79 +1839,157 @@ class App:
         else:
             self.draw_icon(x + 8 * s, y - 2 * s, item_id, scale=2 * s)
 
+    def draw_minecraft_panel(self, x, y, w, h):
+        s = self.get_ui_scale()
+        pyxel.rectb(x, y, w, h, 0)
+        pyxel.rect(x + s, y + s, w - 2 * s, h - 2 * s, 6)
+        pyxel.rect(x + s, y + s, w - 2 * s, s, 7)
+        pyxel.rect(x + s, y + s, s, h - 2 * s, 7)
+        pyxel.rect(x + s, y + h - 2 * s, w - 2 * s, s, 5)
+        pyxel.rect(x + w - 2 * s, y + s, s, h - 2 * s, 5)
+
+    def draw_slot(self, x, y, size, item_id, count, is_selected=False, is_hovered=False):
+        s = self.get_ui_scale()
+        pyxel.rect(x, y, size, size, 5)
+        pyxel.rect(x, y, size - s, s, 0)
+        pyxel.rect(x, y, s, size - s, 0)
+        pyxel.rect(x + s, y + size - s, size - s, s, 7)
+        pyxel.rect(x + size - s, y + s, s, size - s, 7)
+        pyxel.rect(x + s, y + s, size - 2 * s, size - 2 * s, 13)
+
+        if is_hovered:
+            pyxel.dither(0.35)
+            pyxel.rect(x + s, y + s, size - 2 * s, size - 2 * s, 7)
+            pyxel.dither(1.0)
+        elif is_selected:
+            pyxel.rectb(x, y, size, size, 10)
+
+        if item_id != 0 and count > 0:
+            offset = (size - 16 * s) // 2
+            self.draw_icon(x + offset, y + offset, item_id, scale=s)
+            if count > 1:
+                cs = str(count)
+                tx = x + size - len(cs) * 4 * s - 2 * s
+                ty = y + size - 6 * s - s
+                self.draw_text(tx + s, ty + s, cs, 0, scale=s)
+                self.draw_text(tx, ty, cs, 7, scale=s)
+
+    def draw_steve_preview(self, x, y, w, h):
+        s = self.get_ui_scale()
+        pyxel.rect(x, y, w, h, 0)
+        pyxel.rect(x + s, y + s, w - 2 * s, h - 2 * s, 1)
+        pyxel.rect(x + s, y + h - s, w - 2 * s, s, 7)
+        pyxel.rect(x + w - s, y + s, s, h - 2 * s, 7)
+
+        cx = x + w // 2
+        cy = y + h // 2
+        pyxel.rect(cx - 5 * s, cy - 22 * s, 10 * s, 10 * s, 15)
+        pyxel.rect(cx - 5 * s, cy - 22 * s, 10 * s, 3 * s, 4)
+        pyxel.pset(cx - 3 * s, cy - 17 * s, 7)
+        pyxel.pset(cx + 2 * s, cy - 17 * s, 7)
+        pyxel.rect(cx - 6 * s, cy - 12 * s, 12 * s, 14 * s, 12)
+        pyxel.rect(cx - 10 * s, cy - 12 * s, 4 * s, 10 * s, 12)
+        pyxel.rect(cx - 10 * s, cy - 2 * s, 4 * s, 4 * s, 15)
+        pyxel.rect(cx + 6 * s, cy - 12 * s, 4 * s, 10 * s, 12)
+        pyxel.rect(cx + 6 * s, cy - 2 * s, 4 * s, 4 * s, 15)
+        pyxel.rect(cx - 5 * s, cy + 2 * s, 4 * s, 14 * s, 1)
+        pyxel.rect(cx + s, cy + 2 * s, 4 * s, 14 * s, 1)
+        pyxel.rect(cx - 5 * s, cy + 14 * s, 4 * s, 2 * s, 5)
+        pyxel.rect(cx + s, cy + 14 * s, 4 * s, 2 * s, 5)
+
+    def draw_crafting_arrow(self, x, y):
+        s = self.get_ui_scale()
+        pyxel.rect(x, y + 3 * s, 14 * s, 6 * s, 5)
+        pyxel.rect(x + s, y + 4 * s, 12 * s, 4 * s, 6)
+        pyxel.tri(x + 14 * s, y, x + 22 * s, y + 6 * s, x + 14 * s, y + 12 * s, 5)
+        pyxel.tri(x + 14 * s, y + s, x + 20 * s, y + 6 * s, x + 14 * s, y + 11 * s, 6)
+
+    def draw_tooltip(self, x, y, text):
+        if not text:
+            return
+        s = self.get_ui_scale()
+        tw = len(text) * 4 * s + 6 * s
+        th = 10 * s
+        tx = min(x + 8 * s, pyxel.width - tw - 2 * s)
+        ty = max(2 * s, y - 12 * s)
+        pyxel.rect(tx - s, ty - s, tw + 2 * s, th + 2 * s, 0)
+        pyxel.rectb(tx, ty, tw, th, 2)
+        pyxel.rect(tx + s, ty + s, tw - 2 * s, th - 2 * s, 1)
+        self.draw_text(tx + 3 * s, ty + 2 * s, text, 7, scale=s)
+
     def draw_crafting_screen(self):
         self.dim_screen()
         lay = self.craft_layout()
         s, slot_s = lay["s"], lay["slot_s"]
+        size = lay["size"]
 
-        title = "Crafting Table (3x3)" if self.craft_size == 3 else "Crafting & Inventory (2x2)"
-        self.center_text(12 * s, title, 7, shadow=True, scale=s)
+        self.draw_minecraft_panel(lay["px0"], lay["py0"], lay["pw"], lay["ph"])
 
-        # Quick recipes on left
-        self.draw_text(lay["qx"], lay["qy0"] - 10 * s, "Quick Recipes:", 10, scale=s)
-        for q_idx, (r_name, r_ingr, r_out) in enumerate(self.quick_recipes()):
-            qy = lay["qy0"] + q_idx * (lay["qh"] + 2 * s)
-            can_craft = self.has_ingredients(r_ingr)
-            hover = lay["qx"] <= pyxel.mouse_x < lay["qx"] + lay["qw"] and qy <= pyxel.mouse_y < qy + lay["qh"]
-            pyxel.rect(lay["qx"], qy, lay["qw"], lay["qh"], 5 if hover else (1 if can_craft else 0))
-            pyxel.rectb(lay["qx"], qy, lay["qw"], lay["qh"], 7 if hover else (13 if can_craft else 1))
-            self.draw_icon(lay["qx"] + 2 * s, qy + s, r_out[0], scale=s)
-            self.draw_text(lay["qx"] + 18 * s, qy + 3 * s, r_name, 10 if can_craft else 6, scale=s)
+        if size == 3:
+            self.draw_text(lay["px0"] + 30 * s, lay["py0"] + 6 * s, "Crafting", 5, scale=s)
+        else:
+            self.draw_text(lay["px0"] + 88 * s, lay["py0"] + 6 * s, "Crafting", 5, scale=s)
+            self.draw_steve_preview(lay["pvx"], lay["pvy"], lay["pvw"], lay["pvh"])
+        self.draw_text(lay["ix0"], lay["iy0"] - 10 * s, "Inventory", 5, scale=s)
 
-        # Crafting Grid in center
-        size = self.craft_size
+        slot_under_mouse = self.get_slot_under_mouse(pyxel.mouse_x, pyxel.mouse_y)
+        hovered_slot_type = slot_under_mouse[0] if slot_under_mouse else None
+        hovered_slot_idx = slot_under_mouse[1] if slot_under_mouse else None
+
         gx0, gy0 = lay["gx0"], lay["gy0"]
         for r in range(size):
             for c in range(size):
                 idx = r * size + c
                 sx, sy = gx0 + c * slot_s, gy0 + r * slot_s
                 slot = self.craft_grid[idx]
-                pyxel.rect(sx, sy, slot_s, slot_s, 1)
-                pyxel.rectb(sx, sy, slot_s, slot_s, 13)
-                if slot[0] != 0 and slot[1] > 0:
-                    self.draw_icon(sx + 2 * s, sy + 2 * s, slot[0], scale=s)
-                    if slot[1] > 1:
-                        self.draw_text(sx + 10 * s, sy + 12 * s, str(slot[1]), 7, scale=s)
+                is_hovered = (hovered_slot_type == "grid" and hovered_slot_idx == idx)
+                self.draw_slot(sx, sy, slot_s, slot[0], slot[1], is_hovered=is_hovered)
 
-        # Arrow ->
-        self.draw_text(gx0 + size * slot_s + 5 * s, gy0 + (size * slot_s) // 2 - 3 * s, "->", 7, scale=s)
+        self.draw_crafting_arrow(lay["ax"], lay["ay"])
 
-        # Result slot
         rx, ry, rw, rh = lay["rx"], lay["ry"], lay["rw"], lay["rh"]
-        has_res = self.craft_result[0] != 0
-        pyxel.rect(rx, ry, rw, rh, 5 if has_res else 1)
-        pyxel.rectb(rx, ry, rw, rh, 10 if has_res else 13)
-        if has_res:
-            self.draw_icon(rx + 2 * s, ry + 2 * s, self.craft_result[0], scale=s)
-            if self.craft_result[1] > 1:
-                self.draw_text(rx + 10 * s, ry + 12 * s, str(self.craft_result[1]), 10, scale=s)
+        is_res_hovered = (hovered_slot_type == "result")
+        self.draw_slot(rx, ry, rw, self.craft_result[0], self.craft_result[1], is_hovered=is_res_hovered)
 
-        # Main Inventory (3 rows of 9) + Hotbar (1 row of 9)
         ix0, iy0 = lay["ix0"], lay["iy0"]
-        self.draw_text(ix0, iy0 - 8 * s, "Inventory:", 7, scale=s)
-        for row in range(3):
-            for col in range(9):
-                idx = row * 9 + col
-                sx, sy = ix0 + col * slot_s, iy0 + row * slot_s
+        for r in range(3):
+            for c in range(9):
+                idx = r * 9 + c
+                sx, sy = ix0 + c * slot_s, iy0 + r * slot_s
                 slot = self.inventory[idx]
-                pyxel.rect(sx, sy, slot_s, slot_s, 1)
-                pyxel.rectb(sx, sy, slot_s, slot_s, 13)
-                if slot[0] != 0 and slot[1] > 0:
-                    self.draw_icon(sx + 2 * s, sy + 2 * s, slot[0], scale=s)
-                    if slot[1] > 1:
-                        self.draw_text(sx + 10 * s, sy + 12 * s, str(slot[1]), 7, scale=s)
+                is_hovered = (hovered_slot_type == "inventory" and hovered_slot_idx == idx)
+                self.draw_slot(sx, sy, slot_s, slot[0], slot[1], is_hovered=is_hovered)
 
-        # Hotbar row
-        hy0 = iy0 + 3 * slot_s + 4 * s
-        for col in range(9):
-            sx, sy = ix0 + col * slot_s, hy0
-            slot = self.hotbar[col]
-            pyxel.rect(sx, sy, slot_s, slot_s, 1)
-            pyxel.rectb(sx, sy, slot_s, slot_s, 7 if col == self.selected else 13)
-            if slot[0] != 0 and slot[1] > 0:
-                self.draw_icon(sx + 2 * s, sy + 2 * s, slot[0], scale=s)
-                if slot[1] > 1:
-                    self.draw_text(sx + 10 * s, sy + 12 * s, str(slot[1]), 7, scale=s)
+        hx0, hy0 = lay["hx0"], lay["hy0"]
+        for c in range(9):
+            sx, sy = hx0 + c * slot_s, hy0
+            slot = self.hotbar[c]
+            is_hovered = (hovered_slot_type == "hotbar" and hovered_slot_idx == c)
+            self.draw_slot(sx, sy, slot_s, slot[0], slot[1], is_selected=(c == self.selected), is_hovered=is_hovered)
+
+        if self.cursor_item[0] != 0 and self.cursor_item[1] > 0:
+            mx, my = pyxel.mouse_x, pyxel.mouse_y
+            self.draw_icon(mx - 8 * s, my - 8 * s, self.cursor_item[0], scale=s)
+            if self.cursor_item[1] > 1:
+                cs = str(self.cursor_item[1])
+                tx = mx + 4 * s
+                ty = my + 2 * s
+                self.draw_text(tx + s, ty + s, cs, 0, scale=s)
+                self.draw_text(tx, ty, cs, 7, scale=s)
+        elif slot_under_mouse:
+            item_id = 0
+            if hovered_slot_type == "grid":
+                item_id = self.craft_grid[hovered_slot_idx][0]
+            elif hovered_slot_type == "result":
+                item_id = self.craft_result[0]
+            elif hovered_slot_type == "inventory":
+                item_id = self.inventory[hovered_slot_idx][0]
+            elif hovered_slot_type == "hotbar":
+                item_id = self.hotbar[hovered_slot_idx][0]
+
+            if item_id > 0:
+                name = get_item_name(item_id)
+                self.draw_tooltip(pyxel.mouse_x, pyxel.mouse_y, name)
 
     @staticmethod
     def draw_icon(x, y, item_id, scale=1):
