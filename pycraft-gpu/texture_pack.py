@@ -123,12 +123,12 @@ MINECRAFT_TILE_MAP: Dict[int, List[str]] = {
     T_SLIME: ["slime.png", "slime_block.png"],
     T_OBSIDIAN: ["obsidian.png"],
     T_LAVA: ["lava_still.png", "lava.png", "lava_flow.png"],
-    T_GRANITE: ["granite.png"],
-    T_POLISHED_GRANITE: ["granite_smooth.png", "polished_granite.png"],
-    T_DIORITE: ["diorite.png"],
-    T_POLISHED_DIORITE: ["diorite_smooth.png", "polished_diorite.png"],
-    T_ANDESITE: ["andesite.png"],
-    T_POLISHED_ANDESITE: ["andesite_smooth.png", "polished_andesite.png"],
+    T_GRANITE: ["stone_granite.png", "granite.png"],
+    T_POLISHED_GRANITE: ["stone_granite_smooth.png", "granite_smooth.png", "polished_granite.png"],
+    T_DIORITE: ["stone_diorite.png", "diorite.png"],
+    T_POLISHED_DIORITE: ["stone_diorite_smooth.png", "diorite_smooth.png", "polished_diorite.png"],
+    T_ANDESITE: ["stone_andesite.png", "andesite.png"],
+    T_POLISHED_ANDESITE: ["stone_andesite_smooth.png", "andesite_smooth.png", "polished_andesite.png"],
     T_PRISMARINE: ["prismarine_rough.png", "prismarine.png"],
     T_PRISMARINE_BRICKS: ["prismarine_bricks.png"],
     T_DARK_PRISMARINE: ["prismarine_dark.png", "dark_prismarine.png"],
@@ -290,7 +290,7 @@ MINECRAFT_TILE_MAP: Dict[int, List[str]] = {
     T_DIAMOND_ITEM: ["diamond.png"],
     T_EMERALD_ITEM: ["emerald.png"],
     T_REDSTONE_ITEM: ["redstone_dust.png"],
-    T_LAPIS_ITEM: ["lapis_lazuli.png"],
+    T_LAPIS_ITEM: ["dye_powder_blue.png", "lapis_lazuli.png"],
     T_QUARTZ_ITEM: ["quartz.png"],
     T_BREAD: ["bread.png"],
     T_APPLE: ["apple.png"],
@@ -636,6 +636,43 @@ class TexturePackManager:
                         break
                     except Exception:
                         continue
+
+        # Check for chest entity texture extraction (normal.png) if chest blocks weren't directly provided
+        if "normal.png" in file_map and ("chest_front.png" not in file_map):
+            try:
+                ch_path, ch_zf = file_map["normal.png"]
+                if ch_zf is not None:
+                    with ch_zf.open(ch_path) as ch_f:
+                        ch_im = Image.open(ch_f).convert("RGBA")
+                else:
+                    ch_im = Image.open(ch_path).convert("RGBA")
+                sc = max(1, ch_im.width // 64)
+                # Front: Lid front (14x5) + Base front (14x10) + Latch (2x4)
+                ch_front = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
+                lid_f = ch_im.crop((14 * sc, 14 * sc, 28 * sc, 19 * sc)).resize((14, 5), Image.NEAREST)
+                base_f = ch_im.crop((14 * sc, 33 * sc, 28 * sc, 43 * sc)).resize((14, 10), Image.NEAREST)
+                latch = ch_im.crop((1 * sc, 1 * sc, 3 * sc, 5 * sc)).resize((2, 4), Image.NEAREST)
+                ch_front.paste(lid_f, (1, 1))
+                ch_front.paste(base_f, (1, 6))
+                ch_front.paste(latch, (7, 4), latch)
+
+                # Side: Lid side (14x5) + Base side (14x10)
+                ch_side = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
+                lid_s = ch_im.crop((0, 14 * sc, 14 * sc, 19 * sc)).resize((14, 5), Image.NEAREST)
+                base_s = ch_im.crop((0, 33 * sc, 14 * sc, 43 * sc)).resize((14, 10), Image.NEAREST)
+                ch_side.paste(lid_s, (1, 1))
+                ch_side.paste(base_s, (1, 6))
+
+                # Top: Lid top (14x14)
+                ch_top = ch_im.crop((14 * sc, 0, 28 * sc, 14 * sc)).resize((16, 16), Image.NEAREST)
+
+                for t_id, im_face in [(T_CHEST_FRONT, ch_front), (T_CHEST_SIDE, ch_side), (T_CHEST_TOP, ch_top)]:
+                    tx = (t_id % 16) * 16
+                    ty = (t_id // 16) * 16
+                    atlas[ty : ty + 16, tx : tx + 16] = np.array(im_face, dtype=np.uint8)
+                    matched_textures += 1
+            except Exception:
+                pass
 
         if matched_textures > 0:
             return atlas

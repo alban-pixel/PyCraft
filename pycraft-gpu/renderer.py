@@ -69,7 +69,7 @@ out float index;
 """ + TO_PALETTE + """
 void main() {
     vec4 tex = texture(atlas, v_uv);
-    if (v_kind == 1 && tex.a < 0.5) discard;  // see-through texel (leaves, glass)
+    if ((v_kind == 1 && tex.a < 0.5) || tex.a < 0.1) discard;  // see-through texel
     if (v_kind == 2 && ((int(gl_FragCoord.x) + int(gl_FragCoord.y)) & 1) == 0) discard;  // water
     vec3 color = tex.rgb * v_shade * light;
     if (v_kind == 2) {
@@ -168,7 +168,7 @@ def _build_ao_offsets():
 AO_OFFSETS = _build_ao_offsets()
 CORNER_UV = np.array([(0, 0), (1, 0), (1, 1), (0, 1)], dtype=np.float32)
 TRIANGLES = [0, 1, 2, 0, 2, 3]
-UV_INSET = 0.5 / 16  # half a texel, in tile units, so neighbor tiles never bleed in
+UV_INSET = 0.05 / 16  # subtle guard against float rounding so neighbor tiles never bleed in
 
 CUBE_EDGES = [(0, 1), (1, 3), (3, 2), (2, 0), (4, 5), (5, 7), (7, 6), (6, 4), (0, 4), (1, 5), (2, 6), (3, 7)]
 
@@ -551,7 +551,7 @@ class Renderer:
                 tile = get_item_tile(item_id)
                 age = getattr(ent, "age", 0.0)
                 bob = 0.06 * math.sin(age * 4.0)
-                boxes.append(make_box((x, y + 0.15 + bob, z), (0.28, 0.28, 0.28), yaw, tile, kind=0.0))
+                boxes.append(make_box((x, y + 0.15 + bob, z), (0.28, 0.28, 0.28), yaw, tile, kind=1.0))
                 continue
 
             # 2. Living Mobs with custom 3D geometries

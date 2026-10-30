@@ -224,3 +224,73 @@ def test_pack_icon_only_does_not_override_atlas(tmp_path):
     # Must fall back to default procedural atlas, NOT a 256x256 red square
     default_atlas = mgr.build_pack_atlas("default")
     assert np.array_equal(atlas, default_atlas)
+
+
+def test_minecraft_1_8_stone_and_dye_aliases(tmp_path):
+    """Verify standard 1.8 stone prefixes and dye aliases are recognized."""
+    import io
+    from PIL import Image
+    from texture_pack import T_GRANITE, T_DIORITE, T_ANDESITE, T_LAPIS_ITEM
+
+    packs_dir = tmp_path / "resourcepacks"
+    mgr = TexturePackManager(str(packs_dir))
+    zip_path = packs_dir / "pack_1_8.zip"
+
+    with zipfile.ZipFile(str(zip_path), "w") as zf:
+        zf.writestr("pack.mcmeta", json.dumps({"pack": {"pack_format": 1, "description": "1.8 Pack"}}))
+        for filename, col in [
+            ("assets/minecraft/textures/blocks/stone_granite.png", (200, 100, 100, 255)),
+            ("assets/minecraft/textures/blocks/stone_diorite.png", (220, 220, 220, 255)),
+            ("assets/minecraft/textures/blocks/stone_andesite.png", (140, 140, 140, 255)),
+            ("assets/minecraft/textures/items/dye_powder_blue.png", (30, 30, 200, 255)),
+        ]:
+            buf = io.BytesIO()
+            Image.new("RGBA", (16, 16), col).save(buf, format="PNG")
+            zf.writestr(filename, buf.getvalue())
+
+    atlas = mgr.build_pack_atlas("zip_pack_1_8")
+    assert atlas is not None
+
+    for tid, expected_rgb in [
+        (T_GRANITE, (200, 100, 100)),
+        (T_DIORITE, (220, 220, 220)),
+        (T_ANDESITE, (140, 140, 140)),
+        (T_LAPIS_ITEM, (30, 30, 200)),
+    ]:
+        tx = (tid % 16) * 16
+        ty = (tid // 16) * 16
+        tile = atlas[ty:ty+16, tx:tx+16]
+        assert np.all(tile[..., 0] == expected_rgb[0])
+        assert np.all(tile[..., 1] == expected_rgb[1])
+        assert np.all(tile[..., 2] == expected_rgb[2])
+
+
+def test_chest_entity_normal_extraction(tmp_path):
+    """Verify chest front, side, and top are extracted from entity/chest/normal.png."""
+    import io
+    from PIL import Image
+    from texture_pack import T_CHEST_FRONT, T_CHEST_SIDE, T_CHEST_TOP
+
+    packs_dir = tmp_path / "resourcepacks"
+    mgr = TexturePackManager(str(packs_dir))
+    zip_path = packs_dir / "chest_pack.zip"
+
+    # Create a 64x64 chest entity texture with distinct pattern
+    chest_img = Image.new("RGBA", (64, 64), (10, 20, 30, 255))
+    with zipfile.ZipFile(str(zip_path), "w") as zf:
+        zf.writestr("pack.mcmeta", json.dumps({"pack": {"pack_format": 1, "description": "Chest Pack"}}))
+        buf = io.BytesIO()
+        chest_img.save(buf, format="PNG")
+        zf.writestr("assets/minecraft/textures/entity/chest/normal.png", buf.getvalue())
+
+    atlas = mgr.build_pack_atlas("zip_chest_pack")
+    def_atlas = mgr.build_pack_atlas("default")
+
+    # Front, side, and top should be updated from the normal.png model
+    for tid in [T_CHEST_FRONT, T_CHEST_SIDE, T_CHEST_TOP]:
+        tx = (tid % 16) * 16
+        ty = (tid // 16) * 16
+        tile = atlas[ty:ty+16, tx:tx+16]
+        def_tile = def_atlas[ty:ty+16, tx:tx+16]
+        assert not np.array_equal(tile, def_tile)
+
