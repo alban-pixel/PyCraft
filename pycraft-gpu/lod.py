@@ -25,7 +25,7 @@ from blocks import (
 
 CHUNK = 16
 SEA_LEVEL = 22
-UV_INSET = 0.5 / 16
+UV_INSET = 0.05 / 16
 CORNER_UV = np.array([(0, 0), (1, 0), (1, 1), (0, 1)], dtype=np.float32)
 TRIANGLES = [0, 1, 2, 0, 2, 3]
 

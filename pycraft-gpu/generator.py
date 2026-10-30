@@ -53,8 +53,9 @@ class WorldPreset:
     AMPLIFIED = "amplified"
     FLOATING_ISLANDS = "floating_islands"
     CAVES_ONLY = "caves_only"
+    EVEREST = "everest"
 
-    ALL = [STANDARD, SUPERFLAT, AMPLIFIED, FLOATING_ISLANDS, CAVES_ONLY]
+    ALL = [STANDARD, SUPERFLAT, AMPLIFIED, FLOATING_ISLANDS, CAVES_ONLY, EVEREST]
 
 
 def parse_seed(seed_input) -> int:

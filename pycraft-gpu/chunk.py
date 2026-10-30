@@ -26,6 +26,18 @@ NUM_SUBCHUNKS = TOTAL_HEIGHT // CHUNK_SIZE  # 24 sub-chunks
 MIN_CY = Y_MIN // CHUNK_SIZE  # -4
 MAX_CY = (Y_MAX // CHUNK_SIZE) - 1  # 19
 
+# Extended vertical chunk height constants for 512m worlds (Milestone M3)
+CHUNK_Y_MIN = -64
+CHUNK_Y_MAX = 512
+CHUNK_SUBCHUNKS = 36  # (512 - (-64)) // 16 = 36
+DEFAULT_SUBCHUNKS = 24
+
+
+def serialize_subchunk(subchunk: "SubChunk") -> bytes:
+    """Serialize a single SubChunk into compressed binary data."""
+    return subchunk.serialize()
+
+
 
 @dataclass(frozen=True, slots=True)
 class BlockState:

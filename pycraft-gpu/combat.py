@@ -21,8 +21,35 @@ BASE_MOB_CAP_PASSIVE = 10
 INVULNERABILITY_TICKS = 10  # 0.5s at 20 Hz
 
 
+def calculate_1_8_armor(damage: float, armor: float) -> float:
+    """Calculate net damage using authentic Vanilla 1.8 flat formula (4% per armor point, max 80%)."""
+    if damage <= 0.0:
+        return 0.0
+    if armor <= 0.0:
+        return damage
+    reduction = min(20.0, max(0.0, armor)) * 0.04
+    return max(0.0, damage * (1.0 - reduction))
+
+
+def is_critical_hit(vel_y: float, on_ground: bool = False, in_water: bool = False) -> bool:
+    """True in 1.8 if falling downward in air (vel_y < 0) and not on ground or in water."""
+    return vel_y < 0.0 and not on_ground and not in_water
+
+
+def calculate_damage_with_crit(base_damage: float, is_crit: bool = False) -> float:
+    """Critical hits in 1.8 deal 150% damage (+50% bonus)."""
+    return base_damage * 1.5 if is_crit else base_damage
+
+
+def calculate_attack_damage(base_damage: float, elapsed_ticks: int = 0) -> float:
+    """Vanilla 1.8 combat has no attack cooldown penalty (spam-clicking deals full damage)."""
+    return base_damage
+
+
 class CombatEngine:
-    """Calculates non-linear damage mitigation, armor toughness, and protection enchantment."""
+    """Calculates damage mitigation, armor, critical hits, and protection enchantment."""
+
+    calculate_armor_damage_1_8 = staticmethod(calculate_1_8_armor)
 
     @staticmethod
     def calculate_armor_damage(damage: float, armor: float, toughness: float = 0.0) -> float:

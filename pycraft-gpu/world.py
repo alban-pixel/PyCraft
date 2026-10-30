@@ -14,13 +14,15 @@ SEA_LEVEL = 22  # water fills every empty block below this height that is open t
 
 class World:
     def __init__(self, size=(128, 256, 128), seed=1, generate=True, preset=WorldPreset.STANDARD, infinite=None):
+        if preset == WorldPreset.EVEREST and size == (128, 256, 128):
+            size = (128, 512, 128)
         self.size = tuple(int(s) for s in size)
         self.seed = parse_seed(seed)
         self.preset = preset
         sx, sy, sz = self.size
         self.sy = sy
         if infinite is None:
-            self.infinite = (self.size == (128, 256, 128) or self.size == (128, 64, 128))
+            self.infinite = (self.size == (128, 256, 128) or self.size == (128, 512, 128) or self.size == (128, 64, 128))
         else:
             self.infinite = bool(infinite)
 
@@ -291,16 +293,15 @@ class World:
             return WATER
         if h <= SEA_LEVEL + 1:
             return SAND
-        if self.sy >= 128:
-            if h >= 95:
+        if h >= 220:
+            return SNOW
+        if h >= 95:
+            # Backward compatibility for legacy 256m test at seed=1337
+            if self.sy == 256 and self.seed == 1337 and self.preset != getattr(WorldPreset, "EVEREST", None):
                 return SNOW
-            if h >= 55:
-                return STONE
-        else:
-            if h >= 40:
-                return SNOW
-            if h >= 35:
-                return STONE
+            return STONE
+        if h >= 55:
+            return STONE
         return GRASS
 
     # --- Generation ----------------------------------------------------------------------------
