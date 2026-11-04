@@ -8,12 +8,13 @@ TINT_ALPHA = 200  # texels with this alpha take the biome color (grass, leaves, 
 (AIR, GRASS, DIRT, STONE, COBBLESTONE, PLANKS, LOG, LEAVES, SAND, BRICK, GLASS, WATER, COAL_ORE, IRON_ORE,
  BEDROCK, SNOW, ICE, GRAVEL, SANDSTONE, RED_SAND, TERRACOTTA, ORANGE_TERRACOTTA, WHITE_TERRACOTTA, PODZOL,
  SPRUCE_LOG, SPRUCE_LEAVES, BIRCH_LOG, BIRCH_LEAVES, JUNGLE_LOG, JUNGLE_LEAVES, ACACIA_LOG, ACACIA_LEAVES,
- CACTUS, GOLD_ORE, DIAMOND_ORE, DEEPSLATE, CLAY, MUD) = range(38)
+ CACTUS, GOLD_ORE, DIAMOND_ORE, DEEPSLATE, CLAY, MUD, MOSS) = range(39)
 BLOCK_NAMES = ["Air", "Grass", "Dirt", "Stone", "Cobblestone", "Planks", "Oak log", "Oak leaves", "Sand", "Brick",
                "Glass", "Water", "Coal ore", "Iron ore", "Bedrock", "Snow", "Ice", "Gravel", "Sandstone",
                "Red sand", "Terracotta", "Orange terracotta", "White terracotta", "Podzol", "Spruce log",
                "Spruce leaves", "Birch log", "Birch leaves", "Jungle log", "Jungle leaves", "Acacia log",
-               "Acacia leaves", "Cactus", "Gold ore", "Diamond ore", "Deepslate", "Clay", "Mud"]
+               "Acacia leaves", "Cactus", "Gold ore", "Diamond ore", "Deepslate", "Clay", "Mud",
+               "Moss"]
 NUM_BLOCKS = len(BLOCK_NAMES)
 
 # Blocks the player can pick in the inventory (E)
@@ -43,7 +44,8 @@ UNBREAKABLE = _flags(BEDROCK)
  T_SANDSTONE_SIDE, T_RED_SAND, T_TERRACOTTA, T_ORANGE_TERRACOTTA, T_WHITE_TERRACOTTA, T_PODZOL_TOP,
  T_PODZOL_SIDE, T_SPRUCE_LOG_SIDE, T_SPRUCE_LOG_TOP, T_SPRUCE_LEAVES, T_BIRCH_LOG_SIDE, T_BIRCH_LOG_TOP,
  T_BIRCH_LEAVES, T_JUNGLE_LOG_SIDE, T_JUNGLE_LOG_TOP, T_JUNGLE_LEAVES, T_ACACIA_LOG_SIDE, T_ACACIA_LOG_TOP,
- T_ACACIA_LEAVES, T_CACTUS_SIDE, T_CACTUS_TOP, T_GOLD, T_DIAMOND, T_DEEPSLATE, T_CLAY, T_MUD) = range(46)
+ T_ACACIA_LEAVES, T_CACTUS_SIDE, T_CACTUS_TOP, T_GOLD, T_DIAMOND, T_DEEPSLATE, T_CLAY, T_MUD,
+ T_MOSS) = range(47)
 
 
 def _faces(side, top=None, bottom=None):
@@ -93,6 +95,7 @@ BLOCK_TILES = np.array([
     _faces(T_DEEPSLATE),
     _faces(T_CLAY),
     _faces(T_MUD),
+    _faces(T_MOSS),
 ], dtype=np.int32)
 
 
@@ -230,6 +233,14 @@ def build_atlas(seed=7):
     tiles[T_WHITE_TERRACOTTA] = _noisy(rng, (210, 178, 161), 0.04)
     tiles[T_CLAY] = _noisy(rng, (160, 166, 180), 0.04)
     tiles[T_MUD] = _noisy(rng, (62, 56, 56), 0.1)
+
+    # Moss over dark lava rock: olive clumps, the rock showing through in gaps
+    moss = _noisy(rng, (96, 120, 52), 0.14)
+    for _ in range(26):  # the bumps of a thick carpet
+        y, x = rng.integers(0, TILE - 2, 2)
+        moss[y:y + 2, x:x + 2] *= rng.uniform(0.7, 1.3)
+    moss[rng.random((TILE, TILE)) < 0.12] *= 0.45
+    tiles[T_MOSS] = moss
 
     gravel = _noisy(rng, (128, 123, 118), 0.12)
     for _ in range(22):  # pebbles

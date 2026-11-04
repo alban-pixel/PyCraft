@@ -82,7 +82,7 @@ TILE_AVG_UNIT = 9
 # Block numbers, the atlas tile of each face of each block, and the badlands' rock layers, for the
 # distant terrain's shaders
 BLOCK_IDS = "".join("const int %s = %d;\n" % (name, getattr(B, name)) for name in (
-    "GRASS", "DIRT", "STONE", "PODZOL", "MUD", "GRAVEL", "SNOW", "WATER", "ICE", "TERRACOTTA", "RED_SAND",
+    "GRASS", "DIRT", "STONE", "PODZOL", "MUD", "MOSS", "GRAVEL", "SNOW", "WATER", "ICE", "TERRACOTTA", "RED_SAND",
     "LEAVES", "SPRUCE_LEAVES", "BIRCH_LEAVES", "JUNGLE_LEAVES", "ACACIA_LEAVES"))
 BLOCK_TILES_GLSL = "const int BLOCK_TILES[%d] = int[](%s);\n" % (
     BLOCK_TILES.size, ", ".join(str(int(t)) for t in BLOCK_TILES.ravel()))
@@ -470,8 +470,8 @@ void main() {
         float h10 = height_at(local + ivec2(1, 0));
         float h01 = height_at(local + ivec2(0, 1)), h11 = height_at(local + ivec2(1, 1));
         float slope = (max(max(ground, h10), max(h01, h11)) - min(min(ground, h10), min(h01, h11))) / spacing;
-        bool soil = b.x == GRASS || b.x == PODZOL || b.x == MUD || b.x == DIRT || b.x == GRAVEL
-                    || (b.x == SNOW && b.y == DIRT);
+        bool soil = b.x == GRASS || b.x == PODZOL || b.x == MUD || b.x == MOSS || b.x == DIRT
+                    || b.x == GRAVEL || (b.x == SNOW && b.y == DIRT);
         if ((slope >= 2.0 && soil) || (slope >= 4.0 && b.x == SNOW)) { b.x = STONE; b.y = STONE; b.z = 0; }
         // Where the blocks are drawn they have the real trees: no fake crowns under them
         top = ground + (b.z != 0 && dist > block_fade.y ? float(b.w) : 0.0);
