@@ -336,8 +336,8 @@ void main() {
     if (v_kind == 3 && tex.a < 0.5) albedo *= v_tint * 0.4;  // a hole in leaves: the shaded leaves inside
     if (v_kind != 1) albedo = far_albedo(albedo, v_tile, v_tint, length(v_pos));
     float direct = direct_light(v_pos, n);
-    if (mode == 0)
-        out_color = vec4(fog(shade_opaque(albedo, v_face, v_ao, direct), length(v_pos)), 1.0);
+    if (mode == 0)  // (a lamp shows its own colors, day and night)
+        out_color = vec4(fog(v_kind == 4 ? albedo : shade_opaque(albedo, v_face, v_ao, direct), length(v_pos)), 1.0);
     else
         out_color = shade_water(albedo, v_pos, v_face, direct);
 }
