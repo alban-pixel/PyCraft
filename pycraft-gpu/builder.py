@@ -12,8 +12,8 @@ import traceback
 
 import numpy as np
 
-from blocks import (ACACIA_LEAVES, ALL_LEAVES, BLOCK_TILES, CUTOUT, FERN, GRASS, JUNGLE_LEAVES, LEAVES, NUM_BLOCKS,
-                    OPAQUE, PLANT, PLANTS, SELF_CULL, TALL_GRASS, WATER)
+from blocks import (ACACIA_LEAVES, ALL_LEAVES, BLOCK_TILES, CUTOUT, FERN, GLOWING, GRASS, JUNGLE_LEAVES, LEAVES,
+                    NUM_BLOCKS, OPAQUE, PLANT, PLANTS, SELF_CULL, TALL_GRASS, WATER)
 from terrain import CHUNK
 from world import World
 
@@ -40,12 +40,14 @@ TOP_CORNERS = [np.array(corners)[:, 1] == 1 for _, corners in FACES]
 # (darker in corners)
 VERTEX = np.dtype([("pos", "<f4", 3), ("info", "u1", 4), ("tint", "u1", 4)])
 # Kind of face: 0 opaque, 1 see-through texels (glass), 2 water, 3 leaves (their holes look dark, but
-# let the light through for the shadows), 4 plants (see-through texels, lit as if they faced up)
+# let the light through for the shadows), 4 plants (see-through texels, lit as if they faced up), 5 opaque
+# and glowing (lamps: not darkened by the light around)
 KIND = np.zeros(NUM_BLOCKS, np.uint8)
 KIND[CUTOUT] = 1
 KIND[list(ALL_LEAVES)] = 3
 KIND[WATER] = 2
 KIND[list(PLANTS)] = 4
+KIND[GLOWING] = 5
 TINT = np.zeros(NUM_BLOCKS, np.uint8)  # 1 grass, 2 leaves, 3 water: which biome color a block takes
 TINT[[GRASS, TALL_GRASS, FERN]] = 1
 TINT[[LEAVES, JUNGLE_LEAVES, ACACIA_LEAVES]] = 2

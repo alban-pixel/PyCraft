@@ -12,7 +12,7 @@ import numpy as np
 import pyxel
 
 from blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, GROWS_ON, PLACEABLE, PLANT, SOLID, T_WATER,
-                    TILE, TINT_ALPHA, UNBREAKABLE, WATER, build_atlas)
+                    TILE, TINT_ALPHA, UNBREAKABLE, WATER, build_atlas, turned)
 from player import Player
 from renderer import FIXED_COLORS, LOD_QUALITY_NAMES, Renderer, oklab_to_srgb, srgb_to_oklab
 from terrain import SEA_LEVEL
@@ -702,7 +702,7 @@ class App:
         elif self.target and pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT, hold=hold, repeat=repeat):
             # Aiming at a plant puts the block in its place, like on the ground under it
             x, y, z = self.target[0] if PLANT[self.world.get(*self.target[0])] else self.target[1]
-            block = self.hotbar[self.selected]
+            block = turned(self.hotbar[self.selected], self.player.forward())  # a front faces the player
             here = self.world.get(x, y, z)
             free = self.world.inside(x, y, z) and (here in (0, WATER) or PLANT[here])
             if free and PLANT[block] and (here == WATER or not GROWS_ON[block, self.world.get(x, y - 1, z)]):

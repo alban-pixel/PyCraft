@@ -45,11 +45,16 @@ a real graphics card driver.
 - Drifting clouds that cast shadows, with the highest mountains rising through them; stars at night,
   a glow around the sun, and a blue haze over faraway mountains
 - Anti-aliased edges, and up to 2560x1440 pixels
-- 100 blocks to build with: the terrain's own, building blocks such as planks of every wood,
-  stone and deepslate bricks, granite, diorite and andesite (raw and polished), cut and chiseled
-  sandstone, blocks of coal, iron, gold and diamond, obsidian, bookshelves, hay bales, pumpkins,
-  melons, 16 colors of wool, quartz and more colors of terracotta, and plants: tall grass, ferns,
-  dead bushes, six kinds of flowers and oak saplings, which also grow wild in the world
+- 172 blocks to build with: the terrain's own, and the full blocks of the classic block set, such as
+  planks of every wood, stone, deepslate, nether and prismarine bricks, granite, diorite and andesite
+  (raw and polished), every sandstone, blocks of coal, iron, gold, diamond, emerald, lapis and
+  redstone, obsidian, netherrack, end stone, bookshelves, hay bales, pumpkins and melons, 16 colors
+  of wool, terracotta and stained glass, and machines that look the part (furnace, crafting table,
+  TNT, pistons...). Glowstone, sea lanterns, lamps and jack o'lanterns glow day and night (they don't
+  light up what is around them), and furnaces, dispensers, droppers and jack o'lanterns face the
+  player who places them
+- Plants: tall grass, ferns, dead bushes, six kinds of flowers and oak saplings, which also grow wild
+  in the world
 - Walking, sprinting, jumping, swimming and flying (and flying fast)
 - An 8-minute day and night cycle, with a sun, a moon and sunsets
 - A title screen, a pause menu and a block inventory
