@@ -12,7 +12,7 @@ import numpy as np
 import pyxel
 
 from blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, PLACEABLE, T_WATER, TILE, TINT_ALPHA,
-                    UNBREAKABLE, WATER, build_atlas)
+                    UNBREAKABLE, WATER, build_atlas, turned)
 from player import Player
 from renderer import FIXED_COLORS, LOD_QUALITY_NAMES, Renderer, oklab_to_srgb, srgb_to_oklab
 from terrain import SEA_LEVEL
@@ -698,7 +698,7 @@ class App:
                 self.sfx(SND_BREAK)
         elif self.target and pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT, hold=hold, repeat=repeat):
             x, y, z = self.target[1]
-            block = self.hotbar[self.selected]
+            block = turned(self.hotbar[self.selected], self.player.forward())  # a front faces the player
             free = self.world.inside(x, y, z) and self.world.get(x, y, z) in (0, WATER)
             if free and (block == WATER or not self.player.overlaps(x, y, z)):
                 self.world.set(x, y, z, block)
