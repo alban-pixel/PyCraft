@@ -343,8 +343,8 @@ void main() {
     if (v_kind != 1) albedo = far_albedo(albedo, v_tile, v_tint, length(v_pos));
     // A plant's shadow is tested a block toward the light, so it doesn't shadow itself
     float direct = direct_light(plant ? v_pos + light_dir : v_pos, n);
-    if (mode == 0)
-        out_color = vec4(fog(shade_opaque(albedo, face, v_ao, direct), length(v_pos)), 1.0);
+    if (mode == 0)  // (a lamp shows its own colors, day and night)
+        out_color = vec4(fog(v_kind == 5 ? albedo : shade_opaque(albedo, face, v_ao, direct), length(v_pos)), 1.0);
     else
         out_color = shade_water(albedo, v_pos, v_face, direct);
 }
