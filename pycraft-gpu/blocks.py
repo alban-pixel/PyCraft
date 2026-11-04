@@ -33,6 +33,11 @@ BLOCK_NAMES = ["Air", "Grass", "Dirt", "Stone", "Cobblestone", "Oak planks", "Oa
                "Purple wool", "Blue wool", "Brown wool", "Green wool", "Red wool", "Black wool",
                "Deepslate bricks", "Polished deepslate", "Mud bricks", "Quartz block", "Yellow terracotta",
                "Red terracotta", "Brown terracotta", "Light gray terracotta"]
+# Plants, numbered after the building blocks
+(TALL_GRASS, FERN, DEAD_BUSH, POPPY, DANDELION, BLUE_ORCHID, CORNFLOWER, OXEYE_DAISY, ALLIUM,
+ OAK_SAPLING) = range(LIGHT_GRAY_TERRACOTTA + 1, LIGHT_GRAY_TERRACOTTA + 11)
+BLOCK_NAMES += ["Tall grass", "Fern", "Dead bush", "Poppy", "Dandelion", "Blue orchid", "Cornflower", "Oxeye daisy",
+                "Allium", "Oak sapling"]
 NUM_BLOCKS = len(BLOCK_NAMES)
 
 # Blocks the player can pick in the inventory (E)
@@ -47,14 +52,22 @@ def _flags(*blocks):
 
 
 ALL_LEAVES = (LEAVES, SPRUCE_LEAVES, BIRCH_LEAVES, JUNGLE_LEAVES, ACACIA_LEAVES)
+# Small plants, drawn as two crossed quads instead of a cube (see builder.py)
+FLOWERS = (POPPY, DANDELION, BLUE_ORCHID, CORNFLOWER, OXEYE_DAISY, ALLIUM)
+PLANTS = (TALL_GRASS, FERN, DEAD_BUSH, *FLOWERS, OAK_SAPLING)
 
 # Properties, as lookup tables indexed by block id (they also work on whole NumPy arrays of blocks)
-OPAQUE = ~_flags(AIR, GLASS, WATER, *ALL_LEAVES)  # hides the faces of the blocks next to it
-SOLID = ~_flags(AIR, WATER)  # the player collides with it
-CUTOUT = _flags(GLASS, *ALL_LEAVES)  # see-through where the texture is transparent
+OPAQUE = ~_flags(AIR, GLASS, WATER, *ALL_LEAVES, *PLANTS)  # hides the faces of the blocks next to it
+SOLID = ~_flags(AIR, WATER, *PLANTS)  # the player collides with it
+CUTOUT = _flags(GLASS, *ALL_LEAVES, *PLANTS)  # see-through where the texture is transparent
+PLANT = _flags(*PLANTS)  # drawn as two crossed quads
 SELF_CULL = _flags(GLASS, WATER, *ALL_LEAVES)  # no faces between two blocks of this same type
 TARGETABLE = ~_flags(AIR, WATER)  # can be aimed at and broken
 UNBREAKABLE = _flags(BEDROCK)
+# The ground each plant grows on: GROWS_ON[plant, block under it]
+GROWS_ON = np.zeros((NUM_BLOCKS, NUM_BLOCKS), dtype=bool)
+GROWS_ON[np.ix_(PLANTS, (GRASS, DIRT, PODZOL))] = True
+GROWS_ON[DEAD_BUSH] = _flags(SAND, RED_SAND)
 
 # Tile numbers inside the atlas
 (T_GRASS_TOP, T_GRASS_SIDE, T_DIRT, T_STONE, T_COBBLE, T_PLANKS, T_LOG_SIDE, T_LOG_TOP, T_LEAVES,
@@ -73,6 +86,8 @@ UNBREAKABLE = _flags(BEDROCK)
  T_LIGHT_GRAY_WOOL, T_CYAN_WOOL, T_PURPLE_WOOL, T_BLUE_WOOL, T_BROWN_WOOL, T_GREEN_WOOL, T_RED_WOOL, T_BLACK_WOOL,
  T_DEEPSLATE_BRICKS, T_POLISHED_DEEPSLATE, T_MUD_BRICKS, T_QUARTZ, T_YELLOW_TERRACOTTA, T_RED_TERRACOTTA,
  T_BROWN_TERRACOTTA, T_LIGHT_GRAY_TERRACOTTA) = range(T_MOSS + 1, T_MOSS + 57)
+(T_TALL_GRASS, T_FERN, T_DEAD_BUSH, T_POPPY, T_DANDELION, T_BLUE_ORCHID, T_CORNFLOWER, T_OXEYE_DAISY, T_ALLIUM,
+ T_OAK_SAPLING) = range(T_LIGHT_GRAY_TERRACOTTA + 1, T_LIGHT_GRAY_TERRACOTTA + 11)
 
 
 def _faces(side, top=None, bottom=None):
@@ -175,6 +190,17 @@ BLOCK_TILES = np.array([
     _faces(T_RED_TERRACOTTA),
     _faces(T_BROWN_TERRACOTTA),
     _faces(T_LIGHT_GRAY_TERRACOTTA),
+    # Plants: one tile for both crossed quads
+    _faces(T_TALL_GRASS),
+    _faces(T_FERN),
+    _faces(T_DEAD_BUSH),
+    _faces(T_POPPY),
+    _faces(T_DANDELION),
+    _faces(T_BLUE_ORCHID),
+    _faces(T_CORNFLOWER),
+    _faces(T_OXEYE_DAISY),
+    _faces(T_ALLIUM),
+    _faces(T_OAK_SAPLING),
 ], dtype=np.int32)
 
 
@@ -281,6 +307,93 @@ def _wool_weave(rng):
     across = (xs // 4 + ys // 4) % 2 == 0  # squares of 4x4 texels, threads across then down, in turn
     weave = np.where(np.where(across, ys, xs) % 2 == 0, 1.05, 0.93)
     return weave[..., None] * (1 + rng.uniform(-0.04, 0.04, (TILE, TILE, 1)))
+
+
+def _paint(img, seen, ys, xs, color, rng, var=0.1):
+    """Paint texels (ys, xs) of a plant tile in a slightly noisy color, and make them visible."""
+    ys, xs = (a.ravel() for a in np.broadcast_arrays(np.clip(ys, 0, TILE - 1), np.clip(xs, 0, TILE - 1)))
+    img[ys, xs] = np.array(color, dtype=float) * (1 + rng.uniform(-var, var, (ys.size, 1)))
+    seen[ys, xs] = True
+
+
+def _stalk(x, height, lean=0.0):
+    """Texels (ys, xs) of a stalk or blade one texel thick, growing up from the bottom row and bending
+    sideways, lean texels at its tip."""
+    t = np.arange(height)
+    return TILE - 1 - t, np.rint(x + lean * (t / max(height - 1, 1)) ** 2).astype(int)
+
+
+def _blob(cx, cy, rx, ry):
+    """Texels (ys, xs) inside an ellipse: a flower's head, a tuft of leaves."""
+    ys, xs = np.mgrid[0:TILE, 0:TILE]
+    return np.nonzero(((xs - cx) / rx) ** 2 + ((ys - cy) / ry) ** 2 <= 1)
+
+
+def _plant_tiles(rng, tiles, alpha, tint):
+    """The plants' tiles: stalks, leaves and flowers drawn on a see-through background."""
+    def new(t, tinted=False):
+        img, seen = np.zeros((TILE, TILE, 3)), np.zeros((TILE, TILE), dtype=bool)
+        tiles[t], alpha[t] = img, seen
+        if tinted:  # colored by the biome, like the grass
+            tint[t] = np.ones((TILE, TILE), dtype=bool)
+        return img, seen
+
+    roots = np.linspace(1.1, 0.7, TILE)[:, None, None]  # darker toward the ground
+    img, seen = new(T_TALL_GRASS, tinted=True)
+    for x in rng.choice(np.arange(1, 15), 11, replace=False):  # blades of different heights
+        _paint(img, seen, *_stalk(x, rng.integers(7, 16), rng.uniform(-2.5, 2.5)), (190, 190, 190), rng, 0.15)
+    img *= roots
+
+    img, seen = new(T_FERN, tinted=True)
+    for x, height, lean in ((7, 15, 0.5), (5, 11, -4.5), (10, 12, 4.5)):  # three fronds
+        ys, xs = _stalk(x, height, lean)
+        _paint(img, seen, ys, xs, (180, 180, 180), rng, 0.08)
+        for i in range(2, height - 1, 2):  # leaflets on both sides, shorter toward the tip
+            n = np.arange(1 + (height - i) // 5)
+            for side in (-1, 1):
+                _paint(img, seen, ys[i] - (n + 1) // 2, xs[i] + side * (n + 1), (210, 210, 210), rng, 0.12)
+    img *= roots
+
+    img, seen = new(T_DEAD_BUSH)
+    _paint(img, seen, np.arange(11, TILE), 7, (110, 78, 46), rng)
+    for twig in range(6):  # thin twigs wandering up and outward
+        steps = rng.integers(4, 10)
+        side = 1 if twig % 2 else -1
+        xs = 7 + np.cumsum(np.where(rng.random(steps) < 0.6, side, 0))
+        _paint(img, seen, rng.integers(10, 14) - np.arange(1, steps + 1), xs, (128, 92, 56), rng, 0.15)
+
+    stem, leaf = (62, 112, 40), (74, 130, 46)
+
+    def flower(t, height, x=7):
+        img, seen = new(t)
+        _paint(img, seen, *_stalk(x, height, rng.uniform(-0.6, 0.6)), stem, rng)
+        y = rng.integers(11, 14)
+        _paint(img, seen, [y, y - 1], [x + 1, x + 2], leaf, rng)  # a leaf on the stem
+        return img, seen
+
+    img, seen = flower(T_POPPY, 11)
+    _paint(img, seen, *_blob(7.5, 4.5, 3.2, 2.6), (200, 34, 30), rng, 0.12)
+    _paint(img, seen, [4, 4], [7, 8], (40, 30, 22), rng)
+    img, seen = flower(T_DANDELION, 9)
+    _paint(img, seen, *_blob(7.5, 6, 2.3, 2.0), (245, 208, 40), rng, 0.12)
+    img, seen = flower(T_BLUE_ORCHID, 10, 6)
+    _paint(img, seen, *_stalk(10, 8, 0.5), stem, rng)
+    _paint(img, seen, *_blob(6, 5, 1.9, 1.6), (70, 160, 232), rng, 0.12)
+    _paint(img, seen, *_blob(10.5, 7, 1.6, 1.4), (70, 160, 232), rng, 0.12)
+    img, seen = flower(T_CORNFLOWER, 11)
+    _paint(img, seen, *_blob(7.5, 4.5, 2.6, 1.8), (66, 96, 222), rng, 0.12)
+    _paint(img, seen, [3, 2, 3, 2, 3], [5, 6, 8, 9, 10], (92, 120, 240), rng)  # the frayed petals
+    img, seen = flower(T_OXEYE_DAISY, 10)
+    _paint(img, seen, *_blob(7.5, 5, 3.4, 2.4), (236, 236, 228), rng, 0.05)
+    _paint(img, seen, *_blob(7.5, 5, 1.2, 0.9), (230, 185, 40), rng)
+    img, seen = flower(T_ALLIUM, 13)
+    _paint(img, seen, *_blob(7.5, 3.5, 3.2, 3.0), (165, 85, 205), rng, 0.2)
+
+    img, seen = new(T_OAK_SAPLING)
+    ys, xs = _blob(7.5, 5.5, 4.5, 4.0)
+    some = rng.random(ys.size) < 0.7  # a sparse tuft of leaves
+    _paint(img, seen, ys[some], xs[some], (70, 120, 42), rng, 0.2)
+    _paint(img, seen, np.arange(8, TILE), 7, (100, 75, 45), rng)  # the trunk
 
 
 def build_atlas(seed=7):
@@ -399,6 +512,8 @@ def build_atlas(seed=7):
     tiles[T_GLASS], alpha[T_GLASS] = glass, glass_alpha
 
     tiles[T_WATER], tint[T_WATER] = _noisy(rng, (204, 204, 204), 0.1), full
+    # Plants get their own random numbers, so the tiles made before and after them stay as they were
+    _plant_tiles(np.random.default_rng(seed + 1), tiles, alpha, tint)
 
     # --- Building blocks (made after the older tiles, which then stay exactly as they were) ---
     for planks_t, color in [(T_SPRUCE_PLANKS, (115, 85, 52)), (T_BIRCH_PLANKS, (196, 179, 123)),

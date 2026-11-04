@@ -84,8 +84,12 @@ TILE_AVG_UNIT = 9
 BLOCK_IDS = "".join("const int %s = %d;\n" % (name, getattr(B, name)) for name in (
     "GRASS", "DIRT", "STONE", "PODZOL", "MUD", "MOSS", "GRAVEL", "SNOW", "WATER", "ICE", "TERRACOTTA", "RED_SAND",
     "LEAVES", "SPRUCE_LEAVES", "BIRCH_LEAVES", "JUNGLE_LEAVES", "ACACIA_LEAVES"))
+# Only the blocks the terrain generator places (numbered up to MOSS): the building blocks and the plants
+# never show in the distant terrain, and a longer constant array makes its shader much slower on some
+# graphics cards (AMD: from 46 to 109 ms a frame at 2560x1440 with all 101 blocks)
+TERRAIN_BLOCKS = B.MOSS + 1
 BLOCK_TILES_GLSL = "const int BLOCK_TILES[%d] = int[](%s);\n" % (
-    BLOCK_TILES.size, ", ".join(str(int(t)) for t in BLOCK_TILES.ravel()))
+    TERRAIN_BLOCKS * 6, ", ".join(str(int(t)) for t in BLOCK_TILES[:TERRAIN_BLOCKS].ravel()))
 BANDS_GLSL = "const int BANDS[%d] = int[](%s);\n" % (len(T.BANDS), ", ".join(str(int(b)) for b in T.BANDS))
 
 LIGHT = """
@@ -220,7 +224,7 @@ uniform mat4 vp;      // view and projection, with the camera at (0, 0, 0)
 uniform vec3 origin;  // corner of this column, relative to the camera
 uniform int mode;
 in vec3 in_pos;       // relative to the corner of the column
-in uvec4 in_info;     // atlas tile, corner of the face (0-3), face direction (0-5), kind (see builder.KIND)
+in uvec4 in_info;     // atlas tile, corner of the face (0-3), face direction (0-5, plants 6-7), kind (builder.KIND)
 in vec4 in_tint;      // biome color for grass, leaves and water; ambient occlusion
 out vec2 v_uv;
 out vec3 v_pos;
@@ -327,17 +331,20 @@ out vec4 out_color;
 """ + LIGHT + CLOUDS + SHADOWS + WAVES + BLOCK_SHADING + CELLS + """
 void main() {
     vec4 tex = texture(atlas, v_uv);
-    if (tex.a < 0.5 && (v_kind == 1 || (v_kind == 3 && mode == 2))) discard;  // see-through texel
+    bool plant = v_kind == 4;
+    if (tex.a < 0.5 && (v_kind == 1 || plant || (v_kind == 3 && mode == 2))) discard;  // see-through texel
     if (mode == 2) return;  // shadow map: only the depth counts
-    vec3 n = NORMALS[v_face];
+    int face = plant ? 2 : v_face;  // plants (crossed quads, faces 6-7) are lit like the top of a block
+    vec3 n = NORMALS[face];
     if (!drawn_as_blocks(cell_of(v_pos.xz - n.xz * 0.01))) discard;  // the distant terrain shows here
     vec3 albedo = tex.rgb;
     if (tex.a > 0.5 && tex.a < 0.9) albedo *= v_tint;  // texel colored by the biome
     if (v_kind == 3 && tex.a < 0.5) albedo *= v_tint * 0.4;  // a hole in leaves: the shaded leaves inside
     if (v_kind != 1) albedo = far_albedo(albedo, v_tile, v_tint, length(v_pos));
-    float direct = direct_light(v_pos, n);
+    // A plant's shadow is tested a block toward the light, so it doesn't shadow itself
+    float direct = direct_light(plant ? v_pos + light_dir : v_pos, n);
     if (mode == 0)
-        out_color = vec4(fog(shade_opaque(albedo, v_face, v_ao, direct), length(v_pos)), 1.0);
+        out_color = vec4(fog(shade_opaque(albedo, face, v_ao, direct), length(v_pos)), 1.0);
     else
         out_color = shade_water(albedo, v_pos, v_face, direct);
 }
@@ -859,7 +866,8 @@ def tile_averages(atlas):
     """(256, 2, 4) float array: for each atlas tile, the average of its texels that keep their own
     color (rgb) and the share of texels the biome colors (a), then the average of those (rgb).
     Far away, a block is smaller than a pixel: the distant terrain uses these instead of the texture.
-    The holes in leaves count as the leaves behind them, in the shade."""
+    The holes in leaves count as the leaves behind them, in the shade; the holes of other tiles
+    (plants, glass) are left out, as they are never drawn."""
     out = np.zeros((ATLAS_TILES * ATLAS_TILES, 2, 4), np.float32)
     rgb, alpha = atlas[..., :3].astype(np.float32) / 255, atlas[..., 3]
     for t in range(ATLAS_TILES * ATLAS_TILES):
@@ -870,12 +878,13 @@ def tile_averages(atlas):
         hole = a < 128
         c = np.where(hole[:, None], c * 0.4, c)  # see-through texels: the shaded leaves inside
         tinted |= hole & (t in LEAF_TILES)
-        plain = ~tinted
+        seen = ~hole | (t in LEAF_TILES)
+        plain = ~tinted & seen
         if plain.any():
             out[t, 0, :3] = c[plain].mean(axis=0)
         if tinted.any():
             out[t, 1, :3] = c[tinted].mean(axis=0)
-        out[t, 0, 3] = tinted.mean()
+        out[t, 0, 3] = tinted.sum() / max(seen.sum(), 1)
     return out
 
 # Triangles of a face, split along one diagonal or the other: along the brighter corners, so

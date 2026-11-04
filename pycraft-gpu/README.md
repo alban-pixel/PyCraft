@@ -31,6 +31,9 @@ a real graphics card driver.
   taiga, snowy tundra, alpine meadow, snowy peaks, glacier. Grass, leaves and water change color
   smoothly from one biome to the next
 - Oak, birch, spruce, jungle and acacia trees, swamp oaks and cacti
+- Tall grass, ferns, dead bushes and patches of flowers (poppies, dandelions, blue orchids,
+  cornflowers, oxeye daisies, alliums) on the ground, by biome; you walk through them, and you can
+  plant them, with oak saplings, on grass, dirt or podzol (dead bushes on sand)
 - Caves (tunnels near the surface, big caverns deeper down) and coal, iron, gold and diamond ore
 - The terrain far away, up to about 8 km, is drawn too — seabed and see-through water included —
   so you see the mountains from a long way off
@@ -42,10 +45,11 @@ a real graphics card driver.
 - Drifting clouds that cast shadows, with the highest mountains rising through them; stars at night,
   a glow around the sun, and a blue haze over faraway mountains
 - Anti-aliased edges, and up to 2560x1440 pixels
-- 90 blocks to build with: the terrain's own, and building blocks such as planks of every wood,
+- 100 blocks to build with: the terrain's own, building blocks such as planks of every wood,
   stone and deepslate bricks, granite, diorite and andesite (raw and polished), cut and chiseled
   sandstone, blocks of coal, iron, gold and diamond, obsidian, bookshelves, hay bales, pumpkins,
-  melons, 16 colors of wool, quartz and more colors of terracotta
+  melons, 16 colors of wool, quartz and more colors of terracotta, and plants: tall grass, ferns,
+  dead bushes, six kinds of flowers and oak saplings, which also grow wild in the world
 - Walking, sprinting, jumping, swimming and flying (and flying fast)
 - An 8-minute day and night cycle, with a sun, a moon and sunsets
 - A title screen, a pause menu and a block inventory
@@ -163,7 +167,9 @@ for each other on this work. The game asks them for the nearest columns first �
 workers on m1-pro — uploads what they send back, and rebuilds a section itself right away when you
 change a block. Each column counts its changes, so a mesh built from older blocks is thrown away and
 asked for again. While building a face, the workers also count the blocks around each of its corners:
-the more there are, the darker the corner (ambient occlusion).
+the more there are, the darker the corner (ambient occlusion). Plants are not cubes: each one is two
+quads crossed along the diagonals of its block, seen from both sides, whose see-through texels are
+cut out (in the shadows too) and which are lit like the top of a block.
 
 On m1-pro, two more jobs leave the game's thread: packing a finished mesh for the card runs on a
 small pool of threads, and the distant terrain's sampling runs on its own thread — NumPy releases

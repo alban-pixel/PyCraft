@@ -12,8 +12,8 @@ import traceback
 
 import numpy as np
 
-from blocks import (ACACIA_LEAVES, ALL_LEAVES, BLOCK_TILES, CUTOUT, GRASS, JUNGLE_LEAVES, LEAVES, NUM_BLOCKS, OPAQUE,
-                    SELF_CULL, WATER)
+from blocks import (ACACIA_LEAVES, ALL_LEAVES, BLOCK_TILES, CUTOUT, FERN, GRASS, JUNGLE_LEAVES, LEAVES, NUM_BLOCKS,
+                    OPAQUE, PLANT, PLANTS, SELF_CULL, TALL_GRASS, WATER)
 from terrain import CHUNK
 from world import World
 
@@ -28,20 +28,26 @@ FACES = [
     ((0, 0, 1), [(1, 1, 1), (0, 1, 1), (0, 0, 1), (1, 0, 1)]),
     ((0, 0, -1), [(0, 1, 0), (1, 1, 0), (1, 0, 0), (0, 0, 0)]),
 ]
-FACE_CORNERS = [np.array(corners, dtype=np.float32) for _, corners in FACES]
+# Plants are two quads crossed along the diagonals of their block, face directions 6 and 7, seen from
+# both sides. Their corners go in the same order as the faces': the top ones first, texture upright.
+PLANT_FACES = (6, 7)
+PLANT_CORNERS = [[(0, 1, 0), (1, 1, 1), (1, 0, 1), (0, 0, 0)], [(1, 1, 0), (0, 1, 1), (0, 0, 1), (1, 0, 0)]]
+FACE_CORNERS = [np.array(corners, dtype=np.float32) for corners in [c for _, c in FACES] + PLANT_CORNERS]
 TOP_CORNERS = [np.array(corners)[:, 1] == 1 for _, corners in FACES]
 
 # One vertex: position relative to its column's corner; atlas tile, face corner (0-3), face
-# direction (0-5) and kind; biome color, and in its alpha the ambient occlusion (darker in corners)
+# direction (0-5, 6-7 for plants) and kind; biome color, and in its alpha the ambient occlusion
+# (darker in corners)
 VERTEX = np.dtype([("pos", "<f4", 3), ("info", "u1", 4), ("tint", "u1", 4)])
 # Kind of face: 0 opaque, 1 see-through texels (glass), 2 water, 3 leaves (their holes look dark, but
-# let the light through for the shadows)
+# let the light through for the shadows), 4 plants (see-through texels, lit as if they faced up)
 KIND = np.zeros(NUM_BLOCKS, np.uint8)
 KIND[CUTOUT] = 1
 KIND[list(ALL_LEAVES)] = 3
 KIND[WATER] = 2
+KIND[list(PLANTS)] = 4
 TINT = np.zeros(NUM_BLOCKS, np.uint8)  # 1 grass, 2 leaves, 3 water: which biome color a block takes
-TINT[GRASS] = 1
+TINT[[GRASS, TALL_GRASS, FERN]] = 1
 TINT[[LEAVES, JUNGLE_LEAVES, ACACIA_LEAVES]] = 2
 TINT[WATER] = 3
 
@@ -85,6 +91,28 @@ _BORDER = {-1: (slice(CHUNK - 1, CHUNK), slice(0, 1)), 0: (slice(0, CHUNK), slic
            1: (slice(0, 1), slice(CHUNK + 1, CHUNK + 2))}
 
 
+def _quads(pos, blocks, tiles, face, tints, i, k, ao):
+    """Vertices of n quads turned the same way: corners pos (n, 4, 3), their blocks, atlas tiles and
+    place (i, k) in the column, which picks the biome color; ao: brightness (0-255) of each corner."""
+    v = np.empty((blocks.size, 4), VERTEX)
+    v["pos"] = pos
+    info = np.empty((blocks.size, 4, 4), np.uint8)
+    info[..., 0] = tiles[:, None]
+    info[..., 1] = np.arange(4)
+    info[..., 2] = face
+    info[..., 3] = KIND[blocks][:, None]
+    v["info"] = info
+    tint = np.full((blocks.size, 4, 4), 255, np.uint8)
+    which = TINT[blocks]
+    for t in (1, 2, 3):
+        sel = which == t
+        if sel.any():
+            tint[sel, :, :3] = tints[t][i[sel], k[sel]][:, None, :]
+    tint[..., 3] = ao
+    v["tint"] = tint
+    return v.reshape(-1)
+
+
 def mesh_section(world, col, cx, cy, cz):
     """Vertices of every visible face in a section (positions relative to the column's corner),
     or None when nothing in it can be seen."""
@@ -107,11 +135,12 @@ def mesh_section(world, col, cx, cy, cz):
     water_above = padded[1:-1, 2:, 1:-1] == WATER
     occludes = OCCLUDES[padded].ravel()
     tints = [None, col.grass, col.foliage, col.water_tint]
+    cube = (core != 0) & ~PLANT[core]
     parts = []
     for face, ((dx, dy, dz), _) in enumerate(FACES):
         neighbor = padded[1 + dx:1 + dx + CHUNK, 1 + dy:1 + dy + CHUNK, 1 + dz:1 + dz + CHUNK]
         # A face shows when its neighbor doesn't hide it: not opaque, and not the same glass/water/leaves
-        visible = (core != 0) & ~OPAQUE[neighbor] & ~((core == neighbor) & SELF_CULL[core])
+        visible = cube & ~OPAQUE[neighbor] & ~((core == neighbor) & SELF_CULL[core])
         i, j, k = np.nonzero(visible)
         if i.size == 0:
             continue
@@ -122,26 +151,18 @@ def mesh_section(world, col, cx, cy, cz):
         side1, side2, diagonal = near[..., 0], near[..., 1], near[..., 2]
         ao = np.where(side1 & side2, 0, 3 - side1.astype(np.int8) - side2 - diagonal)
         ao[blocks == WATER] = 3
-        v = np.empty((i.size, 4), VERTEX)
         pos = np.stack([i, j + cy * CHUNK, k], axis=1).astype(np.float32)[:, None, :] + FACE_CORNERS[face][None]
         low = (blocks == WATER) & ~water_above[i, j, k]  # the top of the water is a bit lower
         pos[low[:, None] & TOP_CORNERS[face][None], 1] -= 1 - WATER_SURFACE
-        v["pos"] = pos
-        info = np.empty((i.size, 4, 4), np.uint8)
-        info[..., 0] = BLOCK_TILES[blocks, face][:, None]
-        info[..., 1] = np.arange(4)
-        info[..., 2] = face
-        info[..., 3] = KIND[blocks][:, None]
-        v["info"] = info
-        tint = np.full((i.size, 4, 4), 255, np.uint8)
-        which = TINT[blocks]
-        for t in (1, 2, 3):
-            sel = which == t
-            if sel.any():
-                tint[sel, :, :3] = tints[t][i[sel], k[sel]][:, None, :]
-        tint[..., 3] = AO_LEVELS[ao]
-        v["tint"] = tint
-        parts.append(v.reshape(-1))
+        parts.append(_quads(pos, blocks, BLOCK_TILES[blocks, face], face, tints, i, k, AO_LEVELS[ao]))
+    # Plants: their two crossed quads, never hidden by the blocks around, and no ambient occlusion
+    i, j, k = np.nonzero(PLANT[core])
+    if i.size:
+        blocks = core[i, j, k]
+        corner = np.stack([i, j + cy * CHUNK, k], axis=1).astype(np.float32)[:, None, :]
+        for face in PLANT_FACES:
+            parts.append(_quads(corner + FACE_CORNERS[face][None], blocks, BLOCK_TILES[blocks, 0], face, tints, i, k,
+                                255))
     return np.concatenate(parts) if parts else None
 
 
