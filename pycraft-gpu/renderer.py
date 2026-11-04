@@ -2,7 +2,7 @@
 
 Near the camera the world is drawn block by block: each 16x16 column of the world gets one mesh,
 made of the visible faces of its sections, and a few columns are built every frame, nearest first.
-Farther away, up to about 8 km, the terrain is drawn as a smooth height map at six levels of detail
+Farther away, up to about 8 km, the terrain is drawn as blocky columns at six levels of detail
 (a "clipmap"), sampled from the same terrain generator, so the mountains thousands of blocks high
 can be seen from far away. Everything is drawn relative to the camera, which keeps the numbers
 small and precise anywhere in the endless world.
@@ -27,16 +27,28 @@ import time
 import moderngl
 import numpy as np
 
-from blocks import (ACACIA_LEAVES, BIRCH_LEAVES, GRASS, ICE, JUNGLE_LEAVES, LEAVES, RED_SAND, SAND, SNOW,
-                    SPRUCE_LEAVES, TERRACOTTA, WATER, block_colors)
+from blocks import (ACACIA_LEAVES, ALL_LEAVES, ATLAS_TILES, BIRCH_LEAVES, BLOCK_TILES, ICE, JUNGLE_LEAVES, LEAVES,
+                    SPRUCE_LEAVES, TILE, TINT_ALPHA, WATER)
+import blocks as B
 import terrain as T
 from builder import IN_FLIGHT, WATER_SURFACE, WORKERS, Builders, mesh_section
 from terrain import CHUNK, SEA_LEVEL, WORLD_HEIGHT
 
-LOD_SIZE = 128  # vertices per side of each level of the distant terrain
-LOD_LEVELS = 6
-LOD_SPACING = 4  # blocks between vertices on the finest level; each level doubles it
+LOD_SIZE = 128  # grid points per side of each level of the distant terrain (127 columns)
+LOD_LEVELS = 7
+LOD_SPACING = 2  # width of a column on the finest level, in blocks; each level doubles it
 LOD_STRIPS_PER_FRAME = 4
+LOD_MARGIN = 4  # columns along the edge of a level that the next, coarser one always draws
+LOD_BAND = 24  # columns over which a level gives way to the next one, cell by cell
+FAR_LIMIT = 8000.0  # the coarsest level reaches about 8 km
+SIM_DISTANCES = {32: 6, 64: 8, 128: 10, 256: 12, 512: 12}  # render distance -> radius drawn as blocks (chunks)
+CUBE_FACES = (  # (normal, 6 corners) for the 5 visible faces of a unit cube, corners CCW seen from outside
+    ((0, 1, 0), ((0, 1, 0), (1, 1, 1), (1, 1, 0), (0, 1, 0), (0, 1, 1), (1, 1, 1))),
+    ((1, 0, 0), ((1, 1, 0), (1, 0, 1), (1, 0, 0), (1, 1, 0), (1, 1, 1), (1, 0, 1))),
+    ((-1, 0, 0), ((0, 1, 1), (0, 0, 0), (0, 0, 1), (0, 1, 1), (0, 1, 0), (0, 0, 0))),
+    ((0, 0, 1), ((0, 1, 1), (0, 0, 1), (1, 0, 1), (0, 1, 1), (1, 0, 1), (1, 1, 1))),
+    ((0, 0, -1), ((1, 1, 0), (1, 0, 0), (0, 0, 0), (1, 1, 0), (0, 0, 0), (0, 1, 0))),
+)
 READY_SIZE = 64  # the map of columns drawn as blocks covers 64x64 chunks around the camera
 SHADOW_SIZE = 2048  # texels per side of each shadow map
 SHADOW_DEPTH = 4500.0  # the shadow maps hold what is less than this far from the camera along the light
@@ -52,13 +64,25 @@ ADAPT_EVERY = 2  # frames between two adjustments of the palette
 MIX_PENALTY = 0.35  # how much dithering between two distant colors is avoided (it looks noisy)
 
 # Texture units
-ATLAS_UNIT = HEIGHTS_UNIT = 0
+ATLAS_UNIT = 0
 COLORS_UNIT = 1
 READY_UNIT = 2
 CLOUDS_UNIT = 3
 SHADOW_UNITS = (4, 5, 6)
+HEIGHTS_UNIT = 7
+SURFACE_UNIT = 8
+TILE_AVG_UNIT = 9
 
 # --- Shader code shared by several programs ---------------------------------------------------
+
+# Block numbers, the atlas tile of each face of each block, and the badlands' rock layers, for the
+# distant terrain's shaders
+BLOCK_IDS = "".join("const int %s = %d;\n" % (name, getattr(B, name)) for name in (
+    "GRASS", "DIRT", "STONE", "PODZOL", "MUD", "GRAVEL", "SNOW", "WATER", "ICE", "TERRACOTTA", "RED_SAND",
+    "LEAVES", "SPRUCE_LEAVES", "BIRCH_LEAVES", "JUNGLE_LEAVES", "ACACIA_LEAVES"))
+BLOCK_TILES_GLSL = "const int BLOCK_TILES[%d] = int[](%s);\n" % (
+    BLOCK_TILES.size, ", ".join(str(int(t)) for t in BLOCK_TILES.ravel()))
+BANDS_GLSL = "const int BANDS[%d] = int[](%s);\n" % (len(T.BANDS), ", ".join(str(int(b)) for b in T.BANDS))
 
 LIGHT = """
 const vec3 NORMALS[6] = vec3[](vec3(1.0, 0.0, 0.0), vec3(-1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0),
@@ -92,15 +116,17 @@ vec3 sky_color(vec3 dir) {
 CLOUDS = """
 uniform sampler2D clouds;   // tileable noise
 uniform vec2 cloud_origin;  // the camera's position plus the wind's drift, in cloud texture units
-uniform float cloud_height; // height of the clouds above the camera
+uniform float cloud_height; // middle of the cloud slab above the camera
 uniform float cloud_cover;  // noise level where the clouds begin
+const float CLOUD_THICK = 80.0;  // the clouds are a slab this many blocks thick
+const float CLOUD_HALF = CLOUD_THICK / 2.0;
 float cloud_density(vec2 xz) {  // xz relative to the camera
     vec2 uv = cloud_origin + xz / %(period).1f;
     float n = 0.72 * texture(clouds, uv).r + 0.28 * texture(clouds, uv * 6.0).r;
     return smoothstep(cloud_cover, cloud_cover + 0.16, n);
 }
 float cloud_shadow(vec3 pos) {
-    if (light_dir.y < 0.03 || pos.y > cloud_height) return 1.0;
+    if (light_dir.y < 0.03 || pos.y > cloud_height + CLOUD_HALF) return 1.0;
     return 1.0 - 0.55 * cloud_density(pos.xz + light_dir.xz * ((cloud_height - pos.y) / light_dir.y));
 }
 """ % {"period": CLOUD_PERIOD}
@@ -198,6 +224,7 @@ out vec3 v_tint;
 out float v_ao;
 flat out int v_face;
 flat out int v_kind;
+flat out int v_tile;
 const vec2 CORNERS[4] = vec2[](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0));
 const float INSET = 0.5 / 16.0;  // half a texel, so neighbor tiles never bleed in
 void main() {
@@ -208,10 +235,77 @@ void main() {
     v_uv = (tile + INSET + CORNERS[in_info.y] * (1.0 - 2.0 * INSET)) / 8.0;
     v_face = int(in_info.z);
     v_kind = int(in_info.w);
+    v_tile = int(in_info.x);
     v_tint = in_tint.rgb;
     v_ao = in_tint.a;
     v_pos = pos;
 }
+"""
+
+# Lighting shared by the blocks and the distant terrain, so both look the same where one gives way
+# to the other
+BLOCK_SHADING = """
+const float FACE_LIGHT[6] = float[](0.8, 0.8, 1.0, 0.55, 0.9, 0.9);  // share of the sky's light on each side
+const float BOUNCE = 0.12;  // sunlight thrown back by the ground onto walls and undersides
+float direct_light(vec3 pos, vec3 n) {  // facing the light, and not in a shadow
+    float d = max(dot(n, light_dir), 0.0);
+    if (d > 0.0 && shadows_on == 1) d *= block_shadow(pos, n);
+    if (d > 0.0) d *= cloud_shadow(pos);
+    return d;
+}
+// Far away a block covers only a few pixels: its texture would shimmer and make moire, so it
+// turns into the average color of its tile (see tile_averages)
+uniform sampler2D tile_avg;
+uniform float px_per_block;  // size on screen of a block 1 block away, in pixels
+vec3 far_albedo(vec3 albedo, int tile, vec3 tint, float dist) {
+    vec4 plain = texelFetch(tile_avg, ivec2(tile, 0), 0), tinted = texelFetch(tile_avg, ivec2(tile, 1), 0);
+    vec3 average = plain.rgb * (1.0 - plain.a) + tinted.rgb * tint * plain.a;
+    return mix(average, albedo, smoothstep(2.0, 6.0, px_per_block / dist));
+}
+vec3 shade_opaque(vec3 albedo, int face, float ao, float direct) {
+    vec3 ambient = sky_light * FACE_LIGHT[face] + light_color * (face == 2 ? 0.0 : BOUNCE);
+    return albedo * (ambient * ao + light_color * (direct * (0.6 + 0.4 * ao)));
+}
+// Water: see-through, reflecting the sky (more at grazing angles), with the sun glinting on waves.
+// Returns the color with the fog, and how opaque it is.
+vec4 shade_water(vec3 albedo, vec3 pos, int face, float direct) {
+    float dist = length(pos);
+    vec3 n = NORMALS[face];
+    vec3 base = albedo * (sky_light + light_color * direct);
+    vec3 view = pos / dist;
+    if (dot(view, n) > 0.0)  // the surface seen from under the water
+        return vec4(fog(base * 0.7, dist), 0.75);
+    // The waves flatten out where a pixel covers several blocks of water (far away, or seen at a
+    // grazing angle): smaller than a pixel, they would only make moire
+    float footprint = dist * dist / (max(abs(pos.y), 0.5) * px_per_block);  // blocks per pixel, in depth
+    vec3 wn = face == 2 ? normalize(mix(wave_normal(pos.xz), n, smoothstep(0.4, 1.5, footprint))) : n;
+    float fresnel = 0.03 + 0.97 * pow(1.0 - max(dot(-view, wn), 0.0), 5.0);
+    vec3 r = reflect(view, wn);
+    float glint = pow(max(dot(r, light_dir), 0.0), 300.0) * (direct > 0.0 ? 1.0 : 0.0);
+    vec3 color = mix(base, sky_color(r), fresnel) + light_color * (glint * 4.0);
+    float f = fog_amount(dist);  // far away, the fog hides what's under the water too
+    return vec4(mix(color, fog_color, f), mix(mix(0.6, 1.0, fresnel), 1.0, f));
+}
+"""
+
+# Where the blocks give way to the distant terrain, and each level of it to the next: every cell
+# picks a number once and for all, and the finer version is drawn there while the fade at its
+# distance stays below that number. Far away fewer and fewer cells are left, never a sharp line.
+CELLS = """
+uniform ivec2 cam_cell;    // the camera's cell (2x2 columns)
+uniform vec2 cam_in_cell;  // the camera's x and z inside it
+uniform vec2 block_fade;   // distances where the fade begins and ends
+float cell_hash(ivec2 c, int level) {
+    uint h = uint(c.x) * 0x8da6b343u ^ uint(c.y) * 0xd8163841u ^ uint(level) * 0xcb1ab31fu;
+    h ^= h >> 16; h *= 0x7feb352du; h ^= h >> 15; h *= 0x846ca68bu; h ^= h >> 16;
+    return float(h >> 8) / 16777216.0;
+}
+ivec2 cell_of(vec2 xz) { return cam_cell + ivec2(floor((xz + cam_in_cell) / 2.0)); }  // xz relative to the camera
+float block_fade_at(ivec2 cell) {  // 0 near the camera, 1 where only the distant terrain is left
+    vec2 center = vec2(cell - cam_cell) * 2.0 + 1.0 - cam_in_cell;
+    return smoothstep(block_fade.x, block_fade.y, length(center));
+}
+bool drawn_as_blocks(ivec2 cell) { return cell_hash(cell, 0) >= block_fade_at(cell); }
 """
 
 BLOCK_FRAGMENT_SHADER = """
@@ -224,46 +318,24 @@ in vec3 v_tint;
 in float v_ao;
 flat in int v_face;
 flat in int v_kind;
+flat in int v_tile;
 out vec4 out_color;
-""" + LIGHT + CLOUDS + SHADOWS + WAVES + """
-const float FACE_LIGHT[6] = float[](0.8, 0.8, 1.0, 0.55, 0.9, 0.9);  // share of the sky's light on each side
-const float BOUNCE = 0.12;  // sunlight thrown back by the ground onto walls and undersides
-float direct_light(vec3 n) {  // facing the light, and not in a shadow
-    float d = max(dot(n, light_dir), 0.0);
-    if (d > 0.0 && shadows_on == 1) d *= block_shadow(v_pos, n);
-    if (d > 0.0) d *= cloud_shadow(v_pos);
-    return d;
-}
+""" + LIGHT + CLOUDS + SHADOWS + WAVES + BLOCK_SHADING + CELLS + """
 void main() {
     vec4 tex = texture(atlas, v_uv);
     if (tex.a < 0.5 && (v_kind == 1 || (v_kind == 3 && mode == 2))) discard;  // see-through texel
     if (mode == 2) return;  // shadow map: only the depth counts
+    vec3 n = NORMALS[v_face];
+    if (!drawn_as_blocks(cell_of(v_pos.xz - n.xz * 0.01))) discard;  // the distant terrain shows here
     vec3 albedo = tex.rgb;
     if (tex.a > 0.5 && tex.a < 0.9) albedo *= v_tint;  // texel colored by the biome
     if (v_kind == 3 && tex.a < 0.5) albedo *= v_tint * 0.4;  // a hole in leaves: the shaded leaves inside
-    vec3 n = NORMALS[v_face];
-    float dist = length(v_pos);
-    float direct = direct_light(n);
-    if (mode == 0) {
-        vec3 ambient = sky_light * FACE_LIGHT[v_face] + light_color * (v_face == 2 ? 0.0 : BOUNCE);
-        vec3 light = ambient * v_ao + light_color * (direct * (0.6 + 0.4 * v_ao));
-        out_color = vec4(fog(albedo * light, dist), 1.0);
-        return;
-    }
-    // Water: see-through, reflecting the sky (more at grazing angles), with the sun glinting on waves
-    vec3 base = albedo * (sky_light + light_color * direct);
-    vec3 view = v_pos / dist;
-    if (dot(view, n) > 0.0) {  // the surface seen from under the water
-        out_color = vec4(fog(base * 0.7, dist), 0.75);
-        return;
-    }
-    vec3 wn = v_face == 2 ? wave_normal(v_pos.xz) : n;
-    float fresnel = 0.03 + 0.97 * pow(1.0 - max(dot(-view, wn), 0.0), 5.0);
-    vec3 r = reflect(view, wn);
-    float glint = pow(max(dot(r, light_dir), 0.0), 300.0) * (direct > 0.0 ? 1.0 : 0.0);
-    vec3 color = mix(base, sky_color(r), fresnel) + light_color * (glint * 4.0);
-    float f = fog_amount(dist);  // far away, the fog hides what's under the water too
-    out_color = vec4(mix(color, fog_color, f), mix(mix(0.6, 1.0, fresnel), 1.0, f));
+    if (v_kind != 1) albedo = far_albedo(albedo, v_tile, v_tint, length(v_pos));
+    float direct = direct_light(v_pos, n);
+    if (mode == 0)
+        out_color = vec4(fog(shade_opaque(albedo, v_face, v_ao, direct), length(v_pos)), 1.0);
+    else
+        out_color = shade_water(albedo, v_pos, v_face, direct);
 }
 """
 
@@ -273,80 +345,207 @@ LOD_VERTEX_SHADER = """
 #version 330
 uniform mat4 vp;
 uniform sampler2D heights;   // 128x128, wrapping around: grid point (x, z) is at texel (x & 127, z & 127)
-uniform sampler2D colors;    // same layout; alpha = 1 for water
-uniform ivec2 grid_origin;   // grid coordinates of vertex (0, 0)
+uniform sampler2D colors;    // same layout: the biome's color of the grass (or of the water)
+uniform sampler2D surface;   // same layout: top block, block under it, leaves of a tree crown (0: none), its height
+uniform ivec2 grid_origin;   // grid coordinates of point (0, 0)
 uniform vec2 origin;         // its position relative to the camera (x, z)
 uniform float cam_y;
 uniform float spacing;
 uniform int mode;
-in vec2 in_grid;
-out vec3 v_color;
-out vec3 v_normal;
+uniform int level;
+uniform vec4 inner;          // square of the finer level (relative to the camera: min x, min z, max x, max z)
+uniform int fade_inner;      // 1 when a finer level is drawn: give way to it, cell by cell
+uniform vec4 own;            // this level's square
+uniform int fade_own;        // 1 when a coarser level takes over at the edge of this one
+uniform int use_ready;       // leave out what the blocks draw (not in the shadow maps)
+uniform sampler2D ready;     // 64x64 wrapping map of the chunk columns drawn as blocks
+uniform ivec2 cam_chunk;
+uniform vec2 cam_in_chunk;
+in vec3 in_pos;              // unit cube corner: x, z in {0, 1}; y = 1 on top, 0 down a side
+in vec3 in_norm;             // the face's axis-aligned normal
 out vec3 v_pos;
-out float v_water;
+flat out int v_face;
+flat out ivec3 v_blocks;     // top block, the block under it, crown leaves (0: no tree)
+flat out vec3 v_tint;
+flat out float v_depth;      // depth of the water over the bottom
+flat out vec2 v_tops;        // heights of the ground and of the column (with its crown), in the world
+flat out float v_bottom;     // a side: height of the column it faces
+flat out int v_taller;       // a top: which of the 8 columns around are taller (bits: +x -x +z -z, then corners)
+flat out vec2 v_corner;      // the column's corner, relative to the camera
+""" + BLOCK_IDS + CELLS + """
+const int FACE_OF[6] = int[](0, 1, 2, 4, 5, 3);  // in_norm -> face number (+x -x +y +z -z)
 float height_at(ivec2 local) { return texelFetch(heights, (grid_origin + local) & 127, 0).r; }
+ivec4 blocks_at(ivec2 local) { return ivec4(texelFetch(surface, (grid_origin + local) & 127, 0) * 255.0 + 0.5); }
+// The ground of a column: the terrain at its corner, as a block takes the height of its own column
+float ground_top(ivec2 cell) { return height_at(cell); }
+float column_top(ivec2 cell) {
+    ivec4 b = blocks_at(cell);
+    return ground_top(cell) + (b.z != 0 ? float(b.w) : 0.0);
+}
+float level_fade(vec2 center, vec4 rect, float fine) {  // 1 at the edge of a finer level's square, 0 well inside
+    float d = min(min(center.x - rect.x, rect.z - center.x), min(center.y - rect.y, rect.w - center.y));
+    return 1.0 - clamp((d - %(margin)d.0 * fine) / (%(band)d.0 * fine), 0.0, 1.0);
+}
 void main() {
-    ivec2 local = ivec2(in_grid);
-    float h = height_at(local);
-    vec3 pos = vec3(origin.x + float(local.x) * spacing, h - cam_y, origin.y + float(local.y) * spacing);
+    // One instance per cell of the grid: a square column of blocks, like Distant Horizons
+    ivec2 local = ivec2(gl_InstanceID %% 127, gl_InstanceID / 127);
+    ivec2 g = grid_origin + local;
+    vec2 center = origin + (vec2(local) + 0.5) * spacing;
+    // Is this cell drawn by this level? Each 2x2 group of its cells is drawn either by this level
+    // or by the next, coarser one: both pick it with the same number
+    bool keep = true, band = false;
+    if (fade_inner == 1) {
+        float f = level_fade(center, inner, spacing * 0.5);
+        keep = cell_hash(g, level) < f;
+        band = f > 0.0 && f < 1.0;
+    }
+    if (fade_own == 1) {
+        ivec2 parent = g >> 1;
+        float f = level_fade(origin + (vec2(parent * 2 - grid_origin) + 1.0) * spacing, own, spacing);
+        keep = keep && cell_hash(parent, level + 1) >= f;
+        band = band || (f > 0.0 && f < 1.0);
+    }
+    float dist = length(center);
+    if (use_ready == 1 && dist + 0.71 * spacing < block_fade.x) {  // the blocks hide it all
+        ivec2 rel = ivec2(floor((center + cam_in_chunk) / 16.0));
+        if (abs(rel.x) < 32 && abs(rel.y) < 32 && texelFetch(ready, (cam_chunk + rel) & 63, 0).r > 0.5) keep = false;
+    }
+    band = band || (dist > block_fade.x && dist < block_fade.y + 2.0 * spacing);
+    if (!keep) {
+        gl_Position = vec4(2.0, 2.0, 2.0, 1.0);  // every vertex at the same place outside the view: nothing drawn
+        return;
+    }
+    ivec4 b = blocks_at(local);
+    float ground = ground_top(local);
+    // Bare rock where it is too steep for soil (snow on the peaks holds a little longer)
+    float h00 = height_at(local), h10 = height_at(local + ivec2(1, 0));
+    float h01 = height_at(local + ivec2(0, 1)), h11 = height_at(local + ivec2(1, 1));
+    float slope = (max(max(h00, h10), max(h01, h11)) - min(min(h00, h10), min(h01, h11))) / spacing;
+    bool soil = b.x == GRASS || b.x == PODZOL || b.x == MUD || b.x == DIRT || b.x == GRAVEL || (b.x == SNOW && b.y == DIRT);
+    if ((slope >= 2.0 && soil) || (slope >= 4.0 && b.x == SNOW)) { b.x = STONE; b.y = STONE; b.z = 0; }
+    float top = ground + (b.z != 0 ? float(b.w) : 0.0);
+    // A side goes down to the top of the column it faces (or becomes a skirt outside the grid),
+    // and folds away when that column is higher. Where two levels or the blocks share the cells,
+    // the neighbor may be drawn by the other one: then every side goes down a bit further.
+    ivec2 ncell = local + ivec2(int(in_norm.x), int(in_norm.z));
+    float neighbor = top;
+    if (in_norm.y == 0.0)
+        neighbor = (min(ncell.x, ncell.y) < 0 || max(ncell.x, ncell.y) > 126) ? top - 4.0 * spacing : column_top(ncell);
+    float y = top;
+    if (in_pos.y < 0.5) {
+        if (band) y = min(neighbor, top) - spacing;
+        else if (neighbor < top) y = neighbor - 0.5;
+    }
+    vec3 pos = vec3(origin.x + (float(local.x) + in_pos.x) * spacing, y - cam_y,
+                    origin.y + (float(local.y) + in_pos.z) * spacing);
     v_pos = pos;
     gl_Position = vp * vec4(pos, 1.0);
     if (mode == 1) {
         gl_Position.z = max(gl_Position.z, -1.0);  // nearer the light than the map: flattened onto it
         return;
     }
-    ivec2 lo = max(local - 1, 0), hi = min(local + 1, 127);
-    float dx = (height_at(ivec2(hi.x, local.y)) - height_at(ivec2(lo.x, local.y))) / (float(hi.x - lo.x) * spacing);
-    float dz = (height_at(ivec2(local.x, hi.y)) - height_at(ivec2(local.x, lo.y))) / (float(hi.y - lo.y) * spacing);
-    v_normal = normalize(vec3(-dx, 1.0, -dz));
-    vec4 c = texelFetch(colors, (grid_origin + local) & 127, 0);
-    bool snow = min(c.r, c.b) > 0.85;  // snow holds on steeper slopes than grass
-    float rock = smoothstep(snow ? 1.6 : 1.0, snow ? 2.4 : 1.6, length(vec2(dx, dz))) * (1.0 - c.a);  // bare rock
-    float strata = 0.92 + 0.08 * sin(h * 0.09) + 0.04 * sin(h * 0.023);  // layers in the cliffs
-    v_color = mix(c.rgb, vec3(0.49) * strata, rock);
-    v_water = c.a;
+    int axis = in_norm.x > 0.5 ? 0 : in_norm.x < -0.5 ? 1 : in_norm.y > 0.5 ? 2 : in_norm.z > 0.5 ? 3 : 4;
+    v_face = FACE_OF[axis];
+    v_blocks = b.xyz;
+    vec4 c = texelFetch(colors, g & 127, 0);
+    v_tint = c.rgb;
+    v_depth = c.a * 255.0;
+    v_tops = vec2(ground, top);
+    v_bottom = neighbor;
+    v_corner = origin + vec2(local) * spacing;
+    v_taller = 0;
+    if (v_face == 2) {
+        const ivec2 AROUND[8] = ivec2[](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1),
+                                        ivec2(1, 1), ivec2(-1, 1), ivec2(1, -1), ivec2(-1, -1));
+        for (int i = 0; i < 8; i++) {
+            ivec2 c = local + AROUND[i];
+            if (min(c.x, c.y) >= 0 && max(c.x, c.y) <= 126 && column_top(c) > top + 0.5) v_taller |= 1 << i;
+        }
+    }
 }
-"""
+""" % {"margin": LOD_MARGIN, "band": LOD_BAND}
 
 LOD_FRAGMENT_SHADER = """
 #version 330
 uniform int mode;
-uniform int level;
-uniform vec4 inner;          // area drawn by the finer level, relative to the camera: min x, min z, max x, max z
-uniform sampler2D ready;     // 64x64 wrapping map of the columns drawn as blocks
-uniform ivec2 cam_chunk;
-uniform vec2 cam_in_chunk;
-in vec3 v_color;
-in vec3 v_normal;
+uniform float cam_y;
+uniform float spacing;
+uniform vec2 cam_frac;       // the camera's x and z, modulo 256: where a block starts
+uniform float cam_x;         // the camera's x (the badlands' layers shift at x = 0)
+uniform sampler2D atlas;
 in vec3 v_pos;
-in float v_water;
+flat in int v_face;
+flat in ivec3 v_blocks;
+flat in vec3 v_tint;
+flat in float v_depth;
+flat in vec2 v_tops;
+flat in float v_bottom;
+flat in int v_taller;
+flat in vec2 v_corner;
 out vec4 out_color;
-""" + LIGHT + CLOUDS + SHADOWS + WAVES + """
+""" + LIGHT + CLOUDS + SHADOWS + WAVES + BLOCK_SHADING + BLOCK_IDS + BLOCK_TILES_GLSL + BANDS_GLSL + """
+float occluded(int bit, float d) { return ((v_taller >> bit) & 1) == 1 ? 1.0 - clamp(d, 0.0, 1.0) : 0.0; }
 void main() {
-    if (level > 0 && all(greaterThan(v_pos.xz, inner.xy)) && all(lessThan(v_pos.xz, inner.zw)))
-        discard;  // the finer level draws this part
     if (mode == 1) return;  // shadow map: only the depth counts
-    if (level == 0) {  // leave a hole where the blocks are drawn
-        ivec2 rel = ivec2(floor((v_pos.xz + cam_in_chunk) / 16.0));
-        if (abs(rel.x) < 32 && abs(rel.y) < 32 && texelFetch(ready, (cam_chunk + rel) & 63, 0).r > 0.5) discard;
+    // Which block this point of the column is, like the generator stacks them
+    vec3 w = vec3(v_pos.x + cam_frac.x, v_pos.y + cam_y, v_pos.z + cam_frac.y);
+    float ground = v_tops.x;
+    int block;
+    if (v_face == 2) block = v_blocks.z != 0 ? v_blocks.z : v_blocks.x;
+    else if (v_blocks.z != 0 && w.y > ground + 0.001) block = v_blocks.z;
+    else if (w.y > ground - 1.0) block = v_blocks.x;
+    else {
+        float depth = ground - w.y;
+        block = depth < 4.0 ? v_blocks.y : STONE;
+        if (v_blocks.y == TERRACOTTA && v_blocks.x == RED_SAND && depth < 41.0) {
+            int y = int(floor(w.y)) + 7 * (cam_x + v_pos.x < 0.0 ? -1 : cam_x + v_pos.x < 16.0 ? 0 : 1);
+            block = BANDS[((y %% %(bands)d) + %(bands)d) %% %(bands)d];
+        }
     }
-    vec3 n = normalize(v_normal);
+    // The texture repeats on every block, as on the blocks near the camera
+    vec3 f = fract(w);
+    vec2 uv = v_face == 2 ? f.xz : v_face == 0 ? vec2(f.z, 1.0 - f.y) : v_face == 1 ? vec2(1.0 - f.z, 1.0 - f.y)
+            : v_face == 4 ? vec2(1.0 - f.x, 1.0 - f.y) : vec2(f.x, 1.0 - f.y);
+    int tile = BLOCK_TILES[block * 6 + v_face];
+    bool leaves = block == LEAVES || block == SPRUCE_LEAVES || block == BIRCH_LEAVES || block == JUNGLE_LEAVES
+                  || block == ACACIA_LEAVES;
+    vec3 tint = block == GRASS || block == WATER ? v_tint
+              : (block == LEAVES || block == JUNGLE_LEAVES || block == ACACIA_LEAVES) ? v_tint * vec3(0.68, 0.78, 0.66)
+              : vec3(1.0);
+    ivec2 texel = ivec2(tile %% 8, tile / 8) * 16 + min(ivec2(uv * 16.0), 15);
+    vec4 tex = texelFetch(atlas, texel, 0);
+    vec3 albedo = tex.rgb;
+    if (tex.a > 0.5 && tex.a < 0.9) albedo *= tint;  // texel colored by the biome
+    if (leaves && tex.a < 0.5) albedo *= tint * 0.4;  // a hole in leaves: the shaded leaves inside
     float dist = length(v_pos);
-    float direct = max(dot(n, light_dir), 0.0);
-    if (direct > 0.0 && shadows_on == 1) direct *= terrain_shadow(v_pos, n);
-    if (direct > 0.0) direct *= cloud_shadow(v_pos);
-    vec3 color = v_color * (sky_light * (0.8 + 0.2 * n.y) + light_color * (direct + 0.12 * (1.0 - n.y)));
-    if (v_water > 0.5) {  // lakes and seas reflect the sky, and the sun glints on them
-        vec3 view = v_pos / dist;
-        vec3 wn = normalize(mix(wave_normal(v_pos.xz), vec3(0.0, 1.0, 0.0), clamp(dist / 2500.0, 0.0, 0.85)));
-        float fresnel = 0.03 + 0.97 * pow(1.0 - max(dot(-view, wn), 0.0), 5.0);
-        vec3 r = reflect(view, wn);
-        float glint = pow(max(dot(r, light_dir), 0.0), 200.0) * (direct > 0.0 ? 1.0 : 0.0);
-        color = mix(color, sky_color(r), fresnel) + light_color * (glint * 3.0);
+    albedo = far_albedo(albedo, tile, tint, dist);
+    // Ambient occlusion like the blocks': darker within a block of a taller column around
+    float ao = 1.0;
+    if (v_face == 2) {
+        vec2 p = v_pos.xz - v_corner;  // inside the column, in blocks
+        bool east = p.x > spacing * 0.5, south = p.y > spacing * 0.5;
+        float dx = east ? spacing - p.x : p.x, dz = south ? spacing - p.y : p.y;
+        float s1 = occluded(east ? 0 : 1, dx), s2 = occluded(south ? 2 : 3, dz);
+        float d = occluded(4 + (east ? 0 : 1) + (south ? 0 : 2), max(dx, dz));
+        ao = 0.5 + (3.0 - clamp(s1 + s2 + max(d, s1 * s2), 0.0, 3.0)) / 6.0;
+    } else if (v_bottom < v_tops.y) {
+        ao = 0.5 + (3.0 - (1.0 - clamp(v_pos.y + cam_y - v_bottom, 0.0, 1.0))) / 6.0;
     }
-    out_color = vec4(fog(color, dist), 1.0);
+    vec3 n = NORMALS[v_face];
+    float direct = direct_light(v_pos, n);
+    if (block == WATER && v_face == 2) {  // the bottom seen through the water, as with the blocks
+        vec4 c = shade_water(albedo, v_pos, 2, direct);
+        int bed = BLOCK_TILES[v_blocks.y * 6 + 2];
+        vec3 p = v_pos - vec3(0.0, v_depth, 0.0);
+        vec3 bed_albedo = far_albedo(texelFetch(atlas, ivec2(bed %% 8, bed / 8) * 16 + min(ivec2(uv * 16.0), 15), 0).rgb,
+                                     bed, vec3(1.0), dist);
+        vec3 bottom = fog(shade_opaque(bed_albedo, 2, 1.0, direct_light(p, n)), length(p));
+        out_color = vec4(mix(bottom, c.rgb, c.a), 1.0);
+    } else {
+        out_color = vec4(fog(shade_opaque(albedo, v_face, ao, direct), dist), 1.0);
+    }
 }
-"""
+""" % {"bands": len(T.BANDS)}
 
 SKY_FRAGMENT_SHADER = """
 #version 330
@@ -402,7 +601,21 @@ out vec4 out_color;
 """ + LIGHT + CLOUDS + """
 void main() {
     if ((near_pass == 1) != (length(v_pos.xz) < near_radius)) discard;
-    float d = cloud_density(v_pos.xz);
+    // The clouds are a slab cloud_height +/- CLOUD_HALF thick: accumulate the noise density along
+    // the view ray inside it, with a profile that peaks in the middle of the slab, so the clouds
+    // look puffy from every side and fade out at their edges
+    vec3 dir = normalize(v_pos);
+    float a = (cloud_height - CLOUD_HALF) / dir.y, b = (cloud_height + CLOUD_HALF) / dir.y;
+    float lo = max(min(a, b), 0.0), hi = min(max(a, b), lo + 4.0 * CLOUD_THICK);
+    if (hi <= lo) discard;
+    float d = 0.0;
+    for (int i = 0; i < 6; i++) {
+        vec3 p = dir * mix(lo, hi, (float(i) + 0.5) / 6.0);
+        float u = clamp((p.y - cloud_height + CLOUD_HALF) / CLOUD_THICK, 0.0, 1.0);
+        d += cloud_density(p.xz) * u * (1.0 - u) * 4.0;
+    }
+    float tau = d / 6.0 * clamp((hi - lo) / CLOUD_THICK, 0.0, 1.5);
+    d = 1.0 - exp(-tau * 3.5);
     if (d < 0.005) discard;
     vec3 lit = sky_light * 1.1 + light_color * (0.4 + 0.8 * max(light_dir.y, 0.0));
     // From below, the thick middle of a cloud is darker than its edges
@@ -553,17 +766,44 @@ void main() { sum = v_sum; square = v_square; }
 
 CUBE_EDGES = [(0, 1), (1, 3), (3, 2), (2, 0), (4, 5), (5, 7), (7, 6), (6, 4), (0, 4), (1, 5), (2, 6), (3, 7)]
 
-# Distant terrain: the block that covers the ground in each biome, and its trees' leaves
-GROUND = np.full(len(T.BIOME_NAMES), GRASS)
-GROUND[[T.BEACH, T.DESERT, T.OCEAN, T.DEEP_OCEAN]] = SAND
-GROUND[T.BADLANDS] = TERRACOTTA
-GROUND[[T.SNOWY_TAIGA, T.SNOWY_TUNDRA, T.SNOWY_PEAKS, T.FROZEN_OCEAN]] = SNOW
-GROUND[T.GLACIER] = ICE
+# Distant terrain: the leaves of each biome's trees, and how high their crowns reach above the
+# ground (the average of its kinds of trees, weighted by how many there are)
 CANOPY_LEAVES = np.full(len(T.BIOME_NAMES), LEAVES)
 CANOPY_LEAVES[[T.TAIGA, T.SNOWY_TAIGA, T.SNOWY_TUNDRA, T.ALPINE]] = SPRUCE_LEAVES
 CANOPY_LEAVES[T.BIRCH_FOREST] = BIRCH_LEAVES
 CANOPY_LEAVES[T.JUNGLE] = JUNGLE_LEAVES
 CANOPY_LEAVES[T.SAVANNA] = ACACIA_LEAVES
+CROWN_ABOVE = {T.SPRUCE: 3, T.JUNGLE_TREE: 2}  # leaves above the trunk's top (1 for the other trees)
+CANOPY_HEIGHT = np.zeros(len(T.BIOME_NAMES), np.uint8)
+for _biome, _kinds in T.TREES.items():
+    _tall = [(sum(T.TREE_HEIGHTS[k]) / 2 + CROWN_ABOVE.get(k, 1), w) for k, w in _kinds.items() if k != T.CACTUS_PLANT]
+    if _tall:
+        CANOPY_HEIGHT[_biome] = round(sum(h * w for h, w in _tall) / sum(w for _, w in _tall))
+LEAF_TILES = {int(t) for b in ALL_LEAVES for t in BLOCK_TILES[b]}
+
+
+def tile_averages(atlas):
+    """(64, 2, 4) float array: for each atlas tile, the average of its texels that keep their own
+    color (rgb) and the share of texels the biome colors (a), then the average of those (rgb).
+    Far away, a block is smaller than a pixel: the distant terrain uses these instead of the texture.
+    The holes in leaves count as the leaves behind them, in the shade."""
+    out = np.zeros((ATLAS_TILES * ATLAS_TILES, 2, 4), np.float32)
+    rgb, alpha = atlas[..., :3].astype(np.float32) / 255, atlas[..., 3]
+    for t in range(ATLAS_TILES * ATLAS_TILES):
+        ty, tx = divmod(t, ATLAS_TILES)
+        cell = (slice(ty * TILE, (ty + 1) * TILE), slice(tx * TILE, (tx + 1) * TILE))
+        c, a = rgb[cell].reshape(-1, 3), alpha[cell].ravel()
+        tinted = a == TINT_ALPHA
+        hole = a < 128
+        c = np.where(hole[:, None], c * 0.4, c)  # see-through texels: the shaded leaves inside
+        tinted |= hole & (t in LEAF_TILES)
+        plain = ~tinted
+        if plain.any():
+            out[t, 0, :3] = c[plain].mean(axis=0)
+        if tinted.any():
+            out[t, 1, :3] = c[tinted].mean(axis=0)
+        out[t, 0, 3] = tinted.mean()
+    return out
 
 # Triangles of a face, split along one diagonal or the other: along the brighter corners, so
 # ambient occlusion shades the face evenly
@@ -869,29 +1109,34 @@ class Chunks:
 # --- Distant terrain ---------------------------------------------------------------------------
 
 class FarTerrain:
-    """The terrain beyond the blocks, as six square grids of 128x128 points around the camera, each
-    twice as coarse and twice as wide as the one before (4 to 128 blocks between points, up to 8 km
-    away). Heights and colors live in textures that wrap around: when the camera moves, only the
-    new rows or columns at the edge are sampled."""
+    """The terrain beyond the blocks, as seven square grids of 127x127 columns around the camera,
+    each twice as coarse and twice as wide as the one before (2 to 128 blocks wide, up to 8 km away).
+    Every column is drawn like a stack of blocks: the same blocks the generator puts there, with the
+    same textures and light as the blocks near the camera, and trees as crowns of leaves. Heights,
+    colors and blocks live in textures that wrap around: when the camera moves, only the new rows or
+    columns at the edge are sampled. Each level gives way to the next one cell by cell (see CELLS)."""
 
-    def __init__(self, ctx, program, world, colors):
-        self.ctx, self.program, self.world, self.colors = ctx, program, world, colors
+    def __init__(self, ctx, program, world, atlas_texture, atlas):
+        self.ctx, self.program, self.world, self.atlas = ctx, program, world, atlas_texture
         n = LOD_SIZE
-        i, j = np.meshgrid(np.arange(n), np.arange(n), indexing="ij")
-        grid = np.stack([i.ravel(), j.ravel()], axis=1).astype("f4")
-        quads = (i[:-1, :-1] * n + j[:-1, :-1]).ravel()
-        indices = np.stack([quads, quads + n, quads + n + 1, quads, quads + n + 1, quads + 1], axis=1)
-        self.vbo = ctx.buffer(grid.tobytes())
-        self.ibo = ctx.buffer(indices.astype("u4").tobytes())
-        self.vao = ctx.vertex_array(program, [(self.vbo, "2f", "in_grid")], index_buffer=self.ibo,
-                                    index_element_size=4)
+        # A unit cube (no bottom face: it is never seen), drawn once per cell of the grid. The
+        # shader stretches each side down to the top of the column it faces.
+        verts = []
+        for normal, face in CUBE_FACES:
+            verts += [corner + normal for corner in face]
+        self.vbo = ctx.buffer(np.array(verts, dtype="f4").tobytes())
+        self.vao = ctx.vertex_array(program, [(self.vbo, "3f 3f", "in_pos", "in_norm")])
         self.heights = [ctx.texture((n, n), 1, dtype="f4") for _ in range(LOD_LEVELS)]
         self.color_maps = [ctx.texture((n, n), 4, dtype="f1") for _ in range(LOD_LEVELS)]
-        for tex in self.heights + self.color_maps:
+        self.surface_maps = [ctx.texture((n, n), 4, dtype="f1") for _ in range(LOD_LEVELS)]
+        self.tile_avg = ctx.texture((ATLAS_TILES * ATLAS_TILES, 2), 4,
+                                    tile_averages(atlas).transpose(1, 0, 2).tobytes(), dtype="f4")
+        for tex in self.heights + self.color_maps + self.surface_maps + [self.tile_avg]:
             tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
-        self.origins = [None] * LOD_LEVELS  # grid coordinates of each level's vertex (0, 0)
+        self.origins = [None] * LOD_LEVELS  # grid coordinates of each level's point (0, 0)
         self.queue = []  # texture writes still to do
         self.version = 0  # counts the changes (the shadow maps of the terrain are drawn again)
+        self.view_distance = FAR_LIMIT  # beyond it the fog hides everything: no level drawn there
 
     def set_world(self, world):
         self.world = world
@@ -899,26 +1144,31 @@ class FarTerrain:
         self.queue = []
         self.version += 1
 
-    def sample(self, x, z):
-        """Height of the top surface (water included) and color at points (x, z), for the textures."""
-        s = self.world.gen.sample(x, z)
-        height = np.maximum(np.floor(s["height"]) + 1, s["water"] + WATER_SURFACE).astype("f4")
-        grass, foliage, water = T.tints(s["temperature"], s["humidity"], s["biome"])
-        biome = s["biome"]
-        ground = GROUND[biome]
-        color = self.colors[ground] * np.where((ground == GRASS)[..., None], grass, 1.0)
-        badlands = biome == T.BADLANDS
-        color[badlands] = (self.colors[TERRACOTTA] + self.colors[RED_SAND]) / 2
-        leaves = CANOPY_LEAVES[biome]
-        tinted = np.isin(leaves, (LEAVES, JUNGLE_LEAVES, ACACIA_LEAVES))[..., None]
-        canopy = self.colors[leaves] * np.where(tinted, foliage, 1.0) * 0.8  # shade under the trees
-        color = color + (canopy - color) * T.CANOPY[biome][..., None]
-        wet = s["water"] > s["height"]
-        color[wet] = (self.colors[WATER] * water)[wet]
+    def sample(self, x, z, gx, gz, level):
+        """At points (x, z), grid points (gx, gz) of a level: height of the top surface (water
+        included), biome color (rgba) and blocks (top, the block under it, crown leaves or 0, crown
+        height), for the textures."""
+        gen = self.world.gen
+        s = gen.sample(x, z)
+        top = np.floor(s["height"]).astype(np.int32)
+        height = np.maximum(top + 1, s["water"] + WATER_SURFACE).astype("f4")
+        # The same top blocks as the generator's, but for the slope (the shader does the steep rock)
+        surface, filler, _ = T._surface(s, top, np.zeros_like(top), gen.surface.fbm2(x / 9, z / 9, 2) * 2)
+        grass, _, water = T.tints(s["temperature"], s["humidity"], s["biome"])
+        wet = top < s["water"]
         ice = wet & (s["temperature"] < -0.55)
-        color[ice] = self.colors[ICE]
-        rgba = np.concatenate([color, (wet & ~ice)[..., None]], axis=-1)
-        return height, (np.clip(rgba, 0, 1) * 255).astype("u1")
+        filler = np.where(wet, surface, filler)  # the bottom under the water
+        surface = np.where(wet, np.where(ice, ICE, WATER), surface)
+        # Trees: a cell is under a crown as often as the biome's trees cover the ground
+        biome = s["biome"]
+        trees = (cell_hashes(gx, gz, level) < T.CANOPY[biome]) & ~wet & np.isin(surface, (B.GRASS, B.PODZOL, B.SNOW))
+        leaves = np.where(trees, CANOPY_LEAVES[biome], 0)
+        crown = np.where(trees, CANOPY_HEIGHT[biome], 0)
+        color = np.where(wet[:, None], water, grass)
+        depth = np.clip(np.where(wet, s["water"] - top, 0), 0, 255)  # the water's depth, down to the bottom
+        rgba = np.concatenate([np.clip(color, 0, 1) * 255, depth[:, None]], axis=1).astype("u1")
+        blocks = np.stack([surface, filler, leaves, crown], axis=1).astype("u1")
+        return height, rgba, blocks
 
     def update(self, cam):
         n = LOD_SIZE
@@ -952,45 +1202,75 @@ class FarTerrain:
             return
         self.version += 1
         # Sample all the new points of all levels together: one big call is much faster than many
-        points = []
+        grids = []
         for level, xs, zs, _, _ in writes:
-            spacing = float(LOD_SPACING << level)
-            z, x = np.meshgrid(zs * spacing, xs * spacing, indexing="ij")  # texture rows are z
-            points.append((x.ravel(), z.ravel()))
-        height, color = self.sample(np.concatenate([p[0] for p in points]), np.concatenate([p[1] for p in points]))
+            gz, gx = np.meshgrid(zs, xs, indexing="ij")  # texture rows are z
+            grids.append((gx.ravel(), gz.ravel(), np.full(gx.size, level)))
+        gx, gz, levels = (np.concatenate([g[i] for g in grids]) for i in range(3))
+        spacing = (LOD_SPACING << levels).astype(float)
+        height, color, blocks = self.sample(gx * spacing, gz * spacing, gx, gz, levels)
         start = 0
         for level, xs, zs, u, v in writes:
             end = start + len(xs) * len(zs)
             viewport = (u, v, len(xs), len(zs))
             self.heights[level].write(height[start:end].tobytes(), viewport=viewport)
             self.color_maps[level].write(color[start:end].tobytes(), viewport=viewport)
+            self.surface_maps[level].write(blocks[start:end].tobytes(), viewport=viewport)
             start = end
+
+    def levels(self):
+        """The levels to draw: up to the first that reaches past the view distance."""
+        for level in range(LOD_LEVELS):
+            if (LOD_SIZE // 2 - LOD_MARGIN) * (LOD_SPACING << level) >= self.view_distance:
+                return level + 1
+        return LOD_LEVELS
 
     def render(self, vp, cam, chunks, shadow=False):
         p = self.program
         p["vp"].write(matrix_bytes(vp))
         p["mode"] = 1 if shadow else 0
         p["cam_y"] = float(cam[1])
+        p["use_ready"] = 0 if shadow else 1
         if not shadow:
             pcx, pcz = math.floor(cam[0] / CHUNK), math.floor(cam[2] / CHUNK)
             set_uniforms(p, {"cam_chunk": (pcx, pcz), "ready": READY_UNIT,
                              "cam_in_chunk": (float(cam[0] - pcx * CHUNK), float(cam[2] - pcz * CHUNK))})
             chunks.ready_texture.use(READY_UNIT)
-        set_uniforms(p, {"heights": HEIGHTS_UNIT, "colors": COLORS_UNIT})
-        inner = (0.0, 0.0, 0.0, 0.0)
-        for level in range(LOD_LEVELS):
+        set_uniforms(p, {"heights": HEIGHTS_UNIT, "colors": COLORS_UNIT, "surface": SURFACE_UNIT,
+                         "tile_avg": TILE_AVG_UNIT, "atlas": ATLAS_UNIT})
+        self.atlas.use(ATLAS_UNIT)
+        self.tile_avg.use(TILE_AVG_UNIT)
+        count = self.levels()
+        rects = []
+        for level in range(count):
             spacing = LOD_SPACING << level
             gx, gz = self.origins[level]
             ox, oz = gx * spacing - cam[0], gz * spacing - cam[2]
-            set_uniforms(p, {"level": level, "inner": inner, "grid_origin": (gx, gz),
-                             "origin": (float(ox), float(oz)), "spacing": float(spacing)})
+            extent = (LOD_SIZE - 1) * spacing
+            rects.append((float(ox), float(oz), float(ox + extent), float(oz + extent)))
+        for level in range(count):
+            spacing = LOD_SPACING << level
+            gx, gz = self.origins[level]
+            set_uniforms(p, {"level": level, "grid_origin": (gx, gz), "origin": rects[level][:2],
+                             "spacing": float(spacing), "own": rects[level], "fade_own": int(level < count - 1),
+                             "inner": rects[level - 1] if level else (0.0, 0.0, 0.0, 0.0),
+                             "fade_inner": int(level > 0)})
             self.heights[level].use(HEIGHTS_UNIT)
             self.color_maps[level].use(COLORS_UNIT)
-            self.vao.render()
-            # The next level leaves a hole for this one, a bit smaller so the two overlap
-            margin = 2 * (spacing * 2)
-            extent = (LOD_SIZE - 1) * spacing
-            inner = (float(ox + margin), float(oz + margin), float(ox + extent - margin), float(oz + extent - margin))
+            self.surface_maps[level].use(SURFACE_UNIT)
+            self.vao.render(vertices=30, instances=(LOD_SIZE - 1) ** 2)
+
+
+def cell_hashes(gx, gz, level):
+    """A number in [0, 1) for each grid cell of a level, always the same (where trees grow)."""
+    with np.errstate(over="ignore"):
+        h = (np.asarray(gx).astype(np.uint64) * np.uint64(0x9E3779B97F4A7C15)
+             ^ np.asarray(gz).astype(np.uint64) * np.uint64(0xC2B2AE3D27D4EB4F)
+             ^ np.asarray(level).astype(np.uint64) * np.uint64(0x165667B19E3779F9))
+        h ^= h >> np.uint64(33)
+        h *= np.uint64(0xFF51AFD7ED558CCD)
+        h ^= h >> np.uint64(33)
+    return (h >> np.uint64(11)).astype(np.float64) / float(1 << 53)
 
 
 # --- Shadows -----------------------------------------------------------------------------------
@@ -1226,7 +1506,7 @@ class Renderer:
         self.fov = fov
         self.size = None
         self.fbos = []
-        self.render_distance = 8
+        self.render_distance = 256  # how far the world is seen, in chunks (blocks, then coarser and coarser)
         self.fancy = True  # shadows and anti-aliasing
         self.drawn = 0  # block columns drawn in the last frame
         self.dim = 1.0  # darker behind the menus
@@ -1239,7 +1519,6 @@ class Renderer:
             "sun_glow": (0.0, 0.0, 0.0), "night": 0.0, "cloud_cover": 0.56,
             "fog_color": (0.68, 0.84, 1.0), "fog_density": 1 / 7000, "fog_start": 6000.0, "fog_end": 8000.0,
         }
-        self.colors = block_colors(atlas)
         fixed = np.array([[(c >> 16) & 255, (c >> 8) & 255, c & 255] for c in fixed_colors])
         with self.ctx:
             self.program = ctx.program(vertex_shader=BLOCK_VERTEX_SHADER, fragment_shader=BLOCK_FRAGMENT_SHADER)
@@ -1262,12 +1541,13 @@ class Renderer:
             self.outline_vbo = ctx.buffer(reserve=24 * 3 * 4)
             self.outline_vao = ctx.vertex_array(self.outline_program, [(self.outline_vbo, "3f", "in_pos")])
             self.chunks = Chunks(ctx, self.program, world)
-            self.far = FarTerrain(ctx, self.lod_program, world, self.colors)
+            self.far = FarTerrain(ctx, self.lod_program, world, self.texture, atlas)
             self.shadows = Shadows(ctx, self.texture)
             self.palette = Palette(ctx, fixed)
             self.palette.apply()
             for p in (self.program, self.lod_program, self.cloud_program):
-                set_uniforms(p, {"atlas": ATLAS_UNIT, "clouds": CLOUDS_UNIT, "shadow_near": SHADOW_UNITS[0],
+                set_uniforms(p, {"atlas": ATLAS_UNIT, "clouds": CLOUDS_UNIT, "tile_avg": TILE_AVG_UNIT,
+                                 "shadow_near": SHADOW_UNITS[0],
                                  "shadow_mid": SHADOW_UNITS[1], "shadow_far": SHADOW_UNITS[2]})
         self.world = world
         self.resize(width, height)
@@ -1326,9 +1606,20 @@ class Renderer:
         """Upload the block meshes built near the camera (for up to `budget` seconds) and refresh the
         distant terrain around it."""
         with self.ctx:
-            self.chunks.radius = self.render_distance
+            self.chunks.radius = self.sim_distance
             self.far.update(cam)
             self.chunks.update(cam, budget)
+
+    @property
+    def sim_distance(self):
+        """Radius, in chunks, of the columns drawn as real blocks: grows with the render distance,
+        but slowly (meshing them is the costly part); the coarser terrain takes over beyond."""
+        return SIM_DISTANCES.get(self.render_distance, 12)
+
+    @property
+    def view_distance(self):
+        """Where the fog has hidden everything, in blocks."""
+        return min(self.render_distance * CHUNK, FAR_LIMIT)
 
     def progress(self, cam, radius=3):
         return self.chunks.progress(cam, radius)
@@ -1358,6 +1649,17 @@ class Renderer:
             "shadows_on": int(self.fancy),
             "sky_fog": 1.0 if self.underwater else 0.0,
         })
+        # The blocks give way to the distant terrain between these distances: from half-way to the
+        # edge of the columns drawn as blocks (a chunk short of it, wherever the camera is in its chunk)
+        fade_end = (self.sim_distance - 1) * CHUNK
+        cell = (math.floor(cam[0] / 2), math.floor(cam[2] / 2))
+        values.update({
+            "block_fade": (0.5 * fade_end, float(fade_end)), "cam_cell": cell,
+            "cam_in_cell": (float(cam[0] - 2 * cell[0]), float(cam[2] - 2 * cell[1])),
+            "cam_frac": (float(cam[0] % 256.0), float(cam[2] % 256.0)), "cam_x": float(cam[0]),
+            "px_per_block": height / (2 * math.tan(math.radians(self.fov) / 2)),
+        })
+        self.far.view_distance = self.view_distance
         finish = {"dim": float(self.dim), "tint": (0.75, 0.9, 1.0) if self.underwater else (1.0, 1.0, 1.0)}
         # Every OpenGL call, setting shader values included, must happen inside `with self.ctx`:
         # outside it, Pyxel's own context is the current one (with a window; not in headless tests)
@@ -1387,7 +1689,7 @@ class Renderer:
             ctx.enable(moderngl.DEPTH_TEST)
             if None not in self.far.origins:
                 self.far.render(far_vp, cam, self.chunks)
-            near_radius = (self.render_distance + 2) * CHUNK
+            near_radius = (self.sim_distance + 2) * CHUNK
             self.render_clouds(far_vp, near_radius, near_pass=False)
             fbo.color_mask = (False, False, False, False)
             fbo.clear(depth=1.0)
@@ -1395,6 +1697,7 @@ class Renderer:
             fbo.use()  # masks only come back into effect when the framebuffer is bound
 
             self.texture.use(ATLAS_UNIT)
+            self.far.tile_avg.use(TILE_AVG_UNIT)
             self.program["vp"].write(matrix_bytes(near_vp))
             self.program["mode"] = 0
             self.drawn = self.chunks.find_in_view(near_vp, cam)

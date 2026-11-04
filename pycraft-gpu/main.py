@@ -23,18 +23,18 @@ BASE_WIDTH, BASE_HEIGHT = 320, 180  # the menus and the mouse speed are designed
 RESOLUTIONS = [(320, 180), (384, 216), (480, 270), (640, 360), (800, 450), (960, 540), (1280, 720), (1600, 900),
                (1920, 1080), (2560, 1440)]
 FRAME_RATES = [30, 60, 75, 120, 144, 165, 240]
-RENDER_DISTANCES = [4, 6, 8, 10, 12]  # in chunks of 16 blocks; the distant terrain goes on beyond
-DEFAULT_SETTINGS = {"resolution": (1280, 720), "fps": 60, "render_distance": 8, "fancy": True, "music": True}
+RENDER_DISTANCES = [32, 64, 128, 256, 512]  # how far the world is seen, in chunks of 16 blocks
+DEFAULT_SETTINGS = {"resolution": (1280, 720), "fps": 60, "render_distance": 256, "fancy": True, "music": True}
 SAVE_FILE = "world2.npz"  # "world.npz" holds a world of the older, smaller version: left alone
 LOADING_RADIUS = 2  # chunks around the player that must be ready before playing
 HAZE = 1 / 4500  # share of light lost per block of distance: far mountains fade into the sky
-FOG_START, FOG_END = 6000.0, 8000.0  # where the distant terrain ends
+FOG_START = 0.75  # the fog that hides the end of the world starts at this share of the view distance
 MAX_DT = 1 / 30  # longest time step: slower frames slow the game down instead of making the player skip
 REACH = 6.0
 INVENTORY_COLUMNS = 13
 MOUSE_SENSITIVITY = 0.45  # degrees per pixel at 320x180
 KEY_LOOK_SPEED = 120.0  # degrees per second with the arrow keys
-DAY_SECONDS = 8 * 60  # one full day and night
+DAY_SECONDS = 20 * 60  # one full day and night
 AUTOSAVE_SECONDS = 120
 HELP_SECONDS = 15
 
@@ -59,7 +59,7 @@ SFX_CHANNEL = 3
 HELP = [
     "WASD move  SPACE jump/swim  CTRL sprint  F fly (SPACE/SHIFT up/down)",
     "CTRL while flying: fly fast   E all blocks   1-9/wheel choose",
-    "Left click break  Right click place  ESC menu  F3 info  H hide help",
+    "Left click break  Right click place  ESC menu  F3 info  H hide help  T chat",
 ]
 
 
@@ -206,6 +206,7 @@ class App:
         self.show_debug = False
         self.play_time = 0.0
         self.last_save = 0.0
+        self.chat_text = ""  # the command line being typed
         self.message = ""  # short notice shown above the hotbar
         self.message_time = 0.0
         self.dt = 1 / self.settings["fps"]  # seconds since the last frame, measured by run()
@@ -437,7 +438,7 @@ class App:
             return [
                 (f"Resolution: {width} x {height}", self.change_resolution),
                 (f"Frame rate: {self.settings['fps']} FPS", self.change_fps),
-                (f"Render distance: {self.settings['render_distance']}", self.change_render_distance),
+                (f"Render distance: {self.settings['render_distance']} chunks", self.change_render_distance),
                 ("Graphics: " + ("fancy" if self.settings["fancy"] else "fast"), lambda step: self.toggle_graphics()),
                 ("Music: " + ("on" if self.settings["music"] else "off"), lambda step: self.toggle_music()),
                 ("Done", lambda step: self.close_settings()),
@@ -482,6 +483,8 @@ class App:
                 self.update_menu()
         elif self.state == "inventory":
             self.update_inventory()
+        elif self.state == "chat":
+            self.update_chat()
         else:
             self.update_playing()
 
@@ -588,6 +591,10 @@ class App:
             self.show_help = not self.show_help
         if pyxel.btnp(pyxel.KEY_F3):
             self.show_debug = not self.show_debug
+        if pyxel.btnp(pyxel.KEY_T) or pyxel.btnp(pyxel.KEY_SLASH):
+            self.chat_text = "/" if pyxel.btnp(pyxel.KEY_SLASH) else ""
+            self.set_state("chat")
+            return
 
         self.update_look()
         events = self.player.update(self.world, dt)
@@ -639,6 +646,74 @@ class App:
         else:
             self.last_mouse = (mx, my)
 
+    # --- Chat ----------------------------------------------------------------------------------
+
+    def update_chat(self):
+        """The command line is open: the world and the clock go on, the player stands still."""
+        self.play_time += self.dt
+        self.time_of_day = (self.time_of_day + self.dt / DAY_SECONDS) % 1.0
+        if pyxel.btnp(pyxel.KEY_ESCAPE):
+            self.set_state("playing")
+            return
+        if pyxel.btnp(pyxel.KEY_RETURN):
+            text, self.chat_text = self.chat_text, ""
+            self.set_state("playing")
+            self.run_command(text)
+            return
+        hold, repeat = self.frames(0.4), self.frames(0.05)
+        if pyxel.btnp(pyxel.KEY_BACKSPACE, hold=hold, repeat=repeat):
+            self.chat_text = self.chat_text[:-1]
+        for i in range(26):
+            if pyxel.btnp(pyxel.KEY_A + i, hold=hold, repeat=repeat):
+                self.chat_text += chr(ord("a") + i)
+        for i in range(10):
+            if pyxel.btnp(pyxel.KEY_0 + i, hold=hold, repeat=repeat):
+                self.chat_text += str(i)
+        for key, char in ((pyxel.KEY_SPACE, " "), (pyxel.KEY_MINUS, "-"), (pyxel.KEY_SLASH, "/"),
+                          (pyxel.KEY_PERIOD, ".")):
+            if pyxel.btnp(key, hold=hold, repeat=repeat):
+                self.chat_text += char
+        self.chat_text = self.chat_text[:64]
+
+    def run_command(self, text):
+        parts = text.strip().split()
+        if not parts:
+            return
+        cmd = parts[0].lstrip("/").lower()
+        if cmd == "tp":
+            try:
+                if len(parts) != 4:
+                    raise ValueError
+                coords = [float(v) if v != "~" else self.player.pos[i] for i, v in enumerate(parts[1:])]
+            except ValueError:
+                self.notify("Usage: /tp x y z")
+                return
+            self.player.pos = coords
+            self.player.vel_y = 0.0
+            self.notify(f"Teleported to {coords[0]:.0f} {coords[1]:.0f} {coords[2]:.0f}")
+        elif cmd == "time" and len(parts) == 3 and parts[1] == "set":
+            named = {"sunrise": 0.0, "day": 0.05, "noon": 0.25, "sunset": 0.5, "night": 0.6,
+                     "midnight": 0.75}
+            v = parts[2].lower()
+            try:
+                t = named[v] if v in named else float(v)
+            except (KeyError, ValueError):
+                self.notify("Usage: /time set day|noon|sunset|night|<0-1>")
+                return
+            self.time_of_day = (t / 24000 if t > 1 else t) % 1.0
+            self.notify(f"Time set to {self.time_of_day * 24 % 24:.0f}:00")
+        else:
+            self.notify(f"Unknown command: {parts[0]}  (/tp x y z, /time set ...)")
+
+    def draw_chat(self):
+        ui = self.ui
+        y = ui.height - TILE - 3 - 12
+        pyxel.dither(0.5)
+        ui.rect(0, y - 2, ui.width, 11, 0)
+        pyxel.dither(1.0)
+        cursor = "_" if self.play_time % 1.0 < 0.6 else ""
+        ui.text(3, y, "> " + self.chat_text + cursor, 7)
+
     def notify(self, text):
         self.message, self.message_time = text, self.play_time
 
@@ -671,6 +746,8 @@ class App:
             self.draw_hud()
             if self.state == "inventory":
                 self.draw_inventory()
+            elif self.state == "chat":
+                self.draw_chat()
         if not self.mouse_captured and self.state != "loading":
             ui.cursor()
 
@@ -686,7 +763,8 @@ class App:
         if underwater:
             fog = (scale(UNDERWATER_FOG, 0.38 + 0.62 * day), 0.0, 0.0, 9.0)
         else:
-            fog = (env["horizon"], HAZE, FOG_START, FOG_END)
+            end = self.renderer.view_distance
+            fog = (env["horizon"], HAZE, FOG_START * end, end)
         self.renderer.set_environment(**env, fog_color=fog[0], fog_density=fog[1], fog_start=fog[2], fog_end=fog[3])
         self.renderer.underwater = underwater
         self.renderer.dim = DIM if self.state in ("loading", "paused", "settings", "inventory") else 1.0

@@ -40,29 +40,29 @@ class TerrainGenerator:
         mountain ranges and rivers run. They change slowly, so for whole chunks they are computed
         every 8 blocks and blended in between (see _generate_columns)."""
         # Warp the coordinates of the large features, so continents and ranges get irregular shapes
-        wx = x + 900 * self.warp_x.fbm2(x / 3000, z / 3000, 3)
-        wz = z + 900 * self.warp_z.fbm2(x / 3000, z / 3000, 3)
+        wx = x + 1300 * self.warp_x.fbm2(x / 4500, z / 4500, 3)
+        wz = z + 1300 * self.warp_z.fbm2(x / 4500, z / 4500, 3)
         # Mountain ranges and rivers follow the zero lines of smooth noises: keep each noise and the
         # length of its gradient, their ratio is the distance to the line in blocks
-        m = self.mountain_mask.fbm2(wx / 16000, wz / 16000, 3)
-        m_grad = np.hypot(self.mountain_mask.fbm2((wx + 16) / 16000, wz / 16000, 3) - m,
-                          self.mountain_mask.fbm2(wx / 16000, (wz + 16) / 16000, 3) - m) / 16
-        rx = x + 400 * self.river_warp_x.fbm2(x / 1100, z / 1100, 2)
-        rz = z + 400 * self.river_warp_z.fbm2(x / 1100, z / 1100, 2)
-        r = self.river.fbm2(rx / 5200, rz / 5200, 3)
-        r_grad = np.hypot(self.river.fbm2((rx + 4) / 5200, rz / 5200, 3) - r,
-                          self.river.fbm2(rx / 5200, (rz + 4) / 5200, 3) - r) / 4
+        m = self.mountain_mask.fbm2(wx / 22000, wz / 22000, 3)
+        m_grad = np.hypot(self.mountain_mask.fbm2((wx + 16) / 22000, wz / 22000, 3) - m,
+                          self.mountain_mask.fbm2(wx / 22000, (wz + 16) / 22000, 3) - m) / 16
+        rx = x + 550 * self.river_warp_x.fbm2(x / 1600, z / 1600, 2)
+        rz = z + 550 * self.river_warp_z.fbm2(x / 1600, z / 1600, 2)
+        r = self.river.fbm2(rx / 7000, rz / 7000, 3)
+        r_grad = np.hypot(self.river.fbm2((rx + 4) / 7000, rz / 7000, 3) - r,
+                          self.river.fbm2(rx / 7000, (rz + 4) / 7000, 3) - r) / 4
         return {
             "wx": wx, "wz": wz, "m": m, "m_grad": m_grad, "r": r, "r_grad": r_grad,
-            "continent": self.continent.fbm2(wx / 6000, wz / 6000, 5) * 2.4 + 0.2,
-            "temperature": self.temperature.fbm2(wx / 4500, wz / 4500, 3) * 2.3,
-            "humidity": self.humidity.fbm2(wx / 4000, wz / 4000, 3) * 2.3,
-            "hilliness": smoothstep(-0.3, 0.45, self.hilliness.fbm2(wx / 2500, wz / 2500, 2) * 2.3),
-            "half_width": 2600 + 1200 * self.hilliness.noise2(wx / 7000 + 50, wz / 7000),
-            "strength": smoothstep(-0.5, 0.15, self.mountain_mask.fbm2(wx / 9000 + 300, wz / 9000, 2) * 2.3),
-            "badlands": self.badlands.fbm2(wx / 1800, wz / 1800, 2) * 2.3,
-            "river_width": self.river_width.noise2(x / 400, z / 400),
-            "lake": self.lake.fbm2(wx / 1200, wz / 1200, 3) * 2.3,
+            "continent": self.continent.fbm2(wx / 9000, wz / 9000, 5) * 2.4 + 0.2,
+            "temperature": self.temperature.fbm2(wx / 6800, wz / 6800, 3) * 2.3,
+            "humidity": self.humidity.fbm2(wx / 6000, wz / 6000, 3) * 2.3,
+            "hilliness": smoothstep(-0.3, 0.45, self.hilliness.fbm2(wx / 3500, wz / 3500, 2) * 2.3),
+            "half_width": 3400 + 1600 * self.hilliness.noise2(wx / 10000 + 50, wz / 10000),
+            "strength": smoothstep(-0.5, 0.15, self.mountain_mask.fbm2(wx / 12000 + 300, wz / 12000, 2) * 2.3),
+            "badlands": self.badlands.fbm2(wx / 2700, wz / 2700, 2) * 2.3,
+            "river_width": self.river_width.noise2(x / 600, z / 600),
+            "lake": self.lake.fbm2(wx / 1900, wz / 1900, 3) * 2.3,
         }
 
     def sample(self, x, z, clim=None):
@@ -79,7 +79,7 @@ class TerrainGenerator:
         humidity = k["humidity"] + 0.06 * self.surface.noise2(x / 70 + 500, z / 70)
 
         # Relief on top of the base level, always >= 0 on land: hills, mountains, small bumps
-        hills = np.maximum(self.hills.fbm2(x / 600, z / 600, 5) * 2.2 + 0.45, 0) * (10 + 85 * hilliness)
+        hills = np.maximum(self.hills.fbm2(x / 850, z / 850, 5) * 2.2 + 0.45, 0) * (12 + 110 * hilliness)
         # Mountain ranges: long chains along the zero line of a very smooth noise. A spine rises
         # toward that line, and ridged noise adds the side ridges, peaks and valleys on top of it.
         spine = np.clip(1 - np.abs(k["m"]) / np.maximum(k["m_grad"], 1e-9) / k["half_width"], 0, 1)
@@ -102,14 +102,14 @@ class TerrainGenerator:
         # Rivers carve a channel and a valley around the zero line of the river noise
         dist = np.abs(k["r"]) / np.maximum(k["r_grad"], 1e-9)
         lowland = 1 - smoothstep(0, 900, relief)
-        width = (3 + 9 * lowland) * (1 + 0.35 * k["river_width"])
-        valley = width + 40 + 0.9 * np.minimum(relief, 700)  # deeper relief, wider valley
+        width = (5 + 13 * lowland) * (1 + 0.35 * k["river_width"])
+        valley = width + 60 + np.minimum(relief, 700)  # deeper relief, wider valley
         t = np.clip((dist - width) / (valley - width), 0, 1)
         carved = relief * t ** 1.3
         # Rivers start in the foothills: none in the mountain ranges, so the ranges stay whole
         strength = (1 - smoothstep(0.08, 0.35, mask)) * land
         river_level = np.floor(np.maximum(base, SEA_LEVEL + 1)) - 1
-        depth = 1 + 0.35 * width * (1 - (dist / width) ** 2)
+        depth = 1 + 0.45 * width * (1 - (dist / width) ** 2)
         in_bed = dist < width
         relief = relief + (carved - relief) * strength
         height = base + relief
@@ -187,13 +187,13 @@ ORES = [(COAL_ORE, 5.0, SEA_LEVEL + 400, 7), (IRON_ORE, 3.0, SEA_LEVEL + 120, 5)
         (GOLD_ORE, 1.0, SEA_LEVEL - 150, 5), (DIAMOND_ORE, 0.6, SEA_LEVEL - 380, 4)]
 LEAF_BLOCKS = (LEAVES, SPRUCE_LEAVES, BIRCH_LEAVES, JUNGLE_LEAVES, ACACIA_LEAVES)
 
-OAK, BIRCH, SPRUCE, JUNGLE, ACACIA, SWAMP_OAK, CACTUS_PLANT = range(7)
+OAK, BIRCH, SPRUCE, JUNGLE_TREE, ACACIA, SWAMP_OAK, CACTUS_PLANT = range(7)
 # Trees per 16x16 column in each biome, as {tree kind: number of trees}
 TREES = {FOREST: {OAK: 7.5, BIRCH: 1.5}, BIRCH_FOREST: {BIRCH: 8.0, OAK: 0.6}, PLAINS: {OAK: 0.3},
          SWAMP: {SWAMP_OAK: 2.5}, TAIGA: {SPRUCE: 9.0}, SNOWY_TAIGA: {SPRUCE: 6.0}, SNOWY_TUNDRA: {SPRUCE: 0.25},
-         JUNGLE: {JUNGLE: 11.0, OAK: 2.0}, SAVANNA: {ACACIA: 1.0, OAK: 0.15}, DESERT: {CACTUS_PLANT: 0.9},
+         JUNGLE: {JUNGLE_TREE: 11.0, OAK: 2.0}, SAVANNA: {ACACIA: 1.0, OAK: 0.15}, DESERT: {CACTUS_PLANT: 0.9},
          BADLANDS: {CACTUS_PLANT: 0.15}, ALPINE: {SPRUCE: 0.5}}
-TREE_HEIGHTS = {OAK: (4, 7), BIRCH: (5, 8), SPRUCE: (7, 14), JUNGLE: (9, 17), ACACIA: (5, 8),
+TREE_HEIGHTS = {OAK: (4, 7), BIRCH: (5, 8), SPRUCE: (7, 14), JUNGLE_TREE: (9, 17), ACACIA: (5, 8),
                 SWAMP_OAK: (4, 6), CACTUS_PLANT: (1, 4)}
 TREE_GROUND = {CACTUS_PLANT: (SAND, RED_SAND)}  # the other trees grow on grass, podzol and snow
 # How much the tree canopy hides the ground, seen from far away
@@ -212,7 +212,7 @@ def _tree_blocks(kind, height, variant):
     """Blocks of one tree as (dx, dy, dz, block) rows; the trunk starts at (0, 0, 0), above the ground."""
     rng = np.random.default_rng([kind, height, variant])
     log, leaf = {OAK: (LOG, LEAVES), BIRCH: (BIRCH_LOG, BIRCH_LEAVES), SPRUCE: (SPRUCE_LOG, SPRUCE_LEAVES),
-                 JUNGLE: (JUNGLE_LOG, JUNGLE_LEAVES), ACACIA: (ACACIA_LOG, ACACIA_LEAVES),
+                 JUNGLE_TREE: (JUNGLE_LOG, JUNGLE_LEAVES), ACACIA: (ACACIA_LOG, ACACIA_LEAVES),
                  SWAMP_OAK: (LOG, LEAVES), CACTUS_PLANT: (CACTUS, CACTUS)}[kind]
     out = []
 
@@ -243,7 +243,7 @@ def _tree_blocks(kind, height, variant):
             r = min(3.0, (height - dy) * 0.32 + 0.6)
             disc(0, dy, 0, max(0.0, r - (0.9 if (height - dy) % 2 else 0)), 0.0)
         out += [(0, height + 1, 0, leaf), (0, height + 2, 0, leaf)]
-    elif kind == JUNGLE:
+    elif kind == JUNGLE_TREE:
         disc(0, height - 2, 0, 2.5)
         disc(0, height - 1, 0, 3.3)
         disc(0, height, 0, 2.6)

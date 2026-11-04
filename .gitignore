@@ -20,3 +20,4 @@ __pycache__/
 # Outils agents (hors code du projet)
 .agents/
 skills-lock.json
+.venv/
