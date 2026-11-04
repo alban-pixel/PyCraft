@@ -5,8 +5,8 @@ import numpy as np
 
 from blocks import (ACACIA_LEAVES, ACACIA_LOG, AIR, BEDROCK, BIRCH_LEAVES, BIRCH_LOG, CACTUS, CLAY, COAL_ORE,
                     DEEPSLATE, DIAMOND_ORE, DIRT, GOLD_ORE, GRASS, GRAVEL, ICE, IRON_ORE, JUNGLE_LEAVES,
-                    JUNGLE_LOG, LEAVES, LOG, MUD, ORANGE_TERRACOTTA, PODZOL, RED_SAND, SAND, SANDSTONE, SNOW,
-                    SPRUCE_LEAVES, SPRUCE_LOG, STONE, TERRACOTTA, WATER, WHITE_TERRACOTTA)
+                    JUNGLE_LOG, LEAVES, LOG, MOSS, MUD, ORANGE_TERRACOTTA, PODZOL, RED_SAND, SAND, SANDSTONE,
+                    SNOW, SPRUCE_LEAVES, SPRUCE_LOG, STONE, TERRACOTTA, WATER, WHITE_TERRACOTTA)
 from noise import Noise, smoothstep
 
 CHUNK = 16  # columns and sections are 16 blocks wide
@@ -26,7 +26,8 @@ BIOME_NAMES = ["Ocean", "Deep ocean", "Frozen ocean", "Beach", "Desert", "Badlan
 
 NOISES = ["warp_x", "warp_z", "continent", "mountain_mask", "ridges", "hilliness", "hills", "detail",
           "river", "river_warp_x", "river_warp_z", "river_width", "lake", "temperature", "humidity",
-          "badlands", "surface", "caves_a", "caves_b", "caverns", "entrances", "ores"]
+          "badlands", "surface", "caves_a", "caves_b", "caverns", "entrances", "ores",
+          "fault", "cliff", "tuya"]
 
 
 class TerrainGenerator:
@@ -52,14 +53,24 @@ class TerrainGenerator:
         r = self.river.fbm2(rx / 7000, rz / 7000, 3)
         r_grad = np.hypot(self.river.fbm2((rx + 4) / 7000, rz / 7000, 3) - r,
                           self.river.fbm2(rx / 7000, (rz + 4) / 7000, 3) - r) / 4
+        # The rift faults and the table mountains work like the rivers and ranges: distance to the
+        # zero line (or to a contour) of a very smooth noise, so their walls stay sheer
+        f = self.fault.fbm2(wx / 26000, wz / 26000, 2)
+        f_grad = np.hypot(self.fault.fbm2((wx + 16) / 26000, wz / 26000, 2) - f,
+                          self.fault.fbm2(wx / 26000, (wz + 16) / 26000, 2) - f) / 16
+        t = self.tuya.fbm2(wx / 24000, wz / 24000, 2) * 2.3
+        t_grad = np.hypot(self.tuya.fbm2((wx + 16) / 24000, wz / 24000, 2) * 2.3 - t,
+                          self.tuya.fbm2(wx / 24000, (wz + 16) / 24000, 2) * 2.3 - t) / 16
         return {
             "wx": wx, "wz": wz, "m": m, "m_grad": m_grad, "r": r, "r_grad": r_grad,
+            "fault": f, "f_grad": f_grad, "tuya": t, "t_grad": t_grad,
+            "cliff": self.cliff.fbm2(wx / 8000, wz / 8000, 2) * 2.3,
             "continent": self.continent.fbm2(wx / 9000, wz / 9000, 5) * 2.4 + 0.2,
             "temperature": self.temperature.fbm2(wx / 6800, wz / 6800, 3) * 2.3,
             "humidity": self.humidity.fbm2(wx / 6000, wz / 6000, 3) * 2.3,
             "hilliness": smoothstep(-0.3, 0.45, self.hilliness.fbm2(wx / 3500, wz / 3500, 2) * 2.3),
             "half_width": 3400 + 1600 * self.hilliness.noise2(wx / 10000 + 50, wz / 10000),
-            "strength": smoothstep(-0.5, 0.15, self.mountain_mask.fbm2(wx / 12000 + 300, wz / 12000, 2) * 2.3),
+            "strength": smoothstep(-0.28, 0.25, self.mountain_mask.fbm2(wx / 12000 + 300, wz / 12000, 2) * 2.3),
             "badlands": self.badlands.fbm2(wx / 2700, wz / 2700, 2) * 2.3,
             "river_width": self.river_width.noise2(x / 600, z / 600),
             "lake": self.lake.fbm2(wx / 1900, wz / 1900, 3) * 2.3,
@@ -99,6 +110,19 @@ class TerrainGenerator:
         stepped = np.floor(relief / step) * step + step * smoothstep(0.7, 1.0, (relief / step) % 1.0)
         relief = relief + (stepped * 1.4 - relief) * mesa
 
+        # Terraced lava strata, like the stepped sides of Iceland's fjord mountains: in cliff
+        # country the relief settles into flat flows stacked with sheer edges
+        step = 8.0 + 6.0 * (0.5 + 0.5 * self.surface.noise2(x / 2600 + 77, z / 2600))
+        frac = relief / step % 1.0
+        terraced = np.floor(relief / step) * step + step * smoothstep(0.55, 0.9, frac)
+        relief = relief + (terraced - relief) * smoothstep(0.15, 0.55, k["cliff"]) * land
+
+        # Tuyas: rare flat-topped volcanoes rising out of the plains, with cliff sides (the 26
+        # blocks around their contour line are the rampart)
+        t_dist = (k["tuya"] - 1.05) / np.maximum(k["t_grad"], 1e-9)
+        plateau = 80 + 200 * np.abs(self.tuya.fbm2(wx / 4000 + 900, wz / 4000, 3))
+        relief = relief + np.minimum(smoothstep(0.0, 26.0, t_dist) * 3.0, 1.0) * plateau * land
+
         # Rivers carve a channel and a valley around the zero line of the river noise
         dist = np.abs(k["r"]) / np.maximum(k["r_grad"], 1e-9)
         lowland = 1 - smoothstep(0, 900, relief)
@@ -123,6 +147,15 @@ class TerrainGenerator:
         lake_bed = river_level - 1 - (lake - 0.8) * 60
         in_lake = (lake > 0.8) & (shore > 0.5) & (base > SEA_LEVEL - 4)
         height = np.where(in_lake, np.minimum(height, lake_bed), height)
+
+        # Rift valleys: rare long cracks sunk between two sheer walls, like a mid-ocean ridge
+        # splitting the land (the deepest of them dip under the sea). Their floor is a fresh lava
+        # field: all hummocks, no flat ground
+        f_dist = np.abs(k["fault"]) / np.maximum(k["f_grad"], 1e-9)
+        graben = (1 - smoothstep(16, 40, f_dist)) * land
+        depth = 24 + 48 * (0.5 + 0.5 * self.surface.noise2(x / 8000 + 330, z / 8000))
+        hummocks = np.abs(self.surface.fbm2(x / 26, z / 26, 2)) * 5 + self.surface.noise2(x / 9, z / 9)
+        height = height - depth * graben + graben * hummocks
 
         # Squeeze the highest peaks smoothly under the height limit instead of cutting them flat
         above = height - (SEA_LEVEL + 2700)
@@ -286,6 +319,9 @@ def tints(temperature, humidity, biome):
     h = np.clip((humidity + 0.8) / 1.3, 0, 1)[..., None]
     cold, hot_dry, hot_wet = np.array([0.45, 0.66, 0.47]), np.array([0.74, 0.7, 0.33]), np.array([0.3, 0.8, 0.14])
     grass = cold + (hot_dry + (hot_wet - hot_dry) * h - cold) * t
+    # Cool wet country goes olive: the moss that creeps over everything
+    mossiness = (1 - smoothstep(-0.3, 0.12, temperature)) * smoothstep(-0.15, 0.35, humidity)
+    grass = grass + (np.array([0.44, 0.56, 0.24]) - grass) * (mossiness * 0.8)[..., None]
     foliage = grass * np.array([0.68, 0.78, 0.66])
     cold_water, warm_water = np.array([0.22, 0.36, 0.86]), np.array([0.2, 0.56, 0.95])
     water = cold_water + (warm_water - cold_water) * t
@@ -325,6 +361,12 @@ def _surface(s, top, slope, noise):
     put(np.isin(biome, (BEACH, DESERT)), SAND, SANDSTONE, 5)
     put((biome == DESERT) & (slope >= 4), SANDSTONE)
     put(biome == BADLANDS, RED_SAND, TERRACOTTA, 12)
+    # Moss creeps over the rocks of the cool, wet country: old lava fields go green almost
+    # everywhere, and it even clings to the gentler cliffs
+    mossy = (s["temperature"] < 0.1) & (s["humidity"] > -0.15) & ~np.isin(
+        biome, (SNOWY_TAIGA, SNOWY_TUNDRA, SNOWY_PEAKS, GLACIER))
+    put(mossy & ~steep & (noise > 0.0), MOSS, STONE, 2)
+    put(mossy & steep & (slope < 4), MOSS, STONE)
     # The aquatic floor: sand, gravel and clay — mostly under water, on the shore just above the
     # waterline, and in pockets buried in the ground
     under = top < water
