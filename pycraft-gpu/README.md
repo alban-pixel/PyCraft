@@ -27,6 +27,9 @@ a real graphics card driver.
   taiga, snowy tundra, alpine meadow, snowy peaks, glacier. Grass, leaves and water change color
   smoothly from one biome to the next
 - Oak, birch, spruce, jungle and acacia trees, swamp oaks and cacti
+- Tall grass, ferns, dead bushes and patches of flowers (poppies, dandelions, blue orchids,
+  cornflowers, oxeye daisies, alliums) on the ground, by biome; you walk through them, and you can
+  plant them, with oak saplings, on grass, dirt or podzol (dead bushes on sand)
 - Caves (tunnels near the surface, big caverns deeper down) and coal, iron, gold and diamond ore
 - The terrain far away, up to about 8 km, is drawn too, so you see the mountains from a long way off
 - Light from the sun by day and the moon by night, with soft shadows: trees, buildings and cliffs
@@ -37,7 +40,7 @@ a real graphics card driver.
 - Drifting clouds that cast shadows, with the highest mountains rising through them; stars at night,
   a glow around the sun, and a blue haze over faraway mountains
 - Anti-aliased edges, and up to 2560x1440 pixels
-- 37 blocks to build with
+- 47 blocks to build with
 - Walking, sprinting, jumping, swimming and flying (and flying fast)
 - An 8-minute day and night cycle, with a sun, a moon and sunsets
 - A title screen, a pause menu and a block inventory
@@ -152,7 +155,9 @@ with its own copy of the world: Python threads would wait for each other). The g
 the nearest columns first, uploads what they send back, and rebuilds a section itself right away
 when you change a block. Each column counts its changes, so a mesh built from older blocks is
 thrown away and asked for again. While building a face, the workers also count the blocks around
-each of its corners: the more there are, the darker the corner (ambient occlusion).
+each of its corners: the more there are, the darker the corner (ambient occlusion). Plants are
+not cubes: each one is two quads crossed along the diagonals of its block, seen from both sides,
+whose see-through texels are cut out (in the shadows too) and which are lit like the top of a block.
 
 Farther away, the terrain is drawn as a smooth height map at six levels of detail, each twice as
 coarse and twice as wide as the one before (4 to 128 blocks between points, up to 8 km away). The
