@@ -33,6 +33,9 @@ FOG_START = 0.75  # the fog that hides the end of the world starts at this share
 MAX_DT = 1 / 30  # longest time step: slower frames slow the game down instead of making the player skip
 REACH = 6.0
 INVENTORY_COLUMNS = 13
+INVENTORY_SLOT = TILE + 6  # side of a slot of the inventory, in UI pixels
+INVENTORY_HEADER, INVENTORY_FOOTER = 14, 15  # room above the slots (instructions) and below (pages, name)
+INVENTORY_BELOW = 34  # UI pixels kept free at the bottom of the screen: the hotbar and its block's name
 MOUSE_SENSITIVITY = 0.45  # degrees per pixel at 320x180
 KEY_LOOK_SPEED = 120.0  # degrees per second with the arrow keys
 DAY_SECONDS = 20 * 60  # one full day and night
@@ -64,28 +67,56 @@ HELP = [
 ]
 
 
+def _kmeans(points, weight, centers, rounds):
+    """Move the centers to the weighted average of the points nearest to each, a few times."""
+    for _ in range(rounds):
+        nearest = np.argmin(((points[:, None] - centers[None]) ** 2).sum(-1), axis=1)
+        for k in range(len(centers)):
+            members = nearest == k
+            if members.any():
+                centers[k] = np.average(points[members], axis=0, weights=weight[members])
+    return centers
+
+
+def _spread(points, weight, count):
+    """Starting centers far apart: each next one is the point worst served by those before it."""
+    centers = [points[np.argmax(weight)]]
+    gap = ((points - centers[0]) ** 2).sum(-1)
+    for _ in range(count - 1):
+        centers.append(points[np.argmax(gap * weight)])
+        gap = np.minimum(gap, ((points - centers[-1]) ** 2).sum(-1))
+    return np.array(centers)
+
+
 def icon_palette(atlas):
-    """The block icons for pyxel.blt: 48 colors that suit them (k-means of the atlas' colors) and
-    every pixel as the index of its nearest one, 16-63 (0 where transparent). Texels that take the
-    biome color get a typical green (blue for water)."""
+    """The block icons for pyxel.blt: 48 colors that suit them and every pixel as the index of its
+    nearest one, 16-63 (0 where transparent). Texels that take the biome color get a typical green
+    (blue for water).
+    Each icon is first summed up in 4 colors (its main color, darker and lighter texels, specks),
+    and the 48 colors are a k-means of those, every icon counting the same: a tile of a rare color
+    (a wool, a block of diamond) keeps its own color instead of the many greys and browns taking
+    most of the palette."""
     rgb = atlas[..., :3].astype(float) / 255
     tint = np.broadcast_to(np.array(ICON_GREEN), rgb.shape).copy()
     ty, tx = divmod(T_WATER, ATLAS_TILES)
     tint[ty * TILE:(ty + 1) * TILE, tx * TILE:(tx + 1) * TILE] = ICON_BLUE
     rgb = np.where((atlas[..., 3] == TINT_ALPHA)[..., None], rgb * tint, rgb)
     seen = atlas[..., 3] >= 128
-    count = FIXED_COLORS - 16
-    unique, weight = np.unique(np.rint(rgb[seen] * 255).astype(np.uint8), axis=0, return_counts=True)
-    lab = srgb_to_oklab(unique / 255)
-    centers = lab[np.random.default_rng(1).choice(len(lab), count, replace=False)]
-    for _ in range(15):
-        nearest = np.argmin(((lab[:, None] - centers[None]) ** 2).sum(-1), axis=1)
-        for k in range(count):
-            members = nearest == k
-            if members.any():
-                centers[k] = np.average(lab[members], axis=0, weights=weight[members])
+    lab = srgb_to_oklab(rgb.reshape(-1, 3)).reshape(rgb.shape)
+    points, weight = [], []
+    for t in sorted({int(BLOCK_TILES[b][0]) for b in PLACEABLE}):  # the tiles drawn as icons
+        ty, tx = divmod(t, ATLAS_TILES)
+        cell = (slice(ty * TILE, (ty + 1) * TILE), slice(tx * TILE, (tx + 1) * TILE))
+        texels = lab[cell][seen[cell]]
+        ones = np.ones(len(texels))
+        summary = _kmeans(texels, ones, _spread(texels, ones, 4), 8)
+        share = np.bincount(np.argmin(((texels[:, None] - summary[None]) ** 2).sum(-1), axis=1), minlength=4)
+        points.append(summary[share > 0])
+        weight.append(share[share > 0] / len(texels))
+    points, weight = np.concatenate(points), np.concatenate(weight)
+    centers = _kmeans(points, weight, _spread(points, weight, FIXED_COLORS - 16), 20)
     colors = np.rint(oklab_to_srgb(centers) * 255).astype(np.uint8)
-    pixels = srgb_to_oklab(rgb.reshape(-1, 3))
+    pixels = lab.reshape(-1, 3)
     nearest = np.argmin(((pixels[:, None] - srgb_to_oklab(colors / 255)[None]) ** 2).sum(-1), axis=1)
     indices = (16 + nearest).reshape(seen.shape).astype(np.uint8)
     indices[~seen] = 0
@@ -200,6 +231,7 @@ class App:
         self.warp_to_button = False
         self.hotbar = list(DEFAULT_HOTBAR)
         self.selected = 0
+        self.inventory_page = 0
         self.target = None  # (block looked at, empty block in front of it)
         self.time_of_day = 0.05
         self.mouse_captured = False
@@ -553,28 +585,63 @@ class App:
                 return i
         return None
 
-    def inventory_slot(self, i):
-        cols, size = INVENTORY_COLUMNS, TILE + 6
-        x0 = (self.ui.width - cols * size) // 2
-        return x0 + (i % cols) * size, self.ui.height // 2 - 40 + (i // cols) * size, size
+    def inventory_layout(self):
+        """The inventory shows as many rows of slots as fit above the hotbar, and puts the other
+        blocks on more pages. Returns the left and top of the slots, the rows per page, the number
+        of pages and the page shown."""
+        needed = math.ceil(len(PLACEABLE) / INVENTORY_COLUMNS)
+        room = self.ui.height - INVENTORY_BELOW - 2
+        rows = max(1, min(needed, (room - INVENTORY_HEADER - INVENTORY_FOOTER) // INVENTORY_SLOT))
+        pages = math.ceil(needed / rows)
+        x0 = (self.ui.width - INVENTORY_COLUMNS * INVENTORY_SLOT) // 2
+        panel = INVENTORY_HEADER + rows * INVENTORY_SLOT + INVENTORY_FOOTER
+        top = 2 + (room - panel) // 2 + INVENTORY_HEADER
+        return x0, top, rows, pages, min(self.inventory_page, pages - 1)
+
+    def inventory_slots(self):
+        """(block, x, y) of each slot on the page shown."""
+        x0, top, rows, pages, page = self.inventory_layout()
+        per_page = rows * INVENTORY_COLUMNS
+        for i, block in enumerate(PLACEABLE[page * per_page:(page + 1) * per_page]):
+            yield block, x0 + (i % INVENTORY_COLUMNS) * INVENTORY_SLOT, top + (i // INVENTORY_COLUMNS) * INVENTORY_SLOT
+
+    def inventory_arrows(self):
+        """(x, y, w, h) of the buttons that show the previous and the next page."""
+        x0, top, rows, _, _ = self.inventory_layout()
+        y = top + rows * INVENTORY_SLOT + 3
+        return (x0, y, 9, 9), (x0 + 33, y, 9, 9)
 
     def update_inventory(self):
         if pyxel.btnp(pyxel.KEY_E) or pyxel.btnp(pyxel.KEY_ESCAPE):
             self.set_state("playing")
             return
-        self.update_hotbar_keys()
+        _, _, _, pages, page = self.inventory_layout()
+        # With several pages, the wheel turns them (1-9 still choose the hotbar slot)
+        self.update_hotbar_keys(wheel=pages == 1)
+        forward = pyxel.btnp(pyxel.KEY_RIGHT) or pyxel.btnp(pyxel.KEY_PAGEDOWN)
+        back = pyxel.btnp(pyxel.KEY_LEFT) or pyxel.btnp(pyxel.KEY_PAGEUP)
+        turn = int(forward) - int(back)
+        if pages > 1:
+            turn -= pyxel.mouse_wheel
+        mx, my = self.ui.mouse_x, self.ui.mouse_y
         if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT):
-            for i, block in enumerate(PLACEABLE):
-                x, y, size = self.inventory_slot(i)
-                if x <= self.ui.mouse_x < x + size and y <= self.ui.mouse_y < y + size:
+            for step, (x, y, w, h) in zip((-1, 1), self.inventory_arrows()):
+                if pages > 1 and x <= mx < x + w and y <= my < y + h:
+                    turn = step
+            for block, x, y in self.inventory_slots():
+                if x <= mx < x + INVENTORY_SLOT and y <= my < y + INVENTORY_SLOT:
                     self.hotbar[self.selected] = block
                     self.sfx(SND_CLICK)
+        new_page = min(max(page + turn, 0), pages - 1)
+        if new_page != page:
+            self.sfx(SND_CLICK)
+        self.inventory_page = new_page
 
-    def update_hotbar_keys(self):
+    def update_hotbar_keys(self, wheel=True):
         for i in range(len(self.hotbar)):
             if pyxel.btnp(pyxel.KEY_1 + i):
                 self.selected = i
-        if pyxel.mouse_wheel:
+        if wheel and pyxel.mouse_wheel:
             self.selected = (self.selected - pyxel.mouse_wheel) % len(self.hotbar)
 
     def update_playing(self):
@@ -857,22 +924,29 @@ class App:
 
     def draw_inventory(self):
         ui = self.ui
-        size = TILE + 6
-        rows = math.ceil(len(PLACEABLE) / INVENTORY_COLUMNS)
-        x, y, _ = self.inventory_slot(0)
-        ui.rect(x - 4, y - 14, INVENTORY_COLUMNS * size + 8, rows * size + 18, 1)
-        ui.rectb(x - 4, y - 14, INVENTORY_COLUMNS * size + 8, rows * size + 18, 13)
-        self.center_text(y - 10, "Click a block to put it in the selected slot", 7)
+        size = INVENTORY_SLOT
+        x0, top, rows, pages, page = self.inventory_layout()
+        w, h = INVENTORY_COLUMNS * size + 8, INVENTORY_HEADER + rows * size + INVENTORY_FOOTER
+        ui.rect(x0 - 4, top - INVENTORY_HEADER, w, h, 1)
+        ui.rectb(x0 - 4, top - INVENTORY_HEADER, w, h, 13)
+        self.center_text(top - 10, "Click a block to put it in the selected slot", 7)
         hovered = None
-        for i, block in enumerate(PLACEABLE):
-            x, y, size = self.inventory_slot(i)
+        for block, x, y in self.inventory_slots():
             over = x <= ui.mouse_x < x + size and y <= ui.mouse_y < y + size
             if over:
                 hovered = block
             ui.rectb(x, y, size, size, 7 if over else 5)
             self.draw_icon(x + 3, y + 3, block)
+        bottom = top + rows * size
+        if pages > 1:  # the page buttons, dimmed on the first and the last page
+            for (x, y, bw, bh), label, usable in zip(self.inventory_arrows(), "<>", (page > 0, page < pages - 1)):
+                over = usable and x <= ui.mouse_x < x + bw and y <= ui.mouse_y < y + bh
+                ui.rectb(x, y, bw, bh, 7 if over else 13 if usable else 5)
+                ui.text(x + 3, y + 2, label, 7 if usable else 5)
+            number = f"{page + 1}/{pages}"
+            ui.text(x0 + 9 + (24 - len(number) * 4) // 2 + 1, bottom + 5, number, 7)
         if hovered is not None:
-            self.center_text(y + size + 8, BLOCK_NAMES[hovered], 10, shadow=True)
+            self.center_text(bottom + 5, BLOCK_NAMES[hovered], 10, shadow=True)
 
     def draw_icon(self, x, y, block):
         tile = BLOCK_TILES[block][0]
