@@ -11,8 +11,8 @@ import moderngl
 import numpy as np
 import pyxel
 
-from blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, PLACEABLE, T_WATER, TILE, TINT_ALPHA,
-                    UNBREAKABLE, WATER, build_atlas)
+from blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, GROWS_ON, PLACEABLE, PLANT, SOLID, T_WATER,
+                    TILE, TINT_ALPHA, UNBREAKABLE, WATER, build_atlas)
 from player import Player
 from renderer import FIXED_COLORS, LOD_QUALITY_NAMES, Renderer, oklab_to_srgb, srgb_to_oklab
 from terrain import SEA_LEVEL
@@ -628,12 +628,20 @@ class App:
             else:
                 self.world.set(x, y, z, 0)
                 self.renderer.block_changed(x, y, z)
+                if PLANT[self.world.get(x, y + 1, z)]:  # the plant on it goes too
+                    self.world.set(x, y + 1, z, 0)
+                    self.renderer.block_changed(x, y + 1, z)
                 self.sfx(SND_BREAK)
         elif self.target and pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT, hold=hold, repeat=repeat):
-            x, y, z = self.target[1]
+            # Aiming at a plant puts the block in its place, like on the ground under it
+            x, y, z = self.target[0] if PLANT[self.world.get(*self.target[0])] else self.target[1]
             block = self.hotbar[self.selected]
-            free = self.world.inside(x, y, z) and self.world.get(x, y, z) in (0, WATER)
-            if free and (block == WATER or not self.player.overlaps(x, y, z)):
+            here = self.world.get(x, y, z)
+            free = self.world.inside(x, y, z) and (here in (0, WATER) or PLANT[here])
+            if free and PLANT[block] and (here == WATER or not GROWS_ON[block, self.world.get(x, y - 1, z)]):
+                grounds = [BLOCK_NAMES[g].lower() for g in np.flatnonzero(GROWS_ON[block])]
+                self.notify("%s grows only on %s or %s" % (BLOCK_NAMES[block], ", ".join(grounds[:-1]), grounds[-1]))
+            elif free and (not SOLID[block] or not self.player.overlaps(x, y, z)):  # plants and water: walk-through
                 self.world.set(x, y, z, block)
                 self.renderer.block_changed(x, y, z)
                 self.sfx(SND_PLACE)
