@@ -34,9 +34,13 @@ import terrain as T
 from builder import IN_FLIGHT, WATER_SURFACE, WORKERS, Builders, mesh_section
 from terrain import CHUNK, SEA_LEVEL, WORLD_HEIGHT
 
-LOD_SIZE = 128  # grid points per side of each level of the distant terrain (127 columns)
-LOD_LEVELS = 7
-LOD_SPACING = 2  # width of a column on the finest level, in blocks; each level doubles it
+LOD_QUALITIES = {  # name -> (width of a column on the finest level in blocks, grid points per side, levels)
+    "low": (2, 128, 7),  # what the distant terrain always was
+    "medium": (2, 256, 7),  # same columns, but every level reaches twice as far
+    "high": (1, 256, 8),  # one column per block near the blocks, then coarser and coarser
+    "ultra": (1, 512, 6),  # one column per block as far as the blocks go, every level twice as wide
+}
+LOD_QUALITY_NAMES = list(LOD_QUALITIES)
 LOD_STRIPS_PER_FRAME = 4
 LOD_MARGIN = 4  # columns along the edge of a level that the next, coarser one always draws
 LOD_BAND = 24  # columns over which a level gives way to the next one, cell by cell
@@ -69,8 +73,7 @@ COLORS_UNIT = 1
 READY_UNIT = 2
 CLOUDS_UNIT = 3
 SHADOW_UNITS = (4, 5, 6)
-HEIGHTS_UNIT = 7
-SURFACE_UNIT = 8
+DATA_UNIT = 7
 TILE_AVG_UNIT = 9
 
 # --- Shader code shared by several programs ---------------------------------------------------
@@ -344,13 +347,13 @@ void main() {
 LOD_VERTEX_SHADER = """
 #version 330
 uniform mat4 vp;
-uniform sampler2D heights;   // 128x128, wrapping around: grid point (x, z) is at texel (x & 127, z & 127)
+uniform usampler2D data;     // grid_size x grid_size, wrapping: heights and blocks of each grid point
 uniform sampler2D colors;    // same layout: the biome's color of the grass (or of the water)
-uniform sampler2D surface;   // same layout: top block, block under it, leaves of a tree crown (0: none), its height
 uniform ivec2 grid_origin;   // grid coordinates of point (0, 0)
 uniform vec2 origin;         // its position relative to the camera (x, z)
 uniform float cam_y;
 uniform float spacing;
+uniform int grid_size;       // grid points per side (a power of two); grid_size - 1 columns are drawn
 uniform int mode;
 uniform int level;
 uniform vec4 inner;          // square of the finer level (relative to the camera: min x, min z, max x, max z)
@@ -358,6 +361,7 @@ uniform int fade_inner;      // 1 when a finer level is drawn: give way to it, c
 uniform vec4 own;            // this level's square
 uniform int fade_own;        // 1 when a coarser level takes over at the edge of this one
 uniform int use_ready;       // leave out what the blocks draw (not in the shadow maps)
+uniform vec4 clip_planes[3]; // left, right and near planes of vp: nothing is drawn outside them
 uniform sampler2D ready;     // 64x64 wrapping map of the chunk columns drawn as blocks
 uniform ivec2 cam_chunk;
 uniform vec2 cam_in_chunk;
@@ -370,17 +374,20 @@ flat out vec3 v_tint;
 flat out float v_depth;      // depth of the water over the bottom
 flat out vec2 v_tops;        // heights of the ground and of the column (with its crown), in the world
 flat out float v_bottom;     // a side: height of the column it faces
-flat out int v_taller;       // a top: which of the 8 columns around are taller (bits: +x -x +z -z, then corners)
+flat out ivec2 v_local;      // the column's cell in the grid, for the top's ambient occlusion
 flat out vec2 v_corner;      // the column's corner, relative to the camera
 """ + BLOCK_IDS + CELLS + """
 const int FACE_OF[6] = int[](0, 1, 2, 4, 5, 3);  // in_norm -> face number (+x -x +y +z -z)
-float height_at(ivec2 local) { return texelFetch(heights, (grid_origin + local) & 127, 0).r; }
-ivec4 blocks_at(ivec2 local) { return ivec4(texelFetch(surface, (grid_origin + local) & 127, 0) * 255.0 + 0.5); }
-// The ground of a column: the terrain at its corner, as a block takes the height of its own column
-float ground_top(ivec2 cell) { return height_at(cell); }
+// A grid point's texel: height of the top surface (as float bits), then the 4 packed bytes
+// (top block, block under it, crown leaves or 0, crown height)
+uvec4 data_at(ivec2 local) { return texelFetch(data, (grid_origin + local) & (grid_size - 1), 0); }
+float height_of(uvec4 d) { return uintBitsToFloat(d.x); }
+ivec4 blocks_of(uvec4 d) { return ivec4(d.y & 255u, (d.y >> 8) & 255u, (d.y >> 16) & 255u, d.y >> 24); }
+float height_at(ivec2 local) { return height_of(data_at(local)); }
+// The very top of a column: the terrain at its corner plus its crown of leaves, if it has one
 float column_top(ivec2 cell) {
-    ivec4 b = blocks_at(cell);
-    return ground_top(cell) + (b.z != 0 ? float(b.w) : 0.0);
+    uvec4 d = data_at(cell);
+    return height_of(d) + (((d.y >> 16) & 255u) != 0u ? float(d.y >> 24) : 0.0);
 }
 float level_fade(vec2 center, vec4 rect, float fine) {  // 1 at the edge of a finer level's square, 0 well inside
     float d = min(min(center.x - rect.x, rect.z - center.x), min(center.y - rect.y, rect.w - center.y));
@@ -388,7 +395,7 @@ float level_fade(vec2 center, vec4 rect, float fine) {  // 1 at the edge of a fi
 }
 void main() {
     // One instance per cell of the grid: a square column of blocks, like Distant Horizons
-    ivec2 local = ivec2(gl_InstanceID %% 127, gl_InstanceID / 127);
+    ivec2 local = ivec2(gl_InstanceID %% (grid_size - 1), gl_InstanceID / (grid_size - 1));
     ivec2 g = grid_origin + local;
     vec2 center = origin + (vec2(local) + 0.5) * spacing;
     // Is this cell drawn by this level? Each 2x2 group of its cells is drawn either by this level
@@ -411,14 +418,24 @@ void main() {
         if (abs(rel.x) < 32 && abs(rel.y) < 32 && texelFetch(ready, (cam_chunk + rel) & 63, 0).r > 0.5) keep = false;
     }
     band = band || (dist > block_fade.x && dist < block_fade.y + 2.0 * spacing);
+    // Nothing of the column reaches the view if a box one cell wide and as tall as the world is
+    // outside one of the planes. The box is generous on purpose: the missing vertices can only
+    // hide things that no pixel would have shown anyway
+    vec3 ctr = vec3(center.x, 2048.0 - cam_y, center.y);
+    for (int i = 0; i < 3; i++) {
+        vec4 pl = clip_planes[i];
+        if (dot(pl.xyz, ctr) + pl.w < -((abs(pl.x) + abs(pl.z)) * 0.71 * spacing + abs(pl.y) * 2048.0))
+            keep = false;
+    }
     if (!keep) {
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0);  // every vertex at the same place outside the view: nothing drawn
         return;
     }
-    ivec4 b = blocks_at(local);
-    float ground = ground_top(local);
+    uvec4 own_data = data_at(local);
+    ivec4 b = blocks_of(own_data);
+    float ground = height_of(own_data);
     // Bare rock where it is too steep for soil (snow on the peaks holds a little longer)
-    float h00 = height_at(local), h10 = height_at(local + ivec2(1, 0));
+    float h00 = ground, h10 = height_at(local + ivec2(1, 0));
     float h01 = height_at(local + ivec2(0, 1)), h11 = height_at(local + ivec2(1, 1));
     float slope = (max(max(h00, h10), max(h01, h11)) - min(min(h00, h10), min(h01, h11))) / spacing;
     bool soil = b.x == GRASS || b.x == PODZOL || b.x == MUD || b.x == DIRT || b.x == GRAVEL || (b.x == SNOW && b.y == DIRT);
@@ -430,7 +447,8 @@ void main() {
     ivec2 ncell = local + ivec2(int(in_norm.x), int(in_norm.z));
     float neighbor = top;
     if (in_norm.y == 0.0)
-        neighbor = (min(ncell.x, ncell.y) < 0 || max(ncell.x, ncell.y) > 126) ? top - 4.0 * spacing : column_top(ncell);
+        neighbor = (min(ncell.x, ncell.y) < 0 || max(ncell.x, ncell.y) >= grid_size - 1)
+                 ? top - 4.0 * spacing : column_top(ncell);
     float y = top;
     if (in_pos.y < 0.5) {
         if (band) y = min(neighbor, top) - spacing;
@@ -447,21 +465,13 @@ void main() {
     int axis = in_norm.x > 0.5 ? 0 : in_norm.x < -0.5 ? 1 : in_norm.y > 0.5 ? 2 : in_norm.z > 0.5 ? 3 : 4;
     v_face = FACE_OF[axis];
     v_blocks = b.xyz;
-    vec4 c = texelFetch(colors, g & 127, 0);
+    vec4 c = texelFetch(colors, g & (grid_size - 1), 0);
     v_tint = c.rgb;
     v_depth = c.a * 255.0;
     v_tops = vec2(ground, top);
     v_bottom = neighbor;
     v_corner = origin + vec2(local) * spacing;
-    v_taller = 0;
-    if (v_face == 2) {
-        const ivec2 AROUND[8] = ivec2[](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1),
-                                        ivec2(1, 1), ivec2(-1, 1), ivec2(1, -1), ivec2(-1, -1));
-        for (int i = 0; i < 8; i++) {
-            ivec2 c = local + AROUND[i];
-            if (min(c.x, c.y) >= 0 && max(c.x, c.y) <= 126 && column_top(c) > top + 0.5) v_taller |= 1 << i;
-        }
-    }
+    v_local = local;  // the fragment shader works out which columns around are taller
 }
 """ % {"margin": LOD_MARGIN, "band": LOD_BAND}
 
@@ -473,6 +483,9 @@ uniform float spacing;
 uniform vec2 cam_frac;       // the camera's x and z, modulo 256: where a block starts
 uniform float cam_x;         // the camera's x (the badlands' layers shift at x = 0)
 uniform sampler2D atlas;
+uniform usampler2D data;     // the level's grid: heights and blocks (see the vertex shader)
+uniform ivec2 grid_origin;
+uniform int grid_size;
 in vec3 v_pos;
 flat in int v_face;
 flat in ivec3 v_blocks;
@@ -480,11 +493,16 @@ flat in vec3 v_tint;
 flat in float v_depth;
 flat in vec2 v_tops;
 flat in float v_bottom;
-flat in int v_taller;
+flat in ivec2 v_local;
 flat in vec2 v_corner;
 out vec4 out_color;
 """ + LIGHT + CLOUDS + SHADOWS + WAVES + BLOCK_SHADING + BLOCK_IDS + BLOCK_TILES_GLSL + BANDS_GLSL + """
-float occluded(int bit, float d) { return ((v_taller >> bit) & 1) == 1 ? 1.0 - clamp(d, 0.0, 1.0) : 0.0; }
+// The very top of the column of a cell: worked out per pixel, only where a top needs its ambient
+// occlusion — a cell is a few pixels wide at the distances where the cost matters
+float lod_top(ivec2 cell) {
+    uvec4 d = texelFetch(data, (grid_origin + cell) & (grid_size - 1), 0);
+    return uintBitsToFloat(d.x) + (((d.y >> 16) & 255u) != 0u ? float(d.y >> 24) : 0.0);
+}
 void main() {
     if (mode == 1) return;  // shadow map: only the depth counts
     // Which block this point of the column is, like the generator stacks them
@@ -522,12 +540,23 @@ void main() {
     // Ambient occlusion like the blocks': darker within a block of a taller column around
     float ao = 1.0;
     if (v_face == 2) {
+        int taller = 0;  // which of the 8 columns around are taller (bits: +x -x +z -z, then corners)
+        const ivec2 AROUND[8] = ivec2[](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1),
+                                        ivec2(1, 1), ivec2(-1, 1), ivec2(1, -1), ivec2(-1, -1));
+        for (int i = 0; i < 8; i++) {
+            ivec2 c = v_local + AROUND[i];
+            if (min(c.x, c.y) >= 0 && max(c.x, c.y) <= grid_size - 2 && lod_top(c) > v_tops.y + 0.5)
+                taller |= 1 << i;
+        }
         vec2 p = v_pos.xz - v_corner;  // inside the column, in blocks
         bool east = p.x > spacing * 0.5, south = p.y > spacing * 0.5;
         float dx = east ? spacing - p.x : p.x, dz = south ? spacing - p.y : p.y;
-        float s1 = occluded(east ? 0 : 1, dx), s2 = occluded(south ? 2 : 3, dz);
-        float d = occluded(4 + (east ? 0 : 1) + (south ? 0 : 2), max(dx, dz));
+        int c1 = east ? 0 : 1, c2 = south ? 2 : 3;
+        #define occluded(bit, d) ((((taller >> (bit)) & 1) == 1) ? 1.0 - clamp(d, 0.0, 1.0) : 0.0)
+        float s1 = occluded(c1, dx), s2 = occluded(c2, dz);
+        float d = occluded(4 + c1 + (south ? 0 : 2), max(dx, dz));
         ao = 0.5 + (3.0 - clamp(s1 + s2 + max(d, s1 * s2), 0.0, 3.0)) / 6.0;
+        #undef occluded
     } else if (v_bottom < v_tops.y) {
         ao = 0.5 + (3.0 - (1.0 - clamp(v_pos.y + cam_y - v_bottom, 0.0, 1.0))) / 6.0;
     }
@@ -1109,16 +1138,19 @@ class Chunks:
 # --- Distant terrain ---------------------------------------------------------------------------
 
 class FarTerrain:
-    """The terrain beyond the blocks, as seven square grids of 127x127 columns around the camera,
-    each twice as coarse and twice as wide as the one before (2 to 128 blocks wide, up to 8 km away).
-    Every column is drawn like a stack of blocks: the same blocks the generator puts there, with the
-    same textures and light as the blocks near the camera, and trees as crowns of leaves. Heights,
-    colors and blocks live in textures that wrap around: when the camera moves, only the new rows or
-    columns at the edge are sampled. Each level gives way to the next one cell by cell (see CELLS)."""
+    """The terrain beyond the blocks, as `levels` square grids of (size - 1)^2 columns around the
+    camera, each twice as coarse and twice as wide as the one before (spacing to spacing x 2^levels
+    blocks wide). Every column is drawn like a stack of blocks: the same blocks the generator puts
+    there, with the same textures and light as the blocks near the camera, and trees as crowns of
+    leaves. Heights, colors and blocks live in textures that wrap around: when the camera moves, only
+    the new rows or columns at the edge are sampled. Each level gives way to the next one cell by
+    cell (see CELLS). The LOD quality setting picks (spacing, size, levels) from LOD_QUALITIES."""
 
-    def __init__(self, ctx, program, world, atlas_texture, atlas):
+    def __init__(self, ctx, program, world, atlas_texture, atlas, spacing=2, size=128, levels=7):
         self.ctx, self.program, self.world, self.atlas = ctx, program, world, atlas_texture
-        n = LOD_SIZE
+        self.atlas_data = atlas  # kept to rebuild the tile averages if the quality changes
+        self.spacing, self.size, self.n_levels = spacing, size, levels
+        n = size
         # A unit cube (no bottom face: it is never seen), drawn once per cell of the grid. The
         # shader stretches each side down to the top of the column it faces.
         verts = []
@@ -1126,28 +1158,27 @@ class FarTerrain:
             verts += [corner + normal for corner in face]
         self.vbo = ctx.buffer(np.array(verts, dtype="f4").tobytes())
         self.vao = ctx.vertex_array(program, [(self.vbo, "3f 3f", "in_pos", "in_norm")])
-        self.heights = [ctx.texture((n, n), 1, dtype="f4") for _ in range(LOD_LEVELS)]
-        self.color_maps = [ctx.texture((n, n), 4, dtype="f1") for _ in range(LOD_LEVELS)]
-        self.surface_maps = [ctx.texture((n, n), 4, dtype="f1") for _ in range(LOD_LEVELS)]
+        self.data_maps = [ctx.texture((n, n), 4, dtype="u4") for _ in range(levels)]
+        self.color_maps = [ctx.texture((n, n), 4, dtype="f1") for _ in range(levels)]
         self.tile_avg = ctx.texture((ATLAS_TILES * ATLAS_TILES, 2), 4,
                                     tile_averages(atlas).transpose(1, 0, 2).tobytes(), dtype="f4")
-        for tex in self.heights + self.color_maps + self.surface_maps + [self.tile_avg]:
+        for tex in self.data_maps + self.color_maps + [self.tile_avg]:
             tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
-        self.origins = [None] * LOD_LEVELS  # grid coordinates of each level's point (0, 0)
+        self.origins = [None] * levels  # grid coordinates of each level's point (0, 0)
         self.queue = []  # texture writes still to do
         self.version = 0  # counts the changes (the shadow maps of the terrain are drawn again)
         self.view_distance = FAR_LIMIT  # beyond it the fog hides everything: no level drawn there
 
     def set_world(self, world):
         self.world = world
-        self.origins = [None] * LOD_LEVELS
+        self.origins = [None] * self.n_levels
         self.queue = []
         self.version += 1
 
     def sample(self, x, z, gx, gz, level):
-        """At points (x, z), grid points (gx, gz) of a level: height of the top surface (water
-        included), biome color (rgba) and blocks (top, the block under it, crown leaves or 0, crown
-        height), for the textures."""
+        """At points (x, z), grid points (gx, gz) of a level: biome color (rgba) and the packed
+        texel (height bits, then top block, the block under it, crown leaves or 0, crown height),
+        for the textures."""
         gen = self.world.gen
         s = gen.sample(x, z)
         top = np.floor(s["height"]).astype(np.int32)
@@ -1167,14 +1198,18 @@ class FarTerrain:
         color = np.where(wet[:, None], water, grass)
         depth = np.clip(np.where(wet, s["water"] - top, 0), 0, 255)  # the water's depth, down to the bottom
         rgba = np.concatenate([np.clip(color, 0, 1) * 255, depth[:, None]], axis=1).astype("u1")
-        blocks = np.stack([surface, filler, leaves, crown], axis=1).astype("u1")
-        return height, rgba, blocks
+        # One 4xu32 texel per grid point: the height's bits, then the 4 blocks packed in one word
+        packed = (surface.astype("u4") | filler.astype("u4") << 8
+                  | leaves.astype("u4") << 16 | crown.astype("u4") << 24)
+        data = np.stack([height.astype("f4").view("u4"), packed,
+                         np.zeros_like(packed), np.zeros_like(packed)], axis=1)
+        return rgba, data
 
     def update(self, cam):
-        n = LOD_SIZE
+        n = self.size
         writes = []  # (level, grid xs, grid zs, texel u, texel v)
-        for level in range(LOD_LEVELS):
-            spacing = LOD_SPACING << level
+        for level in range(self.n_levels):
+            spacing = self.spacing << level
             new = (math.floor(cam[0] / spacing) - n // 2, math.floor(cam[2] / spacing) - n // 2)
             old = self.origins[level]
             if old == new:
@@ -1194,7 +1229,7 @@ class FarTerrain:
         # Whole levels (a new world, a jump far away) are done at once; edge strips a few per frame,
         # oldest first, so several levels moving together don't make one long frame
         self.queue += writes
-        if any(len(w[1]) * len(w[2]) > LOD_SIZE for w in self.queue):
+        if any(len(w[1]) * len(w[2]) > n for w in self.queue):
             writes, self.queue = self.queue, []
         else:
             writes, self.queue = self.queue[:LOD_STRIPS_PER_FRAME], self.queue[LOD_STRIPS_PER_FRAME:]
@@ -1207,23 +1242,22 @@ class FarTerrain:
             gz, gx = np.meshgrid(zs, xs, indexing="ij")  # texture rows are z
             grids.append((gx.ravel(), gz.ravel(), np.full(gx.size, level)))
         gx, gz, levels = (np.concatenate([g[i] for g in grids]) for i in range(3))
-        spacing = (LOD_SPACING << levels).astype(float)
-        height, color, blocks = self.sample(gx * spacing, gz * spacing, gx, gz, levels)
+        spacing = (self.spacing << levels).astype(float)
+        color, data = self.sample(gx * spacing, gz * spacing, gx, gz, levels)
         start = 0
         for level, xs, zs, u, v in writes:
             end = start + len(xs) * len(zs)
             viewport = (u, v, len(xs), len(zs))
-            self.heights[level].write(height[start:end].tobytes(), viewport=viewport)
+            self.data_maps[level].write(data[start:end].tobytes(), viewport=viewport)
             self.color_maps[level].write(color[start:end].tobytes(), viewport=viewport)
-            self.surface_maps[level].write(blocks[start:end].tobytes(), viewport=viewport)
             start = end
 
     def levels(self):
         """The levels to draw: up to the first that reaches past the view distance."""
-        for level in range(LOD_LEVELS):
-            if (LOD_SIZE // 2 - LOD_MARGIN) * (LOD_SPACING << level) >= self.view_distance:
+        for level in range(self.n_levels):
+            if (self.size // 2 - LOD_MARGIN) * (self.spacing << level) >= self.view_distance:
                 return level + 1
-        return LOD_LEVELS
+        return self.n_levels
 
     def render(self, vp, cam, chunks, shadow=False):
         p = self.program
@@ -1236,29 +1270,29 @@ class FarTerrain:
             set_uniforms(p, {"cam_chunk": (pcx, pcz), "ready": READY_UNIT,
                              "cam_in_chunk": (float(cam[0] - pcx * CHUNK), float(cam[2] - pcz * CHUNK))})
             chunks.ready_texture.use(READY_UNIT)
-        set_uniforms(p, {"heights": HEIGHTS_UNIT, "colors": COLORS_UNIT, "surface": SURFACE_UNIT,
-                         "tile_avg": TILE_AVG_UNIT, "atlas": ATLAS_UNIT})
+        set_uniforms(p, {"data": DATA_UNIT, "colors": COLORS_UNIT,
+                         "tile_avg": TILE_AVG_UNIT, "atlas": ATLAS_UNIT, "grid_size": self.size})
+        p["clip_planes"].write(frustum_planes(vp)[[0, 1, 4]].astype("f4").tobytes())  # left right near
         self.atlas.use(ATLAS_UNIT)
         self.tile_avg.use(TILE_AVG_UNIT)
         count = self.levels()
         rects = []
         for level in range(count):
-            spacing = LOD_SPACING << level
+            spacing = self.spacing << level
             gx, gz = self.origins[level]
             ox, oz = gx * spacing - cam[0], gz * spacing - cam[2]
-            extent = (LOD_SIZE - 1) * spacing
+            extent = (self.size - 1) * spacing
             rects.append((float(ox), float(oz), float(ox + extent), float(oz + extent)))
         for level in range(count):
-            spacing = LOD_SPACING << level
+            spacing = self.spacing << level
             gx, gz = self.origins[level]
             set_uniforms(p, {"level": level, "grid_origin": (gx, gz), "origin": rects[level][:2],
                              "spacing": float(spacing), "own": rects[level], "fade_own": int(level < count - 1),
                              "inner": rects[level - 1] if level else (0.0, 0.0, 0.0, 0.0),
                              "fade_inner": int(level > 0)})
-            self.heights[level].use(HEIGHTS_UNIT)
+            self.data_maps[level].use(DATA_UNIT)
             self.color_maps[level].use(COLORS_UNIT)
-            self.surface_maps[level].use(SURFACE_UNIT)
-            self.vao.render(vertices=30, instances=(LOD_SIZE - 1) ** 2)
+            self.vao.render(vertices=30, instances=(self.size - 1) ** 2)
 
 
 def cell_hashes(gx, gz, level):
@@ -1541,7 +1575,8 @@ class Renderer:
             self.outline_vbo = ctx.buffer(reserve=24 * 3 * 4)
             self.outline_vao = ctx.vertex_array(self.outline_program, [(self.outline_vbo, "3f", "in_pos")])
             self.chunks = Chunks(ctx, self.program, world)
-            self.far = FarTerrain(ctx, self.lod_program, world, self.texture, atlas)
+            self.far = FarTerrain(ctx, self.lod_program, world, self.texture, atlas,
+                                  *LOD_QUALITIES[LOD_QUALITY_NAMES[0]])
             self.shadows = Shadows(ctx, self.texture)
             self.palette = Palette(ctx, fixed)
             self.palette.apply()
@@ -1562,6 +1597,19 @@ class Renderer:
         if fancy != self.fancy:
             self.fancy = fancy
             self.make_framebuffers()
+
+    def set_lod_quality(self, quality):
+        """The LOD quality setting: rebuild the distant terrain at another resolution."""
+        spacing, size, levels = LOD_QUALITIES[quality]
+        far = self.far
+        if (spacing, size, levels) == (far.spacing, far.size, far.n_levels):
+            return
+        with self.ctx:
+            self.far = FarTerrain(self.ctx, self.lod_program, self.world, self.texture,
+                                  far.atlas_data, spacing, size, levels)
+            self.far.version = far.version + 1  # the shadow maps are drawn again
+            for res in far.data_maps + far.color_maps + [far.tile_avg, far.vbo, far.vao]:
+                res.release()
 
     def make_framebuffers(self):
         width, height = self.size

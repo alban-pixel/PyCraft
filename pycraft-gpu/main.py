@@ -14,7 +14,7 @@ import pyxel
 from blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, PLACEABLE, T_WATER, TILE, TINT_ALPHA,
                     UNBREAKABLE, WATER, build_atlas)
 from player import Player
-from renderer import FIXED_COLORS, Renderer, oklab_to_srgb, srgb_to_oklab
+from renderer import FIXED_COLORS, LOD_QUALITY_NAMES, Renderer, oklab_to_srgb, srgb_to_oklab
 from terrain import SEA_LEVEL
 from ui import Ui
 from world import World
@@ -24,7 +24,8 @@ RESOLUTIONS = [(320, 180), (384, 216), (480, 270), (640, 360), (800, 450), (960,
                (1920, 1080), (2560, 1440)]
 FRAME_RATES = [30, 60, 75, 120, 144, 165, 240]
 RENDER_DISTANCES = [32, 64, 128, 256, 512]  # how far the world is seen, in chunks of 16 blocks
-DEFAULT_SETTINGS = {"resolution": (1280, 720), "fps": 60, "render_distance": 256, "fancy": True, "music": True}
+DEFAULT_SETTINGS = {"resolution": (1280, 720), "fps": 60, "render_distance": 256, "lod_quality": "low",
+                    "fancy": True, "music": True}
 SAVE_FILE = "world2.npz"  # "world.npz" holds a world of the older, smaller version: left alone
 LOADING_RADIUS = 2  # chunks around the player that must be ready before playing
 HAZE = 1 / 4500  # share of light lost per block of distance: far mountains fade into the sky
@@ -189,6 +190,7 @@ class App:
         self.palette_version = None
         self.use_palette()
         self.renderer.render_distance = self.settings["render_distance"]
+        self.renderer.set_lod_quality(self.settings["lod_quality"])
         self.renderer.set_fancy(self.settings["fancy"])
         self.set_resolution(*self.settings["resolution"])
 
@@ -252,6 +254,8 @@ class App:
             settings["fps"] = saved["fps"]
         if saved.get("render_distance") in RENDER_DISTANCES:
             settings["render_distance"] = saved["render_distance"]
+        if saved.get("lod_quality") in LOD_QUALITY_NAMES:
+            settings["lod_quality"] = saved["lod_quality"]
         for key in ("fancy", "music"):
             if isinstance(saved.get(key), bool):
                 settings[key] = saved[key]
@@ -294,6 +298,12 @@ class App:
         i = RENDER_DISTANCES.index(self.settings["render_distance"])
         self.settings["render_distance"] = RENDER_DISTANCES[(i + step) % len(RENDER_DISTANCES)]
         self.renderer.render_distance = self.settings["render_distance"]
+        self.save_settings()
+
+    def change_lod_quality(self, step):
+        i = LOD_QUALITY_NAMES.index(self.settings["lod_quality"])
+        self.settings["lod_quality"] = LOD_QUALITY_NAMES[(i + step) % len(LOD_QUALITY_NAMES)]
+        self.renderer.set_lod_quality(self.settings["lod_quality"])
         self.save_settings()
 
     def toggle_graphics(self):
@@ -439,6 +449,7 @@ class App:
                 (f"Resolution: {width} x {height}", self.change_resolution),
                 (f"Frame rate: {self.settings['fps']} FPS", self.change_fps),
                 (f"Render distance: {self.settings['render_distance']} chunks", self.change_render_distance),
+                (f"LOD quality: {self.settings['lod_quality']}", self.change_lod_quality),
                 ("Graphics: " + ("fancy" if self.settings["fancy"] else "fast"), lambda step: self.toggle_graphics()),
                 ("Music: " + ("on" if self.settings["music"] else "off"), lambda step: self.toggle_music()),
                 ("Done", lambda step: self.close_settings()),
