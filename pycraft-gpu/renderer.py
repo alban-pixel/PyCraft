@@ -235,8 +235,8 @@ void main() {
     vec3 pos = origin + in_pos;
     gl_Position = vp * vec4(pos, 1.0);
     if (mode == 2) gl_Position.z = max(gl_Position.z, -1.0);  // nearer the light than the map: flattened onto it
-    vec2 tile = vec2(float(in_info.x % 8u), float(in_info.x / 8u));
-    v_uv = (tile + INSET + CORNERS[in_info.y] * (1.0 - 2.0 * INSET)) / 8.0;
+    vec2 tile = vec2(float(in_info.x %% %(atlas)du), float(in_info.x / %(atlas)du));
+    v_uv = (tile + INSET + CORNERS[in_info.y] * (1.0 - 2.0 * INSET)) / %(atlas)d.0;
     v_face = int(in_info.z);
     v_kind = int(in_info.w);
     v_tile = int(in_info.x);
@@ -244,7 +244,7 @@ void main() {
     v_ao = in_tint.a;
     v_pos = pos;
 }
-"""
+""" % {"atlas": ATLAS_TILES}
 
 # Lighting shared by the blocks and the distant terrain, so both look the same where one gives way
 # to the other
@@ -580,7 +580,7 @@ void main() {
     vec3 tint = block == GRASS || block == WATER ? v_tint
               : (block == LEAVES || block == JUNGLE_LEAVES || block == ACACIA_LEAVES) ? v_tint * vec3(0.68, 0.78, 0.66)
               : vec3(1.0);
-    ivec2 texel = ivec2(tile %% 8, tile / 8) * 16 + min(ivec2(uv * 16.0), 15);
+    ivec2 texel = ivec2(tile %% %(atlas)d, tile / %(atlas)d) * 16 + min(ivec2(uv * 16.0), 15);
     vec4 tex = texelFetch(atlas, texel, 0);
     vec3 albedo = tex.rgb;
     if (tex.a > 0.5 && tex.a < 0.9) albedo *= tint;  // texel colored by the biome
@@ -618,7 +618,7 @@ void main() {
     }
     out_color = vec4(fog(shade_opaque(albedo, v_face, ao, direct), dist), 1.0);
 }
-""" % {"bands": len(T.BANDS)}
+""" % {"bands": len(T.BANDS), "atlas": ATLAS_TILES}
 
 SKY_FRAGMENT_SHADER = """
 #version 330
@@ -856,7 +856,7 @@ LEAF_TILES = {int(t) for b in ALL_LEAVES for t in BLOCK_TILES[b]}
 
 
 def tile_averages(atlas):
-    """(64, 2, 4) float array: for each atlas tile, the average of its texels that keep their own
+    """(256, 2, 4) float array: for each atlas tile, the average of its texels that keep their own
     color (rgb) and the share of texels the biome colors (a), then the average of those (rgb).
     Far away, a block is smaller than a pixel: the distant terrain uses these instead of the texture.
     The holes in leaves count as the leaves behind them, in the shade."""
