@@ -20,6 +20,7 @@ colors move toward them (k-means clustering). Each pixel is dithered between the
 that mix best into its own color. The shader writes one byte per pixel, the palette index, which is
 copied into pyxel.screen.
 """
+import concurrent.futures
 import functools
 import math
 import time
@@ -1004,12 +1005,31 @@ def column_offsets(radius):
     return sorted(offsets, key=lambda o: o[0] * o[0] + o[1] * o[1])
 
 
+def prepare_faces(parts):
+    """The bytes a column mesh is made of, from its sections' vertices: the water faces last,
+    and one index buffer for all of them. Pure number crunching — runs on a worker thread."""
+    faces = np.concatenate(parts).reshape(-1, 4)
+    water = faces["info"][:, 0, 3] == 2
+    faces = faces[np.argsort(water, kind="stable")]  # the water faces last: drawn after the rest
+    water_count = int(water.sum()) * 6
+    solid = len(faces) * 6 - water_count
+    ao = faces["tint"][:, :, 3].astype(np.int32)
+    flip = (ao[:, 0] + ao[:, 2] < ao[:, 1] + ao[:, 3])[:, None]
+    indices = (np.arange(len(faces), dtype=np.uint32)[:, None] * 4
+               + np.where(flip, FLIPPED_TRIANGLES, FACE_TRIANGLES))
+    ys = faces["pos"][..., 1]
+    return faces.tobytes(), indices.astype(np.uint32).tobytes(), water_count, solid, \
+        (float(ys.min()), float(ys.max()))
+
+
 class Chunks:
     """Block meshes of the columns around the camera.
 
     Worker processes (see builder.py) build them, nearest first; this uploads them to the graphics
     card and draws them. Block changes are rebuilt right away here. Each column counts its changes
-    ("version"): a mesh a worker built from older blocks is thrown away and asked for again."""
+    ("version"): a mesh a worker built from older blocks is thrown away and asked for again.
+    Packing a mesh for the card is done on a pool of threads (numpy frees the GIL for it), so the
+    frames stay smooth while whole areas arrive."""
 
     def __init__(self, ctx, program, world):
         self.ctx, self.program = ctx, program
@@ -1018,6 +1038,8 @@ class Chunks:
         self.version = 0  # counts the changes to the meshes (the shadow map is drawn again)
         self.in_view = []  # (mesh, (x, y, z) of its corner relative to the camera) seen in the last frame
         self.builders = Builders()
+        self.pool = concurrent.futures.ThreadPoolExecutor(2, thread_name_prefix="mesh prep")
+        self.preparing = {}  # (cx, cz) -> (version, future of prepare_faces)
         self.ready = np.zeros((READY_SIZE, READY_SIZE), np.uint8)  # [cz & 63, cx & 63] = 255 when drawn
         self.ready_changed = True
         self.ready_texture = ctx.texture((READY_SIZE, READY_SIZE), 1, dtype="f1")
@@ -1032,6 +1054,7 @@ class Chunks:
         self.pending = {}  # finished meshes waiting for their upload
         self.asked_columns = set()  # columns asked of a worker for the game's own world
         self.builders.set_world(world)
+        self.preparing = {}
 
     def release(self):
         for mesh in self.meshes.values():
@@ -1079,7 +1102,21 @@ class Chunks:
             self.meshes[key] = mesh
             mesh.parts.update(parts)
             self.built[key] = done
-            self.upload(key, mesh)
+            # Packing is done on a worker thread; the card's buffers are made when it lands
+            packed = [p for p in mesh.parts.values() if p is not None]
+            if packed:
+                self.preparing[key] = (version, self.pool.submit(prepare_faces, packed))
+            else:
+                self.upload(key, mesh, None)
+        # Upload the meshes whose packing finished (the card's calls stay on this thread)
+        for key in [k for k, (v, f) in self.preparing.items() if f.done()]:
+            if time.perf_counter() >= deadline:
+                break
+            version, future = self.preparing.pop(key)
+            if is_far(key) or version != self.versions.get(key, 0):
+                self.built.pop(key, None)  # built from blocks changed since: asked for again
+                continue
+            self.upload(key, self.meshes[key], future.result())
 
         # The game's own world needs the columns around the player (walking, aiming): ask a worker
         # for them ahead of time, so the game doesn't have to generate them itself
@@ -1106,26 +1143,20 @@ class Chunks:
         if jobs:
             self.builders.request((pcx, pcy, pcz), jobs)
 
-    def upload(self, key, mesh):
+    def upload(self, key, mesh, prepared=None):
+        """Make the card buffers of a mesh, from what prepare_faces produced (done on the spot
+        when not given, as for a block the player changed)."""
+        if prepared is None:
+            parts = [p for p in mesh.parts.values() if p is not None]
+            prepared = prepare_faces(parts) if parts else None
         mesh.release()
         self.version += 1
-        parts = [p for p in mesh.parts.values() if p is not None]
-        if parts:
-            faces = np.concatenate(parts).reshape(-1, 4)
-            water = faces["info"][:, 0, 3] == 2
-            faces = faces[np.argsort(water, kind="stable")]  # the water faces last: drawn after the rest
-            mesh.water = int(water.sum()) * 6
-            mesh.solid = len(faces) * 6 - mesh.water
-            ao = faces["tint"][:, :, 3].astype(np.int32)
-            flip = (ao[:, 0] + ao[:, 2] < ao[:, 1] + ao[:, 3])[:, None]
-            indices = (np.arange(len(faces), dtype=np.uint32)[:, None] * 4
-                       + np.where(flip, FLIPPED_TRIANGLES, FACE_TRIANGLES))
-            mesh.vbo = self.ctx.buffer(faces.tobytes())
-            mesh.ibo = self.ctx.buffer(indices.astype(np.uint32).tobytes())
+        if prepared is not None:
+            vbo, ibo, mesh.water, mesh.solid, mesh.y_range = prepared
+            mesh.vbo = self.ctx.buffer(vbo)
+            mesh.ibo = self.ctx.buffer(ibo)
             mesh.vao = self.ctx.vertex_array(self.program, [(mesh.vbo, "3f 4u1 4f1", "in_pos", "in_info", "in_tint")],
                                              index_buffer=mesh.ibo, index_element_size=4)
-            ys = faces["pos"][..., 1]
-            mesh.y_range = (float(ys.min()), float(ys.max()))
         self.ready[key[1] % READY_SIZE, key[0] % READY_SIZE] = 255
         self.ready_changed = True
 
@@ -1219,6 +1250,10 @@ class FarTerrain:
         self.queue = []  # texture writes still to do
         self.version = 0  # counts the changes (the shadow maps of the terrain are drawn again)
         self.view_distance = FAR_LIMIT  # beyond it the fog hides everything: no level drawn there
+        # Sampling the generator for the new strips is heavy (up to millions of points when the
+        # camera jumps): it runs on its own thread, the textures are written when it lands
+        self.pool = concurrent.futures.ThreadPoolExecutor(1, thread_name_prefix="lod sampler")
+        self.sampling = None  # (writes, world, future) being sampled
 
     def set_world(self, world):
         self.world = world
@@ -1229,11 +1264,11 @@ class FarTerrain:
         self.wet_dirty = [True] * self.n_levels
         self.version += 1
 
-    def sample(self, x, z, gx, gz, level):
+    def sample(self, x, z, gx, gz, level, gen=None):
         """At points (x, z), grid points (gx, gz) of a level: biome color (rgba) and the packed
         texel (ground top bits, then top block, the block under it, crown leaves or 0, crown
         height, then the water's surface bits or -1), for the textures."""
-        gen = self.world.gen
+        gen = gen or self.world.gen
         s = gen.sample(x, z)
         top = np.floor(s["height"]).astype(np.int32)
         wet = top < s["water"]
@@ -1283,35 +1318,47 @@ class FarTerrain:
             writes += [(level, np.array([x]), zs, x % n, 0) for x in gx]
             gz = range(old[1] + n, new[1] + n) if new[1] > old[1] else range(new[1], old[1])
             writes += [(level, xs, np.array([z]), 0, z % n) for z in gz]
-        # Whole levels (a new world, a jump far away) are done at once; edge strips a few per frame,
-        # oldest first, so several levels moving together don't make one long frame
+        # Whole levels (a new world, a jump far away) are done at once; edge strips a few per
+        # batch, oldest first, so several levels moving together don't make one long batch
         self.queue += writes
-        if any(len(w[1]) * len(w[2]) > n for w in self.queue):
-            writes, self.queue = self.queue, []
-        else:
-            writes, self.queue = self.queue[:LOD_STRIPS_PER_FRAME], self.queue[LOD_STRIPS_PER_FRAME:]
-        if not writes:
-            return
-        self.version += 1
-        # Sample all the new points of all levels together: one big call is much faster than many
+        # A finished sampling job lands in the textures now (sampling itself runs on its thread:
+        # numpy frees the GIL through its big loops, so it really works beside the game's thread)
+        if self.sampling is not None and self.sampling[2].done():
+            batch, world, future = self.sampling
+            self.sampling = None
+            color, data, wet = future.result()
+            if world is self.world:  # else the world changed since: stale, dropped
+                self.version += 1
+                start = 0
+                for level, xs, zs, u, v in batch:
+                    end = start + len(xs) * len(zs)
+                    viewport = (u, v, len(xs), len(zs))
+                    self.data_maps[level].write(data[start:end].tobytes(), viewport=viewport)
+                    self.color_maps[level].write(color[start:end].tobytes(), viewport=viewport)
+                    # The wet mask mirrors the data texture texel for texel (texture rows are z)
+                    self.wet_masks[level][u:u + len(xs), v:v + len(zs)] = (
+                        wet[start:end].reshape(len(zs), len(xs)).T)
+                    self.wet_dirty[level] = True
+                    start = end
+        # Feed the sampler: sample all the new points of all levels together, off this thread
+        if self.sampling is None and self.queue:
+            if any(len(w[1]) * len(w[2]) > n for w in self.queue):
+                batch, self.queue = self.queue, []
+            else:
+                batch, self.queue = self.queue[:LOD_STRIPS_PER_FRAME], self.queue[LOD_STRIPS_PER_FRAME:]
+            world = self.world
+            self.sampling = (batch, world, self.pool.submit(self._sample_batch, batch, world))
+
+    def _sample_batch(self, batch, world):
+        """The texels for a batch of writes: the grids of every level joined in one big call —
+        on the pool's thread, so the game's frame never waits for it."""
         grids = []
-        for level, xs, zs, _, _ in writes:
+        for level, xs, zs, _, _ in batch:
             gz, gx = np.meshgrid(zs, xs, indexing="ij")  # texture rows are z
             grids.append((gx.ravel(), gz.ravel(), np.full(gx.size, level)))
         gx, gz, levels = (np.concatenate([g[i] for g in grids]) for i in range(3))
         spacing = (self.spacing << levels).astype(float)
-        color, data, wet = self.sample(gx * spacing, gz * spacing, gx, gz, levels)
-        start = 0
-        for level, xs, zs, u, v in writes:
-            end = start + len(xs) * len(zs)
-            viewport = (u, v, len(xs), len(zs))
-            self.data_maps[level].write(data[start:end].tobytes(), viewport=viewport)
-            self.color_maps[level].write(color[start:end].tobytes(), viewport=viewport)
-            # The wet mask mirrors the data texture texel for texel (texture rows are z)
-            self.wet_masks[level][u:u + len(xs), v:v + len(zs)] = (
-                wet[start:end].reshape(len(zs), len(xs)).T)
-            self.wet_dirty[level] = True
-            start = end
+        return self.sample(gx * spacing, gz * spacing, gx, gz, levels, world.gen)
 
     def _wet_list(self, level):
         """The wet cells of a level, as their local coordinates for the shader: the water pass
@@ -1708,6 +1755,7 @@ class Renderer:
             self.far.version = far.version + 1  # the shadow maps are drawn again
             for res in far.data_maps + far.color_maps + far.wet_texs + [far.tile_avg, far.vbo, far.vao]:
                 res.release()
+            far.pool.shutdown(wait=False)
 
     def make_framebuffers(self):
         width, height = self.size
