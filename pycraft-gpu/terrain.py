@@ -325,13 +325,17 @@ def _surface(s, top, slope, noise):
     put(np.isin(biome, (BEACH, DESERT)), SAND, SANDSTONE, 5)
     put((biome == DESERT) & (slope >= 4), SANDSTONE)
     put(biome == BADLANDS, RED_SAND, TERRACOTTA, 12)
-    # Under water: sand, gravel and clay
+    # The aquatic floor: sand, gravel and clay — mostly under water, on the shore just above the
+    # waterline, and in pockets buried in the ground
     under = top < water
-    put(under, SAND, SAND, 3)
-    put(under & (noise > 0.3), GRAVEL, GRAVEL)
+    wet = under | (top <= SEA_LEVEL + 2)
+    put(wet, SAND, SAND, 3)
+    put(wet & (noise > 0.3), GRAVEL, GRAVEL)
     put(under & (noise < -0.35) & (water > SEA_LEVEL), CLAY, CLAY)
-    put(under & (top < SEA_LEVEL - 30), GRAVEL, GRAVEL)
+    put(wet & (top < SEA_LEVEL - 30), GRAVEL, GRAVEL)
     put(under & (biome == SWAMP), MUD, MUD)
+    buried = ~wet & (noise < -0.55)
+    filler = np.where(buried, np.where(top <= SEA_LEVEL + 8, CLAY, GRAVEL), filler)
     return surface, filler, depth
 
 

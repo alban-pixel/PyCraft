@@ -74,6 +74,7 @@ READY_UNIT = 2
 CLOUDS_UNIT = 3
 SHADOW_UNITS = (4, 5, 6)
 DATA_UNIT = 7
+WET_UNIT = 8
 TILE_AVG_UNIT = 9
 
 # --- Shader code shared by several programs ---------------------------------------------------
@@ -356,12 +357,14 @@ uniform float spacing;
 uniform int grid_size;       // grid points per side (a power of two); grid_size - 1 columns are drawn
 uniform int mode;
 uniform int level;
+uniform int water_pass;      // 1 draws the water layer over the ground columns, 0 the ground
 uniform vec4 inner;          // square of the finer level (relative to the camera: min x, min z, max x, max z)
 uniform int fade_inner;      // 1 when a finer level is drawn: give way to it, cell by cell
 uniform vec4 own;            // this level's square
 uniform int fade_own;        // 1 when a coarser level takes over at the edge of this one
 uniform int use_ready;       // leave out what the blocks draw (not in the shadow maps)
 uniform vec4 clip_planes[3]; // left, right and near planes of vp: nothing is drawn outside them
+uniform usampler2D wet_cells; // the water pass's cells (local coordinates), one per instance
 uniform sampler2D ready;     // 64x64 wrapping map of the chunk columns drawn as blocks
 uniform ivec2 cam_chunk;
 uniform vec2 cam_in_chunk;
@@ -371,22 +374,22 @@ out vec3 v_pos;
 flat out int v_face;
 flat out ivec3 v_blocks;     // top block, the block under it, crown leaves (0: no tree)
 flat out vec3 v_tint;
-flat out float v_depth;      // depth of the water over the bottom
 flat out vec2 v_tops;        // heights of the ground and of the column (with its crown), in the world
 flat out float v_bottom;     // a side: height of the column it faces
 flat out ivec2 v_local;      // the column's cell in the grid, for the top's ambient occlusion
 flat out vec2 v_corner;      // the column's corner, relative to the camera
 """ + BLOCK_IDS + CELLS + """
 const int FACE_OF[6] = int[](0, 1, 2, 4, 5, 3);  // in_norm -> face number (+x -x +y +z -z)
-// A grid point's texel: height of the top surface (as float bits), then the 4 packed bytes
-// (top block, block under it, crown leaves or 0, crown height)
+// A grid point's texel: height of the ground's top surface (as float bits), then the 4 packed
+// bytes (top block, block under it, crown leaves or 0, crown height), then the water's surface
+// (bits, -1 where the cell is dry or frozen over)
 uvec4 data_at(ivec2 local) { return texelFetch(data, (grid_origin + local) & (grid_size - 1), 0); }
 float height_of(uvec4 d) { return uintBitsToFloat(d.x); }
+float wsurf_of(uvec4 d) { return uintBitsToFloat(d.z); }
 ivec4 blocks_of(uvec4 d) { return ivec4(d.y & 255u, (d.y >> 8) & 255u, (d.y >> 16) & 255u, d.y >> 24); }
 float height_at(ivec2 local) { return height_of(data_at(local)); }
-// The very top of a column: the terrain at its corner plus its crown of leaves, if it has one
-float column_top(ivec2 cell) {
-    uvec4 d = data_at(cell);
+// The very top of a column's texel: the terrain plus its crown of leaves, if it has one
+float column_top(uvec4 d) {
     return height_of(d) + (((d.y >> 16) & 255u) != 0u ? float(d.y >> 24) : 0.0);
 }
 float level_fade(vec2 center, vec4 rect, float fine) {  // 1 at the edge of a finer level's square, 0 well inside
@@ -394,10 +397,27 @@ float level_fade(vec2 center, vec4 rect, float fine) {  // 1 at the edge of a fi
     return 1.0 - clamp((d - %(margin)d.0 * fine) / (%(band)d.0 * fine), 0.0, 1.0);
 }
 void main() {
-    // One instance per cell of the grid: a square column of blocks, like Distant Horizons
-    ivec2 local = ivec2(gl_InstanceID %% (grid_size - 1), gl_InstanceID / (grid_size - 1));
+    // One instance per cell of the grid — or per wet cell, for the water pass: a square column
+    // of blocks, like Distant Horizons
+    ivec2 local;
+    if (water_pass == 1)
+        local = ivec2(texelFetch(wet_cells,
+                                 ivec2(gl_InstanceID %% grid_size, gl_InstanceID / grid_size), 0).rg);
+    else
+        local = ivec2(gl_InstanceID %% (grid_size - 1), gl_InstanceID / (grid_size - 1));
     ivec2 g = grid_origin + local;
     vec2 center = origin + (vec2(local) + 0.5) * spacing;
+    uvec4 own_data = data_at(local);
+    float top;
+    ivec4 b = ivec4(0);
+    float ground = height_of(own_data);
+    if (water_pass == 1) {
+        top = wsurf_of(own_data);
+        if (top < 0.0) {  // a dry cell slipped into the list: nothing to draw
+            gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+            return;
+        }
+    }
     // Is this cell drawn by this level? Each 2x2 group of its cells is drawn either by this level
     // or by the next, coarser one: both pick it with the same number
     bool keep = true, band = false;
@@ -413,9 +433,14 @@ void main() {
         band = band || (f > 0.0 && f < 1.0);
     }
     float dist = length(center);
-    if (use_ready == 1 && dist + 0.71 * spacing < block_fade.x) {  // the blocks hide it all
+    // A chunk drawn as blocks covers the cell: the columns fold away inside block_fade.x, and
+    // further out keep only their sides (their tops would poke through the real terrain)
+    bool in_chunk = false;
+    if (use_ready == 1 && dist < block_fade.y + spacing) {
         ivec2 rel = ivec2(floor((center + cam_in_chunk) / 16.0));
-        if (abs(rel.x) < 32 && abs(rel.y) < 32 && texelFetch(ready, (cam_chunk + rel) & 63, 0).r > 0.5) keep = false;
+        in_chunk = abs(rel.x) < 32 && abs(rel.y) < 32
+                   && texelFetch(ready, (cam_chunk + rel) & 63, 0).r > 0.5;
+        if (in_chunk && dist + 0.71 * spacing < block_fade.x) keep = false;
     }
     band = band || (dist > block_fade.x && dist < block_fade.y + 2.0 * spacing);
     // Nothing of the column reaches the view if a box one cell wide and as tall as the world is
@@ -431,24 +456,49 @@ void main() {
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0);  // every vertex at the same place outside the view: nothing drawn
         return;
     }
-    uvec4 own_data = data_at(local);
-    ivec4 b = blocks_of(own_data);
-    float ground = height_of(own_data);
-    // Bare rock where it is too steep for soil (snow on the peaks holds a little longer)
-    float h00 = ground, h10 = height_at(local + ivec2(1, 0));
-    float h01 = height_at(local + ivec2(0, 1)), h11 = height_at(local + ivec2(1, 1));
-    float slope = (max(max(h00, h10), max(h01, h11)) - min(min(h00, h10), min(h01, h11))) / spacing;
-    bool soil = b.x == GRASS || b.x == PODZOL || b.x == MUD || b.x == DIRT || b.x == GRAVEL || (b.x == SNOW && b.y == DIRT);
-    if ((slope >= 2.0 && soil) || (slope >= 4.0 && b.x == SNOW)) { b.x = STONE; b.y = STONE; b.z = 0; }
-    float top = ground + (b.z != 0 ? float(b.w) : 0.0);
-    // A side goes down to the top of the column it faces (or becomes a skirt outside the grid),
-    // and folds away when that column is higher. Where two levels or the blocks share the cells,
-    // the neighbor may be drawn by the other one: then every side goes down a bit further.
+    bool under_blocks = in_chunk && drawn_as_blocks(cell_of(center));
+    if (water_pass == 1) {
+        // The water is a see-through layer over the aquatic floor: cells whose water the blocks
+        // already draw have nothing to add
+        if (under_blocks) {
+            gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+            return;
+        }
+    } else {
+        b = blocks_of(own_data);
+        // Bare rock where it is too steep for soil (snow on the peaks holds a little longer)
+        float h10 = height_at(local + ivec2(1, 0));
+        float h01 = height_at(local + ivec2(0, 1)), h11 = height_at(local + ivec2(1, 1));
+        float slope = (max(max(ground, h10), max(h01, h11)) - min(min(ground, h10), min(h01, h11))) / spacing;
+        bool soil = b.x == GRASS || b.x == PODZOL || b.x == MUD || b.x == DIRT || b.x == GRAVEL
+                    || (b.x == SNOW && b.y == DIRT);
+        if ((slope >= 2.0 && soil) || (slope >= 4.0 && b.x == SNOW)) { b.x = STONE; b.y = STONE; b.z = 0; }
+        // Where the blocks are drawn they have the real trees: no fake crowns under them
+        top = ground + (b.z != 0 && dist > block_fade.y ? float(b.w) : 0.0);
+        if (in_norm.y > 0.5 && under_blocks) {
+            gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+            return;
+        }
+    }
+    // A side goes down to the next surface below the top: the column it faces, or its ground
+    // under a taller crown — and folds away when nothing it faces is lower. Where two levels or
+    // the blocks share the cells, the neighbor may be drawn by the other one: then every side
+    // goes down a bit further.
     ivec2 ncell = local + ivec2(int(in_norm.x), int(in_norm.z));
     float neighbor = top;
-    if (in_norm.y == 0.0)
-        neighbor = (min(ncell.x, ncell.y) < 0 || max(ncell.x, ncell.y) >= grid_size - 1)
-                 ? top - 4.0 * spacing : column_top(ncell);
+    if (in_norm.y == 0.0) {
+        if (min(ncell.x, ncell.y) < 0 || max(ncell.x, ncell.y) >= grid_size - 1) {
+            neighbor = water_pass == 1 ? ground : top - 4.0 * spacing;
+        } else {
+            uvec4 nd = data_at(ncell);
+            if (water_pass == 1)
+                neighbor = max(wsurf_of(nd), ground);  // the neighbor's water, else down to the bed
+            else {
+                float ntop = column_top(nd);
+                neighbor = ntop < top ? ntop : height_of(nd);
+            }
+        }
+    }
     float y = top;
     if (in_pos.y < 0.5) {
         if (band) y = min(neighbor, top) - spacing;
@@ -467,7 +517,6 @@ void main() {
     v_blocks = b.xyz;
     vec4 c = texelFetch(colors, g & (grid_size - 1), 0);
     v_tint = c.rgb;
-    v_depth = c.a * 255.0;
     v_tops = vec2(ground, top);
     v_bottom = neighbor;
     v_corner = origin + vec2(local) * spacing;
@@ -478,6 +527,7 @@ void main() {
 LOD_FRAGMENT_SHADER = """
 #version 330
 uniform int mode;
+uniform int water_pass;      // 1: the pixel is a face of the water layer, see-through
 uniform float cam_y;
 uniform float spacing;
 uniform vec2 cam_frac;       // the camera's x and z, modulo 256: where a block starts
@@ -490,7 +540,6 @@ in vec3 v_pos;
 flat in int v_face;
 flat in ivec3 v_blocks;
 flat in vec3 v_tint;
-flat in float v_depth;
 flat in vec2 v_tops;
 flat in float v_bottom;
 flat in ivec2 v_local;
@@ -509,7 +558,8 @@ void main() {
     vec3 w = vec3(v_pos.x + cam_frac.x, v_pos.y + cam_y, v_pos.z + cam_frac.y);
     float ground = v_tops.x;
     int block;
-    if (v_face == 2) block = v_blocks.z != 0 ? v_blocks.z : v_blocks.x;
+    if (water_pass == 1) block = WATER;
+    else if (v_face == 2) block = v_blocks.z != 0 ? v_blocks.z : v_blocks.x;
     else if (v_blocks.z != 0 && w.y > ground + 0.001) block = v_blocks.z;
     else if (w.y > ground - 1.0) block = v_blocks.x;
     else {
@@ -539,7 +589,7 @@ void main() {
     albedo = far_albedo(albedo, tile, tint, dist);
     // Ambient occlusion like the blocks': darker within a block of a taller column around
     float ao = 1.0;
-    if (v_face == 2) {
+    if (v_face == 2 && water_pass == 0) {  // (water is not darkened by its neighbors)
         int taller = 0;  // which of the 8 columns around are taller (bits: +x -x +z -z, then corners)
         const ivec2 AROUND[8] = ivec2[](ivec2(1, 0), ivec2(-1, 0), ivec2(0, 1), ivec2(0, -1),
                                         ivec2(1, 1), ivec2(-1, 1), ivec2(1, -1), ivec2(-1, -1));
@@ -557,22 +607,16 @@ void main() {
         float d = occluded(4 + c1 + (south ? 0 : 2), max(dx, dz));
         ao = 0.5 + (3.0 - clamp(s1 + s2 + max(d, s1 * s2), 0.0, 3.0)) / 6.0;
         #undef occluded
-    } else if (v_bottom < v_tops.y) {
+    } else if (v_bottom < v_tops.y && water_pass == 0) {
         ao = 0.5 + (3.0 - (1.0 - clamp(v_pos.y + cam_y - v_bottom, 0.0, 1.0))) / 6.0;
     }
     vec3 n = NORMALS[v_face];
     float direct = direct_light(v_pos, n);
-    if (block == WATER && v_face == 2) {  // the bottom seen through the water, as with the blocks
-        vec4 c = shade_water(albedo, v_pos, 2, direct);
-        int bed = BLOCK_TILES[v_blocks.y * 6 + 2];
-        vec3 p = v_pos - vec3(0.0, v_depth, 0.0);
-        vec3 bed_albedo = far_albedo(texelFetch(atlas, ivec2(bed %% 8, bed / 8) * 16 + min(ivec2(uv * 16.0), 15), 0).rgb,
-                                     bed, vec3(1.0), dist);
-        vec3 bottom = fog(shade_opaque(bed_albedo, 2, 1.0, direct_light(p, n)), length(p));
-        out_color = vec4(mix(bottom, c.rgb, c.a), 1.0);
-    } else {
-        out_color = vec4(fog(shade_opaque(albedo, v_face, ao, direct), dist), 1.0);
+    if (water_pass == 1) {  // see-through, like the blocks' water: the floor is drawn underneath
+        out_color = shade_water(albedo, v_pos, v_face, direct);
+        return;
     }
+    out_color = vec4(fog(shade_opaque(albedo, v_face, ao, direct), dist), 1.0);
 }
 """ % {"bands": len(T.BANDS)}
 
@@ -1160,10 +1204,17 @@ class FarTerrain:
         self.vao = ctx.vertex_array(program, [(self.vbo, "3f 3f", "in_pos", "in_norm")])
         self.data_maps = [ctx.texture((n, n), 4, dtype="u4") for _ in range(levels)]
         self.color_maps = [ctx.texture((n, n), 4, dtype="f1") for _ in range(levels)]
+        self.wet_texs = [ctx.texture((n, n), 2, dtype="u2") for _ in range(levels)]
         self.tile_avg = ctx.texture((ATLAS_TILES * ATLAS_TILES, 2), 4,
                                     tile_averages(atlas).transpose(1, 0, 2).tobytes(), dtype="f4")
-        for tex in self.data_maps + self.color_maps + [self.tile_avg]:
+        for tex in self.data_maps + self.color_maps + self.wet_texs + [self.tile_avg]:
             tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
+        # Which texels have water: the water pass only draws those cells' tops, so it costs as
+        # much as the water it shows instead of another whole grid per level
+        self.wet_masks = [np.zeros((n, n), dtype="u1") for _ in range(levels)]
+        self.wet_bufs = [np.zeros((n * n, 2), dtype="u2") for _ in range(levels)]
+        self.wet_counts = [0] * levels
+        self.wet_dirty = [True] * levels
         self.origins = [None] * levels  # grid coordinates of each level's point (0, 0)
         self.queue = []  # texture writes still to do
         self.version = 0  # counts the changes (the shadow maps of the terrain are drawn again)
@@ -1173,37 +1224,43 @@ class FarTerrain:
         self.world = world
         self.origins = [None] * self.n_levels
         self.queue = []
+        for mask in self.wet_masks:
+            mask.fill(0)
+        self.wet_dirty = [True] * self.n_levels
         self.version += 1
 
     def sample(self, x, z, gx, gz, level):
         """At points (x, z), grid points (gx, gz) of a level: biome color (rgba) and the packed
-        texel (height bits, then top block, the block under it, crown leaves or 0, crown height),
-        for the textures."""
+        texel (ground top bits, then top block, the block under it, crown leaves or 0, crown
+        height, then the water's surface bits or -1), for the textures."""
         gen = self.world.gen
         s = gen.sample(x, z)
         top = np.floor(s["height"]).astype(np.int32)
-        height = np.maximum(top + 1, s["water"] + WATER_SURFACE).astype("f4")
-        # The same top blocks as the generator's, but for the slope (the shader does the steep rock)
-        surface, filler, _ = T._surface(s, top, np.zeros_like(top), gen.surface.fbm2(x / 9, z / 9, 2) * 2)
-        grass, _, water = T.tints(s["temperature"], s["humidity"], s["biome"])
         wet = top < s["water"]
         ice = wet & (s["temperature"] < -0.55)
-        filler = np.where(wet, surface, filler)  # the bottom under the water
-        surface = np.where(wet, np.where(ice, ICE, WATER), surface)
+        # The column is the ground itself — the aquatic floor too, under the water. The water is
+        # another column on top of it, see-through like the blocks' (a solid ice column where the
+        # water is frozen, a full block tall like the ice blocks are)
+        ground = np.where(ice, s["water"] + 1.0, top + 1).astype("f4")
+        wsurf = np.where(wet & ~ice, s["water"] + WATER_SURFACE, -1.0).astype("f4")
+        # The same top blocks as the generator's, but for the slope (the shader does the steep rock)
+        surface, filler, _ = T._surface(s, top, np.zeros_like(top), gen.surface.fbm2(x / 9, z / 9, 2) * 2)
+        surface = np.where(ice, ICE, surface)
+        filler = np.where(ice, ICE, filler)
         # Trees: a cell is under a crown as often as the biome's trees cover the ground
         biome = s["biome"]
         trees = (cell_hashes(gx, gz, level) < T.CANOPY[biome]) & ~wet & np.isin(surface, (B.GRASS, B.PODZOL, B.SNOW))
         leaves = np.where(trees, CANOPY_LEAVES[biome], 0)
         crown = np.where(trees, CANOPY_HEIGHT[biome], 0)
+        grass, _, water = T.tints(s["temperature"], s["humidity"], s["biome"])
         color = np.where(wet[:, None], water, grass)
         depth = np.clip(np.where(wet, s["water"] - top, 0), 0, 255)  # the water's depth, down to the bottom
         rgba = np.concatenate([np.clip(color, 0, 1) * 255, depth[:, None]], axis=1).astype("u1")
-        # One 4xu32 texel per grid point: the height's bits, then the 4 blocks packed in one word
+        # One 4xu32 texel per grid point: ground bits, the 4 blocks packed, water surface bits
         packed = (surface.astype("u4") | filler.astype("u4") << 8
                   | leaves.astype("u4") << 16 | crown.astype("u4") << 24)
-        data = np.stack([height.astype("f4").view("u4"), packed,
-                         np.zeros_like(packed), np.zeros_like(packed)], axis=1)
-        return rgba, data
+        data = np.stack([ground.view("u4"), packed, wsurf.view("u4"), np.zeros_like(packed)], axis=1)
+        return rgba, data, wet & ~ice
 
     def update(self, cam):
         n = self.size
@@ -1243,14 +1300,33 @@ class FarTerrain:
             grids.append((gx.ravel(), gz.ravel(), np.full(gx.size, level)))
         gx, gz, levels = (np.concatenate([g[i] for g in grids]) for i in range(3))
         spacing = (self.spacing << levels).astype(float)
-        color, data = self.sample(gx * spacing, gz * spacing, gx, gz, levels)
+        color, data, wet = self.sample(gx * spacing, gz * spacing, gx, gz, levels)
         start = 0
         for level, xs, zs, u, v in writes:
             end = start + len(xs) * len(zs)
             viewport = (u, v, len(xs), len(zs))
             self.data_maps[level].write(data[start:end].tobytes(), viewport=viewport)
             self.color_maps[level].write(color[start:end].tobytes(), viewport=viewport)
+            # The wet mask mirrors the data texture texel for texel (texture rows are z)
+            self.wet_masks[level][u:u + len(xs), v:v + len(zs)] = (
+                wet[start:end].reshape(len(zs), len(xs)).T)
+            self.wet_dirty[level] = True
             start = end
+
+    def _wet_list(self, level):
+        """The wet cells of a level, as their local coordinates for the shader: the water pass
+        draws one instance per entry instead of one per cell of the grid."""
+        n = self.size
+        ox, oz = self.origins[level]
+        us, vs = np.nonzero(self.wet_masks[level])
+        lu, lv = (us - ox) % n, (vs - oz) % n
+        sel = (lu < n - 1) & (lv < n - 1)  # the grid has size - 1 cells: its last row is points
+        count = int(sel.sum())
+        buf = self.wet_bufs[level]
+        buf[:count] = np.stack([lu[sel], lv[sel]], axis=1).astype("u2")
+        self.wet_texs[level].write(buf.tobytes())
+        self.wet_counts[level] = count
+        self.wet_dirty[level] = False
 
     def levels(self):
         """The levels to draw: up to the first that reaches past the view distance."""
@@ -1270,7 +1346,7 @@ class FarTerrain:
             set_uniforms(p, {"cam_chunk": (pcx, pcz), "ready": READY_UNIT,
                              "cam_in_chunk": (float(cam[0] - pcx * CHUNK), float(cam[2] - pcz * CHUNK))})
             chunks.ready_texture.use(READY_UNIT)
-        set_uniforms(p, {"data": DATA_UNIT, "colors": COLORS_UNIT,
+        set_uniforms(p, {"data": DATA_UNIT, "colors": COLORS_UNIT, "wet_cells": WET_UNIT,
                          "tile_avg": TILE_AVG_UNIT, "atlas": ATLAS_UNIT, "grid_size": self.size})
         p["clip_planes"].write(frustum_planes(vp)[[0, 1, 4]].astype("f4").tobytes())  # left right near
         self.atlas.use(ATLAS_UNIT)
@@ -1283,16 +1359,38 @@ class FarTerrain:
             ox, oz = gx * spacing - cam[0], gz * spacing - cam[2]
             extent = (self.size - 1) * spacing
             rects.append((float(ox), float(oz), float(ox + extent), float(oz + extent)))
-        for level in range(count):
-            spacing = self.spacing << level
-            gx, gz = self.origins[level]
-            set_uniforms(p, {"level": level, "grid_origin": (gx, gz), "origin": rects[level][:2],
-                             "spacing": float(spacing), "own": rects[level], "fade_own": int(level < count - 1),
-                             "inner": rects[level - 1] if level else (0.0, 0.0, 0.0, 0.0),
-                             "fade_inner": int(level > 0)})
-            self.data_maps[level].use(DATA_UNIT)
-            self.color_maps[level].use(COLORS_UNIT)
-            self.vao.render(vertices=30, instances=(self.size - 1) ** 2)
+        # The ground and the aquatic floor first, then the water over them: see-through like the
+        # blocks' water. It only needs its top face (the cube's first 6 vertices): the ground
+        # columns close the edges, and the shadow maps skip water anyway. And only the cells that
+        # actually have water are drawn (one instance per wet cell, read from wet_cells)
+        for wpass in ((0,) if shadow else (0, 1)):
+            if wpass:
+                ctx = self.ctx
+                ctx.enable(moderngl.BLEND)
+                ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+                ctx.fbo.depth_mask = False
+            p["water_pass"] = wpass
+            for level in range(count):
+                spacing = self.spacing << level
+                gx, gz = self.origins[level]
+                set_uniforms(p, {"level": level, "grid_origin": (gx, gz), "origin": rects[level][:2],
+                                 "spacing": float(spacing), "own": rects[level],
+                                 "fade_own": int(level < count - 1),
+                                 "inner": rects[level - 1] if level else (0.0, 0.0, 0.0, 0.0),
+                                 "fade_inner": int(level > 0)})
+                self.data_maps[level].use(DATA_UNIT)
+                self.color_maps[level].use(COLORS_UNIT)
+                if wpass:
+                    if self.wet_dirty[level]:
+                        self._wet_list(level)
+                    if self.wet_counts[level]:
+                        self.wet_texs[level].use(WET_UNIT)
+                        self.vao.render(vertices=6, instances=self.wet_counts[level])
+                else:
+                    self.vao.render(vertices=30, instances=(self.size - 1) ** 2)
+            if wpass:
+                ctx.fbo.depth_mask = True
+                ctx.disable(moderngl.BLEND)
 
 
 def cell_hashes(gx, gz, level):
@@ -1608,7 +1706,7 @@ class Renderer:
             self.far = FarTerrain(self.ctx, self.lod_program, self.world, self.texture,
                                   far.atlas_data, spacing, size, levels)
             self.far.version = far.version + 1  # the shadow maps are drawn again
-            for res in far.data_maps + far.color_maps + [far.tile_avg, far.vbo, far.vao]:
+            for res in far.data_maps + far.color_maps + far.wet_texs + [far.tile_avg, far.vbo, far.vao]:
                 res.release()
 
     def make_framebuffers(self):
