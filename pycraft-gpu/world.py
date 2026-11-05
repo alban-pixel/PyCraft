@@ -111,6 +111,7 @@ class World:
         if not keys:
             return {"top_y": top_y, "top_b": top_b, "fill_b": fill_b, "water_y": water_y,
                     "leaf_h": leaf_h, "plant": plant, "grass": col.grass, "changed": changed}
+        keys = set(keys)  # a stable view: set() may keep editing the column on another thread
         tree_at = {}
         for (x, y, z), b in zip(col.tree_pos.tolist(), col.tree_block.tolist()):
             if col.cx * CHUNK <= x < col.cx * CHUNK + CHUNK and col.cz * CHUNK <= z < col.cz * CHUNK + CHUNK:
