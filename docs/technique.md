@@ -105,9 +105,12 @@ cellule) sur ~24 colonnes.
   bord du niveau plus fin** — là où le niveau prend le relais cellule par
   cellule. Le climat (champ kilométrique) n'est évalué qu'une fois par
   cellule sous 32 blocs d'espacement.
-- Sur `m1-pro`, l'échantillonnage des nouveaux bords tourne sur **son propre
-  thread** (même raison : numpy libère le GIL) — un saut de caméra ne fige
-  plus la frame.
+- Sur `m1-pro`, toute la production de records et de texels (sampling,
+  cascade, injection des édits) tourne sur **son propre thread** (même
+  raison : numpy libère le GIL) — un saut de caméra ne fige plus la frame.
+  Le job travaille niveau par niveau sur son instantané (monde, colonnes
+  éditées copiées, records, ensembles dirty) et les écritures de textures
+  atterrissent sur le thread du jeu quand le futur se termine.
 
 ## Lumière et ciel
 
