@@ -1,5 +1,12 @@
 # Implementation Plan — PyCraft
 
+> **Document historique (approche 2D).** Ce plan visait le rendu par
+> `pyxel.tri` ; l'implémentation a pivoté vers le **rendu GPU**
+> (`pycraft-gpu/`, branches `SWE-2` puis `m1-pro`). Voir
+> [`pycraft-gpu/README.md`](../pycraft-gpu/README.md) et
+> [`docs/technique.md`](../docs/technique.md) pour l'architecture réelle.
+> Conservé comme trace de la décision.
+
 ## Overview
 
 Monde voxel jouable en vue première personne dans Pyxel, rendu par projection de

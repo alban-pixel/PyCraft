@@ -1,5 +1,11 @@
 # PyCraft — tâches
 
+> **Document historique (approche 2D).** Les tâches T1–T14 visaient le rendu par
+> `pyxel.tri` ; l'implémentation a pivoté vers le **rendu GPU**
+> (`pycraft-gpu/`, branches `SWE-2` puis `m1-pro`), si bien qu'aucune case n'est
+> cochée ici. Voir [`pycraft-gpu/README.md`](../pycraft-gpu/README.md) pour ce
+> qui a réellement été livré.
+
 Plan détaillé : [plan.md](plan.md). Intention : [../docs/intent/pycraft.md](../docs/intent/pycraft.md).
 Direction : faces projetées + chunks + greedy meshing + LOD, **1280×800** (max 1920×1200),
 **60 fps**, 100 % Python + numpy.

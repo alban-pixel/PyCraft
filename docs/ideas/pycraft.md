@@ -4,6 +4,13 @@
 > (algorithme du peintre)**, 100 % Python.
 > Intention source : [docs/intent/pycraft.md](../intent/pycraft.md)
 
+> **Suite (4 novembre 2026) :** la direction « faces projetées + `pyxel.tri` »
+> n'a pas été implémentée — le projet a pivoté vers un **rendu GPU**
+> (`moderngl` + Pyxel pour la fenêtre et le HUD) dans `pycraft-gpu/`, branches
+> `SWE-2` puis `m1-pro`. Ce document reste la trace de l'idéation initiale ;
+> l'architecture réelle est dans [`pycraft-gpu/README.md`](../../pycraft-gpu/README.md)
+> et [`docs/technique.md`](../technique.md).
+
 ## Problem Statement
 
 **How Might We** faire ressentir un monde Minecraft en vraie 3D — caméra libre,
