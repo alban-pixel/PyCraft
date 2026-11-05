@@ -65,23 +65,49 @@ génération d'une colonne est ~3× plus rapide.
 
 ## Terrain lointain (clipmap LOD)
 
-Jusqu'à ~8 km, le terrain est une **carte de hauteurs lisse** organisée en
-**niveaux de détail** (clipmap) : chaque niveau est deux fois plus grossier et
-deux fois plus large que le précédent, avec un trou là où un niveau plus fin
-(ou les blocs) est dessiné. Les bords fusionnent en fondu sur ~24 colonnes.
+Jusqu'à ~8 km, le terrain est un **clipmap de colonnes sémantiques** : chaque
+niveau est deux fois plus grossier et deux fois plus large que le précédent,
+avec un trou là où un niveau plus fin (ou les blocs) est dessiné. La
+simplification se fait **dans l'espace voxel avant tout maillage** — on
+agrège des sous-échantillons en un « record » par cellule, jamais des
+triangles. Les bords fusionnent en fondu stochastique (hash déterministe par
+cellule) sur ~24 colonnes.
 
 - Le réglage **LOD quality** choisit `(espacement, grille, niveaux)` :
   `low` = colonne tous les 2 blocs, grille 128, 7 niveaux ; `medium` = grille
   256 ; `high` = colonne par bloc, 8 niveaux ; `ultra` = grille 512.
-- Hauteurs, couleurs de biome et masque « mouillé » vivent dans des textures
-  **qui bouclent** (wrap) : quand la caméra avance, seul le nouveau bord est
-  échantillonné.
-- Le **fond aquatique** est dessiné comme du vrai terrain et l'**eau** comme
-  une couche voir-through par-dessus, comme entre les blocs ; les pentes raides
-  apparaissent en roche, la distance fond dans un voile bleu.
+- **Record d'une cellule** : hauteur moyenne du sol, bloc de surface
+  majoritaire (les sous-colonnes hautes pèsent plus — une tour dépasse la
+  plaine), couverture de canopée continue + espèce de feuilles majoritaire +
+  hauteur de couronne, couverture d'eau/glace + surface d'eau pondérée,
+  profondeur, teinte moyennée en **Oklab**, drapeau émissif.
+- **Cascade mip** : une cellule dont les quatre filles du niveau fin sont
+  connues (tags toriques à jour) est agrégée depuis leurs records — gratuit,
+  et c'est ce qui fait remonter le détail réel (édits inclus) vers les
+  niveaux grossiers. Sinon, l'empreinte de la cellule est échantillonnée sur
+  une sous-grille 2×2 auprès du générateur.
+- **Edits du joueur** : `world.edited_tops` reconstruit le vrai sommet des
+  colonnes modifiées (surface, remplissage, eau, couronne, teinte) ; ils sont
+  injectés à tous les niveaux pendant l'échantillonnage, et `block_changed`
+  marque la cellule L0 « dirty » — la modification remonte la cascade, cadre
+  par cadre, là où les records ont vraiment changé. Un bloc inconnu du shader
+  passe par la sentinelle `surf=255` + sa couleur résolue dans la teinte.
+- **Plantes et arbres** : les plantes n'ont pas de géométrie lointaine mais
+  leur couleur tachette le sol ; la canopée devient une couverture continue
+  (fini le popping forêt), assombrie par porosité, avec dégradé vertical.
+- **Eau** : colonne séparée voir-through comme entre les blocs, alpha
+  proportionnel à la couverture mouillée de la cellule ; la glace est un
+  solide de la colonne du sol.
+- Textures **qui bouclent** (wrap) : quand la caméra avance, seuls les
+  nouveaux bords sont échantillonnés — par bandes, quelques-unes par frame.
+- Les resamples « dirty » d'un niveau sont regroupés en runs contigus (ligne
+  ou colonne, le moins cher), plafonnés par frame et **priorisés près du
+  bord du niveau plus fin** — là où le niveau prend le relais cellule par
+  cellule. Le climat (champ kilométrique) n'est évalué qu'une fois par
+  cellule sous 32 blocs d'espacement.
 - Sur `m1-pro`, l'échantillonnage des nouveaux bords tourne sur **son propre
-  thread** (même raison : numpy libère le GIL) — un saut de caméra ne fige plus
-  la frame.
+  thread** (même raison : numpy libère le GIL) — un saut de caméra ne fige
+  plus la frame.
 
 ## Lumière et ciel
 
@@ -131,8 +157,9 @@ image hors écran à la nouvelle taille.
 - Pas de mode survie (vie, faim, mobs, craft).
 - Les grottes ne reçoivent pas de lumière du ciel mais restent éclairées —
   pas vraiment sombres.
-- Le terrain lointain est une surface lisse : il montre la forme des terres
-  et leurs couleurs, pas les blocs ni les arbres.
+- Le terrain lointain simplifie la sémantique des colonnes : une construction
+  petite devant la cellule qui la contient finit diluée dans le vote
+  majoritaire (sa couleur reste dans la teinte, sa forme disparaît).
 - Les nuages sont plats : vus de leur hauteur, une fine ligne.
 - En vol rapide, on peut distancer les meshes de blocs un instant ; le terrain
   lointain comble le vide en attendant.
