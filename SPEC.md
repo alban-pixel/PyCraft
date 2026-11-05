@@ -4,6 +4,37 @@
 > [docs/ideas/pycraft.md](docs/ideas/pycraft.md), [tasks/plan.md](tasks/plan.md).
 > Statut : **approuvée le 21 octobre 2026**.
 
+## Mise à jour — 4 novembre 2026
+
+Cette spec décrivait l'approche **rendu 2D par `pyxel.tri`** (package `pycraft/`,
+`tests/`, `tools/bench.py`). L'implémentation a **pivoter vers un rendu GPU** :
+le monde est dessiné par OpenGL (`moderngl`) dans `pycraft-gpu/`, puis chaque
+image est convertie dans la palette de 256 couleurs de Pyxel, qui ne sert plus
+qu'à la fenêtre, aux entrées, aux menus, au HUD et au son.
+
+**Points de cette spec caducs :**
+
+- *Contrainte fondatrice* (« Pyxel ne dessine qu'en 2D, la 3D est calculée à la
+  main ») : remplacée par le pipeline GPU — voir
+  [`pycraft-gpu/README.md`](pycraft-gpu/README.md) et
+  [`docs/technique.md`](docs/technique.md).
+- *« Threading exclu »* : les processus workers existent depuis le début ; la
+  branche `m1-pro` y ajoute des pools de threads (numpy libère le GIL).
+- *Structure `pycraft/` + `tests/` + `tools/`* : jamais créée ; le code vit dans
+  `pycraft-gpu/`, sans suite de tests.
+- *Budgets de performance* : les chiffres mesurés concernaient le prototype 2D ;
+  les perf réelles sont dans `pycraft-gpu/README.md`.
+
+**Ce qui reste valable :** l'objectif (monde de blocs 3D première personne,
+casser/poser, fluide), le public (démo NSI), les non-objectifs (pas de survie,
+mobs, craft, multijoueur), et les conventions de code (commentaires en
+français, mesure avant d'affirmer une performance).
+
+**État des branches :** `SWE-2` = version de référence du moteur GPU ;
+`m1-pro` = `SWE-2` + passage à l'échelle sur les cœurs (workers
+`cpu_count − 4`, thread pools pour le packing des meshes et l'échantillonnage
+du terrain lointain).
+
 ## Objective
 
 Construire **PyCraft** : un monde de blocs en vraie 3D, en vue première personne,

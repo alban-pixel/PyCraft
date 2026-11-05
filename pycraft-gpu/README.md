@@ -22,13 +22,21 @@ a real graphics card driver.
 - Continents and oceans; long mountain ranges up to about 3,500 blocks above the sea, with tree
   lines, snow lines and glaciers on the highest peaks; rivers in their own valleys; lakes; hills,
   beaches, steep rocky coasts and badlands mesas
+- Shaped after Iceland: rare long graben valleys sink the land between two sheer walls, their
+  floors hummocky lava fields (the deepest dip under the sea); rare flat-topped volcanoes (tuyas)
+  rise behind a cliff rampart; cliff country settles into terraced lava strata; moss creeps over
+  the rocks of cool wet country and turns their grass olive
 - 18 biomes from the climate (temperature and humidity, colder higher up): ocean, deep ocean, frozen
   ocean, beach, desert, badlands, savanna, jungle, plains, forest, birch forest, swamp, taiga, snowy
   taiga, snowy tundra, alpine meadow, snowy peaks, glacier. Grass, leaves and water change color
   smoothly from one biome to the next
 - Oak, birch, spruce, jungle and acacia trees, swamp oaks and cacti
+- Tall grass, ferns, dead bushes and patches of flowers (poppies, dandelions, blue orchids,
+  cornflowers, oxeye daisies, alliums) on the ground, by biome; you walk through them, and you can
+  plant them, with oak saplings, on grass, dirt or podzol (dead bushes on sand)
 - Caves (tunnels near the surface, big caverns deeper down) and coal, iron, gold and diamond ore
-- The terrain far away, up to about 8 km, is drawn too, so you see the mountains from a long way off
+- The terrain far away, up to about 8 km, is drawn too — seabed and see-through water included —
+  so you see the mountains from a long way off
 - Light from the sun by day and the moon by night, with soft shadows: trees, buildings and cliffs
   cast them, light comes through leaves in spots, and mountains cast shadows kilometers long at
   sunrise and sunset
@@ -37,11 +45,20 @@ a real graphics card driver.
 - Drifting clouds that cast shadows, with the highest mountains rising through them; stars at night,
   a glow around the sun, and a blue haze over faraway mountains
 - Anti-aliased edges, and up to 2560x1440 pixels
-- 37 blocks to build with
+- 172 blocks to build with: the terrain's own, and the full blocks of the classic block set, such as
+  planks of every wood, stone, deepslate, nether and prismarine bricks, granite, diorite and andesite
+  (raw and polished), every sandstone, blocks of coal, iron, gold, diamond, emerald, lapis and
+  redstone, obsidian, netherrack, end stone, bookshelves, hay bales, pumpkins and melons, 16 colors
+  of wool, terracotta and stained glass, and machines that look the part (furnace, crafting table,
+  TNT, pistons...). Glowstone, sea lanterns, lamps and jack o'lanterns glow day and night (they don't
+  light up what is around them), and furnaces, dispensers, droppers and jack o'lanterns face the
+  player who places them
+- Plants: tall grass, ferns, dead bushes, six kinds of flowers and oak saplings, which also grow wild
+  in the world
 - Walking, sprinting, jumping, swimming and flying (and flying fast)
 - An 8-minute day and night cycle, with a sun, a moon and sunsets
 - A title screen, a pause menu and a block inventory
-- Settings: resolution, frame rate, render distance, graphics and music
+- Settings: resolution, frame rate, render distance, LOD quality, graphics and music
 - Saving: the game saves when you leave through the menu, and every 2 minutes
 - Sound effects and generated background music
 
@@ -58,7 +75,7 @@ a real graphics card driver.
 | Left click | Break block (hold to repeat) |
 | Right click | Place block |
 | 1-9 / mouse wheel | Choose a hotbar slot |
-| E | All blocks: click one to put it in the selected slot |
+| E | All blocks: click one to put it in the selected slot. If they don't all fit on the screen, they go on pages: mouse wheel, Left/Right, Page Up/Down or the arrows under the slots turn them |
 | Esc | Pause menu (settings, save and quit) |
 | Tab | Release / capture the mouse |
 | F3 | FPS, position, altitude, biome, chunks and seed |
@@ -79,7 +96,8 @@ saved in `settings.json`, next to the save file.
 |---|---|
 | Resolution | 320x180, 384x216, 480x270, 640x360, 800x450, 960x540, 1280x720 (default), 1600x900, 1920x1080, 2560x1440 |
 | Frame rate | 30, 60 (default), 75, 120, 144, 165, 240 FPS |
-| Render distance | 4, 6, 8 (default), 10, 12 chunks of 16 blocks drawn as blocks; the distant terrain goes on beyond |
+| Render distance | 32, 64, 128, 256 (default), 512 chunks of 16 blocks; the distant terrain goes on beyond |
+| LOD quality | low (default), medium, high, ultra: the detail of the distant terrain — grid width from 127 to 511 columns, 6 to 8 levels, finest column 1 or 2 blocks |
 | Graphics | fancy (default): shadows and anti-aliasing; fast: without them, for slower graphics cards |
 | Music | on / off |
 
@@ -116,7 +134,7 @@ pyxel.screen  The frame is copied into Pyxel's screen, then Pyxel draws the HUD 
 ```
 
 - `blocks.py`: block types, their properties (solid, see-through...) and the textures, generated by
-  code into one 128x128 "atlas"
+  code into one 256x256 "atlas" (16x16 tiles of 16x16 pixels)
 - `player.py`: walking, jumping, swimming, flying, and collisions with blocks
 - `ui.py`: draws the HUD and menus scaled up at high resolutions
 - `main.py`: the Pyxel app: screens, input, breaking and placing, day/night, saving, sound and HUD
@@ -147,18 +165,29 @@ generating a column about 3 times faster.
 ### Drawing it
 
 Near the camera, each 16x16 column gets one mesh, made of the visible faces of its sections.
-Building meshes takes far longer than a frame, so three worker processes do it in parallel (each
-with its own copy of the world: Python threads would wait for each other). The game asks them for
-the nearest columns first, uploads what they send back, and rebuilds a section itself right away
-when you change a block. Each column counts its changes, so a mesh built from older blocks is
-thrown away and asked for again. While building a face, the workers also count the blocks around
-each of its corners: the more there are, the darker the corner (ambient occlusion).
+Building meshes takes far longer than a frame, so worker processes do it in parallel — three on
+the SWE-2 branch, scaled to the machine's cores (`cpu_count - 4`, minus what the game, its window
+and the GL driver need) on m1-pro — each with its own copy of the world: Python threads would wait
+for each other on this work. The game asks them for the nearest columns first — spread over all the
+workers on m1-pro — uploads what they send back, and rebuilds a section itself right away when you
+change a block. Each column counts its changes, so a mesh built from older blocks is thrown away and
+asked for again. While building a face, the workers also count the blocks around each of its corners:
+the more there are, the darker the corner (ambient occlusion). Plants are not cubes: each one is two
+quads crossed along the diagonals of its block, seen from both sides, whose see-through texels are
+cut out (in the shadows too) and which are lit like the top of a block.
 
-Farther away, the terrain is drawn as a smooth height map at six levels of detail, each twice as
-coarse and twice as wide as the one before (4 to 128 blocks between points, up to 8 km away). The
-heights and colors are kept in textures that wrap around, so when the camera moves only the new
-edge is sampled. Each level leaves a hole where a finer level (or the blocks) is drawn. Steep slopes
-show as rock, and distant terrain fades into a blue haze.
+On m1-pro, two more jobs leave the game's thread: packing a finished mesh for the card runs on a
+small pool of threads, and the distant terrain's sampling runs on its own thread — NumPy releases
+the GIL through its big loops, so both really work beside the game's thread, while the card's calls
+themselves stay on it.
+
+Farther away, the terrain is drawn as a smooth height map at 6 to 8 levels of detail (the LOD
+quality setting picks the count, the grid width and the finest column: 1 or 2 blocks), each twice
+as coarse and twice as wide as the one before, up to 8 km away. The seabed is drawn as true terrain
+and the water as a see-through layer over it, like the water between the blocks. The heights and
+colors are kept in textures that wrap around, so when the camera moves only the new edge is sampled.
+Each level leaves a hole where a finer level (or the blocks) is drawn. Steep slopes show as rock,
+and distant terrain fades into a blue haze.
 
 Everything is drawn relative to the camera, which keeps the numbers small and precise anywhere in
 the endless world. The distant terrain and the blocks each get their own depth range, so both stay

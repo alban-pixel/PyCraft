@@ -3,10 +3,11 @@ lakes and 18 biomes. Everything is a function of (x, z) computed on NumPy arrays
 builds the blocks near the player and the distant scenery (at any spacing)."""
 import numpy as np
 
-from blocks import (ACACIA_LEAVES, ACACIA_LOG, AIR, BEDROCK, BIRCH_LEAVES, BIRCH_LOG, CACTUS, CLAY, COAL_ORE,
-                    DEEPSLATE, DIAMOND_ORE, DIRT, GOLD_ORE, GRASS, GRAVEL, ICE, IRON_ORE, JUNGLE_LEAVES,
-                    JUNGLE_LOG, LEAVES, LOG, MOSS, MUD, ORANGE_TERRACOTTA, PODZOL, RED_SAND, SAND, SANDSTONE,
-                    SNOW, SPRUCE_LEAVES, SPRUCE_LOG, STONE, TERRACOTTA, WATER, WHITE_TERRACOTTA)
+from blocks import (ACACIA_LEAVES, ACACIA_LOG, AIR, ALLIUM, BEDROCK, BIRCH_LEAVES, BIRCH_LOG, BLUE_ORCHID, CACTUS,
+                    CLAY, COAL_ORE, CORNFLOWER, DANDELION, DEAD_BUSH, DEEPSLATE, DIAMOND_ORE, DIRT, FERN, GOLD_ORE,
+                    GRASS, GRAVEL, GROWS_ON, ICE, IRON_ORE, JUNGLE_LEAVES, JUNGLE_LOG, LEAVES, LOG, MOSS, MUD,
+                    ORANGE_TERRACOTTA, OXEYE_DAISY, PODZOL, POPPY, RED_SAND, SAND, SANDSTONE, SNOW, SPRUCE_LEAVES,
+                    SPRUCE_LOG, STONE, TALL_GRASS, TERRACOTTA, WATER, WHITE_TERRACOTTA)
 from noise import Noise, smoothstep
 
 CHUNK = 16  # columns and sections are 16 blocks wide
@@ -235,10 +236,41 @@ for _biome, _kinds in TREES.items():
     CANOPY[_biome] = min(sum(_kinds.values()) / 12, 0.85)
 CANOPY[[DESERT, BADLANDS]] = 0
 
+# Small plants on the ground, by biome: the plant scattered everywhere and the share of the ground it
+# covers, then flowers: their share of the ground inside a patch of flowers, and the kinds that grow
+# there (each patch has mostly one kind). Each plant takes two quads: keep these sparse enough.
+GROUND_PLANTS = {PLAINS: (TALL_GRASS, 0.22), SAVANNA: (TALL_GRASS, 0.2), FOREST: (TALL_GRASS, 0.12),
+                 BIRCH_FOREST: (TALL_GRASS, 0.12), ALPINE: (TALL_GRASS, 0.1), TAIGA: (FERN, 0.1),
+                 JUNGLE: (FERN, 0.14), DESERT: (DEAD_BUSH, 0.006), BADLANDS: (DEAD_BUSH, 0.01)}
+FLOWER_PATCHES = {PLAINS: (0.25, (POPPY, DANDELION, OXEYE_DAISY, CORNFLOWER)),
+                  FOREST: (0.15, (POPPY, DANDELION, ALLIUM)),
+                  BIRCH_FOREST: (0.2, (DANDELION, OXEYE_DAISY, POPPY)),
+                  ALPINE: (0.3, (CORNFLOWER, ALLIUM, BLUE_ORCHID, OXEYE_DAISY)),
+                  SAVANNA: (0.08, (DANDELION, POPPY))}
+# The same as lookup tables indexed by biome (flower kinds repeated to fill 4 slots)
+PLANT_KIND = np.zeros(len(BIOME_NAMES), np.uint8)
+PLANT_SHARE = np.zeros(len(BIOME_NAMES))
+FLOWER_SHARE = np.zeros(len(BIOME_NAMES))
+FLOWER_KINDS = np.zeros((len(BIOME_NAMES), 4), np.uint8)
+for _biome, (_plant, _share) in GROUND_PLANTS.items():
+    PLANT_KIND[_biome], PLANT_SHARE[_biome] = _plant, _share
+for _biome, (_share, _kinds) in FLOWER_PATCHES.items():
+    FLOWER_SHARE[_biome], FLOWER_KINDS[_biome] = _share, np.resize(_kinds, 4)
+
 
 def _rng(seed, *coords):
     """A random generator that always gives the same numbers for the same world seed and place."""
     return np.random.default_rng([seed] + [int(c) & 0xFFFFFFFF for c in coords])
+
+
+def _hash01(seed, x, z):
+    """A random number in [0, 1) for each block (x, z) (arrays), always the same for the same world
+    seed and place: much faster than a random generator per column, for every block of a batch."""
+    h = (np.asarray(x).astype(np.int64).astype(np.uint32) * np.uint32(0x8DA6B343)
+         ^ np.asarray(z).astype(np.int64).astype(np.uint32) * np.uint32(0xD8163841) ^ np.uint32(seed & 0xFFFFFFFF))
+    for shift, mult in ((16, 0x7FEB352D), (15, 0x846CA68B)):
+        h = (h ^ (h >> np.uint32(shift))) * np.uint32(mult)
+    return (h ^ (h >> np.uint32(16))) / 4294967296.0
 
 
 def _tree_blocks(kind, height, variant):
@@ -418,6 +450,7 @@ def _generate_columns(gen, keys):
     grass, foliage, water_tint = tints(s["temperature"], s["humidity"], s["biome"])
     deep = (SEA_LEVEL - 90 + 6 * gen.surface.noise2(xs / 23 + 90, zs / 23)).astype(np.int32)
     entrance = gen.entrances.noise2(xs / 380, zs / 380) > 0.55
+    plants = _scatter_plants(gen, xs, zs, s["biome"], surface, top, s["water"])
 
     columns = []
     for i, (cx, cz) in enumerate(keys):
@@ -432,10 +465,28 @@ def _generate_columns(gen, keys):
         col.foliage = (foliage[i] * 255).astype(np.uint8)
         col.water_tint = (water_tint[i] * 255).astype(np.uint8)
         col.lowest = int(top_padded[i].min())  # lowest ground here and next door: faces start there
-        col.highest = int(max(top[i].max(), col.water.max()))
+        col.plants = plants[i]  # [x, z] -> the plant on the ground there, or 0
+        col.plant_top = int(np.where(col.plants > 0, col.height + 1, -1).max())
+        col.highest = int(max(top[i].max(), col.water.max(), col.plant_top))
         _plant_trees(gen, col, slope[i])
         columns.append(col)
     return columns
+
+
+def _scatter_plants(gen, x, z, biome, surface, top, water):
+    """The plant to put on each block of ground (0 for none): grass, ferns or dead bushes scattered
+    over the biome, and flowers in patches, where a smooth noise is high. The kind of flower changes
+    slowly from place to place, with a few of the next kind mixed in. Only on dry ground the plant
+    grows on: no plants under water or on snow."""
+    roll = _hash01(gen.seed, x, z)
+    plants = np.where(roll < PLANT_SHARE[biome], PLANT_KIND[biome], 0)
+    share = FLOWER_SHARE[biome]
+    patch = gen.surface.noise2(x / 14 + 700, z / 14 - 300) > 0.35
+    flower = patch & (roll >= 1 - share)
+    kind = np.clip(np.floor((gen.surface.noise2(x / 70 - 400, z / 70 + 900) + 1) * 2), 0, 3).astype(np.int32)
+    kind += (roll - 1 + share) < 0.25 * share  # a quarter of a patch's flowers: the next kind
+    plants = np.where(flower, FLOWER_KINDS[biome, kind % 4], plants)
+    return np.where((water < top) & GROWS_ON[plants, surface], plants, 0).astype(np.uint8)
 
 
 def _plant_trees(gen, col, slope):
@@ -498,6 +549,8 @@ def _generate_section(gen, cols, cx, cy, cz):
         blocks[:, :3, :][rough] = BEDROCK
     if tree_top >= y0:
         _stamp_trees(blocks, cols.values(), x0, y0, z0)
+    if col.plant_top >= y0:
+        _stamp_plants(blocks, col, y0)
     first = blocks.flat[0]
     if (blocks == first).all():
         return int(first)
@@ -564,3 +617,16 @@ def _stamp_trees(blocks, cols, x0, y0, z0):
     here = blocks[p[:, 0], p[:, 1], p[:, 2]]
     free = (here == AIR) | np.isin(here, LEAF_BLOCKS)  # trunks push leaves aside
     blocks[p[free, 0], p[free, 1], p[free, 2]] = k[free]
+
+
+def _stamp_plants(blocks, col, y0):
+    """Put the column's plants that fall inside the section on the ground: only into air (not into a
+    tree trunk or leaves), and only where the ground is still there (no cave entrance dug under it;
+    the ground is not in this section when the plant is on its bottom layer)."""
+    ly = col.height + 1 - y0
+    i, k = np.nonzero((col.plants > 0) & (ly >= 0) & (ly < CHUNK))
+    if i.size == 0:
+        return
+    j = ly[i, k]
+    ok = (blocks[i, j, k] == AIR) & ((j == 0) | (blocks[i, np.maximum(j - 1, 0), k] == col.surface[i, k]))
+    blocks[i[ok], j[ok], k[ok]] = col.plants[i[ok], k[ok]]

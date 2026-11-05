@@ -5,7 +5,7 @@ import math
 
 import numpy as np
 
-from blocks import AIR, SOLID, TARGETABLE
+from blocks import AIR, ALL_LEAVES, ICE, PLANT, SOLID, STONE, TARGETABLE, WATER
 from terrain import (BIRCH_FOREST, BIOME_NAMES, CHUNK, FOREST, PLAINS, SAVANNA, SEA_LEVEL, TAIGA, WORLD_HEIGHT,
                      TerrainGenerator)
 
@@ -93,6 +93,87 @@ class World:
         if y < 0:
             return True  # a floor under the bedrock, so nobody falls out of the world
         return bool(SOLID[self.get(x, y, z)])
+
+    def edited_tops(self, cx, cz):
+        """For each (x, z) of a column the player changed: the real top block (the highest one
+        that is not air, water or a plant), the block under it, the water pooled on top and the
+        leaves making a crown — generated values where nothing was touched. The distant terrain
+        reads this so the player's work keeps showing from far away."""
+        col = self.column(cx, cz)
+        top_y = col.height.astype(np.int32).copy()
+        top_b = col.surface.astype(np.uint8).copy()
+        fill_b = col.filler.astype(np.uint8).copy()
+        water_y = np.where(col.water > col.height, col.water, -1).astype(np.int32)
+        leaf_h = np.zeros((CHUNK, CHUNK), np.int32)
+        plant = col.plants.copy()
+        changed = np.zeros((CHUNK, CHUNK), bool)
+        keys = self.edited_columns.get((cx, cz))
+        if not keys:
+            return {"top_y": top_y, "top_b": top_b, "fill_b": fill_b, "water_y": water_y,
+                    "leaf_h": leaf_h, "plant": plant, "grass": col.grass, "changed": changed}
+        keys = set(keys)  # a stable view: set() may keep editing the column on another thread
+        tree_at = {}
+        for (x, y, z), b in zip(col.tree_pos.tolist(), col.tree_block.tolist()):
+            if col.cx * CHUNK <= x < col.cx * CHUNK + CHUNK and col.cz * CHUNK <= z < col.cz * CHUNK + CHUNK:
+                tree_at[x - col.cx * CHUNK, y, z - col.cz * CHUNK] = int(b)
+        edited = {cy: np.full((CHUNK, CHUNK, CHUNK), s, np.uint8) if isinstance(s, int) else s
+                  for cy, s in ((cy, self.sections[(cx, cy, cz)]) for cy in keys)}
+        lim = max(int(col.highest), int(col.tree_top), max(edited) * CHUNK + CHUNK - 1)
+
+        def real(x, y, z):
+            """The block the world really has at (x, y, z): an edited section's where one
+            exists, else what the generator put there (surface, filler, stone, water, trees)."""
+            s = edited.get(y >> 4)
+            if s is not None:
+                return int(s[x, y & 15, z])
+            h, w = int(col.height[x, z]), int(col.water[x, z])
+            if y == h:
+                return int(col.surface[x, z])
+            if y < h:
+                return int(col.filler[x, z]) if h - y <= int(col.depth[x, z]) else STONE
+            if y <= w:
+                return ICE if col.ice[x, z] and y == w else WATER
+            return tree_at.get((x, y, z), int(col.plants[x, z]) if y == h + 1 else AIR)
+
+        for x in range(CHUNK):
+            for z in range(CHUNK):
+                y = lim
+                p = AIR
+                while y >= 0:
+                    b = real(x, y, z)
+                    if b != AIR and not PLANT[b]:
+                        break
+                    if PLANT[b] and p == AIR:
+                        p = b  # the first plant on the way down tints the ground under it
+                    y -= 1
+                if y < 0:
+                    continue  # cleared all the way down: the generated top stands
+                if real(x, y, z) == WATER:
+                    wy = y
+                    while y >= 0 and real(x, y, z) == WATER:
+                        y -= 1
+                    water_y[x, z] = wy
+                if y < 0:
+                    top_y[x, z], top_b[x, z], fill_b[x, z] = -1, STONE, STONE
+                    changed[x, z] = True
+                    plant[x, z] = p
+                    continue
+                b = real(x, y, z)
+                if b in ALL_LEAVES:  # a crown: the run of leaves down from it is its height
+                    top = y
+                    while y >= 0 and real(x, y, z) in ALL_LEAVES:
+                        y -= 1
+                    top_y[x, z], top_b[x, z], leaf_h[x, z] = top, b, top - y
+                    fill_b[x, z] = real(x, y, z) if y >= 0 else STONE
+                else:
+                    top_y[x, z], top_b[x, z] = y, b
+                    fill_b[x, z] = real(x, y - 1, z) if y > 0 else STONE
+                gen_water = int(col.water[x, z]) if col.water[x, z] > col.height[x, z] else -1
+                changed[x, z] = (top_y[x, z] != col.height[x, z] or top_b[x, z] != col.surface[x, z]
+                                 or water_y[x, z] != gen_water)
+                plant[x, z] = p if p != AIR else (0 if changed[x, z] else col.plants[x, z])
+        return {"top_y": top_y, "top_b": top_b, "fill_b": fill_b, "water_y": water_y,
+                "leaf_h": leaf_h, "plant": plant, "grass": col.grass, "changed": changed}
 
     def biome_at(self, x, z):
         """Name of the biome at block (x, z), or "River" in a river."""
