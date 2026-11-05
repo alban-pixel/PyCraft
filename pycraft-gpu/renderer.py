@@ -1626,7 +1626,7 @@ class FarTerrain:
                 starts = np.nonzero(np.diff(row.astype(np.int8), prepend=0) == 1)[0]
                 ends = np.nonzero(np.diff(row.astype(np.int8), append=0) == -1)[0]
                 for a, b in zip(starts, ends):
-                    vs = np.arange(a, b) + (x0 if across else z0)
+                    vs = np.arange(a, b + 1) + (x0 if across else z0)  # b is the last True, included
                     key = np.array([r + (z0 if across else x0)])
                     # Split where the texel address wraps around the grid
                     while len(vs) and vs[-1] % n < len(vs) - 1:
