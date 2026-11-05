@@ -181,13 +181,16 @@ small pool of threads, and the distant terrain's sampling runs on its own thread
 the GIL through its big loops, so both really work beside the game's thread, while the card's calls
 themselves stay on it.
 
-Farther away, the terrain is drawn as a smooth height map at 6 to 8 levels of detail (the LOD
-quality setting picks the count, the grid width and the finest column: 1 or 2 blocks), each twice
-as coarse and twice as wide as the one before, up to 8 km away. The seabed is drawn as true terrain
-and the water as a see-through layer over it, like the water between the blocks. The heights and
-colors are kept in textures that wrap around, so when the camera moves only the new edge is sampled.
-Each level leaves a hole where a finer level (or the blocks) is drawn. Steep slopes show as rock,
-and distant terrain fades into a blue haze.
+Farther away, the terrain is drawn as columns at 6 to 8 levels of detail (the LOD quality setting
+picks the count, the grid width and the finest column: 1 or 2 blocks), each twice as coarse and
+twice as wide as the one before, up to 8 km away. The simplification happens in voxel space before
+any meshing: each cell aggregates the sub-samples under its footprint (or its four finer cells,
+when they are known) into a mean top, a majority block, canopy and water coverage and an averaged
+color — so rivers, forests and even the player's buildings survive at range instead of aliasing
+away. The seabed is drawn as true terrain and the water as a see-through layer over it, like the
+water between the blocks. The records are kept in textures that wrap around, so when the camera
+moves only the new edge is produced. Each level leaves a hole where a finer level (or the blocks)
+is drawn. Steep slopes show as rock, and distant terrain fades into a blue haze.
 
 Everything is drawn relative to the camera, which keeps the numbers small and precise anywhere in
 the endless world. The distant terrain and the blocks each get their own depth range, so both stay
