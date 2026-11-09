@@ -7,6 +7,7 @@ them the columns it wants (nearest first) and every block the player changes; th
 vertices of each column's sections. The game keeps its own world for walking, aiming and editing.
 """
 import multiprocessing
+import os
 import queue
 import traceback
 
@@ -83,7 +84,9 @@ def _ao_offsets():
 
 AO_OFFSETS = _ao_offsets()  # [face] -> (4 corners, 3 neighbors)
 
-WORKERS = 3
+# One builder process per core, minus what the game itself, its window and the GL driver need:
+# the workers are where the CPU-heavy work (terrain generation, meshing) happens
+WORKERS = max(3, (os.cpu_count() or 4) - 4)
 IN_FLIGHT = 4  # columns asked of each worker at a time: enough to keep it busy, few enough to follow the player
 
 
@@ -256,8 +259,13 @@ class Builders:
         return any(key in flying for flying in self.in_flight)
 
     def request_columns(self, keys):
-        """Ask for columns (terrain.Column objects) for the game's own world."""
-        self.tasks[0].put(("columns", self.generation, keys))
+        """Ask for columns (terrain.Column objects) for the game's own world: spread the batch
+        over all the workers, so the columns are generated in parallel."""
+        n = len(self.tasks)
+        for i in range(n):
+            part = keys[i::n]
+            if part:
+                self.tasks[i].put(("columns", self.generation, part))
 
     def request(self, camera_chunk, jobs):
         """Hand out jobs (column, version, sections done, caves) to the workers with room."""

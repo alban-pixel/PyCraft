@@ -20,6 +20,7 @@ colors move toward them (k-means clustering). Each pixel is dithered between the
 that mix best into its own color. The shader writes one byte per pixel, the palette index, which is
 copied into pyxel.screen.
 """
+import concurrent.futures
 import functools
 import math
 import time
@@ -1067,12 +1068,31 @@ def column_offsets(radius):
     return sorted(offsets, key=lambda o: o[0] * o[0] + o[1] * o[1])
 
 
+def prepare_faces(parts):
+    """The bytes a column mesh is made of, from its sections' vertices: the water faces last,
+    and one index buffer for all of them. Pure number crunching — runs on a worker thread."""
+    faces = np.concatenate(parts).reshape(-1, 4)
+    water = faces["info"][:, 0, 3] == 2
+    faces = faces[np.argsort(water, kind="stable")]  # the water faces last: drawn after the rest
+    water_count = int(water.sum()) * 6
+    solid = len(faces) * 6 - water_count
+    ao = faces["tint"][:, :, 3].astype(np.int32)
+    flip = (ao[:, 0] + ao[:, 2] < ao[:, 1] + ao[:, 3])[:, None]
+    indices = (np.arange(len(faces), dtype=np.uint32)[:, None] * 4
+               + np.where(flip, FLIPPED_TRIANGLES, FACE_TRIANGLES))
+    ys = faces["pos"][..., 1]
+    return faces.tobytes(), indices.astype(np.uint32).tobytes(), water_count, solid, \
+        (float(ys.min()), float(ys.max()))
+
+
 class Chunks:
     """Block meshes of the columns around the camera.
 
     Worker processes (see builder.py) build them, nearest first; this uploads them to the graphics
     card and draws them. Block changes are rebuilt right away here. Each column counts its changes
-    ("version"): a mesh a worker built from older blocks is thrown away and asked for again."""
+    ("version"): a mesh a worker built from older blocks is thrown away and asked for again.
+    Packing a mesh for the card is done on a pool of threads (numpy frees the GIL for it), so the
+    frames stay smooth while whole areas arrive."""
 
     def __init__(self, ctx, program, world):
         self.ctx, self.program = ctx, program
@@ -1081,6 +1101,8 @@ class Chunks:
         self.version = 0  # counts the changes to the meshes (the shadow map is drawn again)
         self.in_view = []  # (mesh, (x, y, z) of its corner relative to the camera) seen in the last frame
         self.builders = Builders()
+        self.pool = concurrent.futures.ThreadPoolExecutor(2, thread_name_prefix="mesh prep")
+        self.preparing = {}  # (cx, cz) -> (version, future of prepare_faces)
         self.ready = np.zeros((READY_SIZE, READY_SIZE), np.uint8)  # [cz & 63, cx & 63] = 255 when drawn
         self.ready_changed = True
         self.ready_texture = ctx.texture((READY_SIZE, READY_SIZE), 1, dtype="f1")
@@ -1095,6 +1117,7 @@ class Chunks:
         self.pending = {}  # finished meshes waiting for their upload
         self.asked_columns = set()  # columns asked of a worker for the game's own world
         self.builders.set_world(world)
+        self.preparing = {}
 
     def release(self):
         for mesh in self.meshes.values():
@@ -1142,7 +1165,21 @@ class Chunks:
             self.meshes[key] = mesh
             mesh.parts.update(parts)
             self.built[key] = done
-            self.upload(key, mesh)
+            # Packing is done on a worker thread; the card's buffers are made when it lands
+            packed = [p for p in mesh.parts.values() if p is not None]
+            if packed:
+                self.preparing[key] = (version, self.pool.submit(prepare_faces, packed))
+            else:
+                self.upload(key, mesh, None)
+        # Upload the meshes whose packing finished (the card's calls stay on this thread)
+        for key in [k for k, (v, f) in self.preparing.items() if f.done()]:
+            if time.perf_counter() >= deadline:
+                break
+            version, future = self.preparing.pop(key)
+            if is_far(key) or version != self.versions.get(key, 0):
+                self.built.pop(key, None)  # built from blocks changed since: asked for again
+                continue
+            self.upload(key, self.meshes[key], future.result())
 
         # The game's own world needs the columns around the player (walking, aiming): ask a worker
         # for them ahead of time, so the game doesn't have to generate them itself
@@ -1169,26 +1206,20 @@ class Chunks:
         if jobs:
             self.builders.request((pcx, pcy, pcz), jobs)
 
-    def upload(self, key, mesh):
+    def upload(self, key, mesh, prepared=None):
+        """Make the card buffers of a mesh, from what prepare_faces produced (done on the spot
+        when not given, as for a block the player changed)."""
+        if prepared is None:
+            parts = [p for p in mesh.parts.values() if p is not None]
+            prepared = prepare_faces(parts) if parts else None
         mesh.release()
         self.version += 1
-        parts = [p for p in mesh.parts.values() if p is not None]
-        if parts:
-            faces = np.concatenate(parts).reshape(-1, 4)
-            water = faces["info"][:, 0, 3] == 2
-            faces = faces[np.argsort(water, kind="stable")]  # the water faces last: drawn after the rest
-            mesh.water = int(water.sum()) * 6
-            mesh.solid = len(faces) * 6 - mesh.water
-            ao = faces["tint"][:, :, 3].astype(np.int32)
-            flip = (ao[:, 0] + ao[:, 2] < ao[:, 1] + ao[:, 3])[:, None]
-            indices = (np.arange(len(faces), dtype=np.uint32)[:, None] * 4
-                       + np.where(flip, FLIPPED_TRIANGLES, FACE_TRIANGLES))
-            mesh.vbo = self.ctx.buffer(faces.tobytes())
-            mesh.ibo = self.ctx.buffer(indices.astype(np.uint32).tobytes())
+        if prepared is not None:
+            vbo, ibo, mesh.water, mesh.solid, mesh.y_range = prepared
+            mesh.vbo = self.ctx.buffer(vbo)
+            mesh.ibo = self.ctx.buffer(ibo)
             mesh.vao = self.ctx.vertex_array(self.program, [(mesh.vbo, "3f 4u1 4f1", "in_pos", "in_info", "in_tint")],
                                              index_buffer=mesh.ibo, index_element_size=4)
-            ys = faces["pos"][..., 1]
-            mesh.y_range = (float(ys.min()), float(ys.max()))
         self.ready[key[1] % READY_SIZE, key[0] % READY_SIZE] = 255
         self.ready_changed = True
 
@@ -1287,6 +1318,10 @@ class FarTerrain:
         # hands to the coarser one for the cells it covers, texel for texel
         self.rec = [self._new_records() for _ in range(levels)]
         self.dirty = [set() for _ in range(levels)]  # cells to resample: finer data changed under them
+        # Producing records and texels for the new strips is heavy (up to millions of samples when
+        # the camera jumps): it runs on its own thread, the textures are written when it lands
+        self.pool = concurrent.futures.ThreadPoolExecutor(1, thread_name_prefix="lod sampler")
+        self.sampling = None  # (batch, world, marks, future) being sampled
 
     def _new_records(self):
         """An empty grid of cells for one level. tagx/tagz say which grid point each texel
@@ -1311,10 +1346,9 @@ class FarTerrain:
         self.dirty = [set() for _ in range(self.n_levels)]
         self.version += 1
 
-    def _fields(self, x, z, sx, sz, level, clim=None):
+    def _fields(self, gen, x, z, sx, sz, level, clim=None):
         """Sub-records at world points (x, z), sub-lattice cells (sx, sz) of a level: one value
         per array, everything the aggregation needs to weigh over a cell's footprint."""
-        gen = self.world.gen
         s = gen.sample(x, z, clim)
         top = np.floor(s["height"]).astype(np.int32)
         wet = top < s["water"]
@@ -1400,7 +1434,7 @@ class FarTerrain:
                 "icecov": np.zeros(count, "u1"), "flags": np.zeros(count, "u1"),
                 "depth": np.zeros(count, "u1"), "tint": np.zeros((count, 3), "u1")}
 
-    def _sample_cells(self, level, gx, gz, sub=LOD_SUB):
+    def _sample_cells(self, level, gx, gz, sub, world, edited):
         """Records of cells (gx, gz): the footprint of each is sampled on a small sub-grid and
         aggregated. The edited columns are read at every level."""
         spacing = self.spacing << level
@@ -1417,9 +1451,9 @@ class FarTerrain:
         clim = None
         if sub > 1 and spacing < 32:
             clim = {k: np.repeat(v, sub * sub)
-                    for k, v in self.world.gen.climate((gx + 0.5) * spacing, (gz + 0.5) * spacing).items()}
-        f = self._fields(x, z, sx, sz, level, clim)
-        self._inject_edited(f, x, z, spacing, sub)  # the player's work shows at every level
+                    for k, v in world.gen.climate((gx + 0.5) * spacing, (gz + 0.5) * spacing).items()}
+        f = self._fields(world.gen, x, z, sx, sz, level, clim)
+        self._inject_edited(world, edited, f, x, z, spacing, sub)  # the player's work shows at every level
         return self._aggregate({k: v.reshape(len(gx), -1, v.shape[-1]) if v.ndim == 2 else v.reshape(len(gx), -1)
                                 for k, v in f.items()})
 
@@ -1458,20 +1492,21 @@ class FarTerrain:
                 "depth": np.clip(np.where(wy > ty, wy - ty, 0), 0, 255).astype("u1"),
                 "tint": tint.astype("u1")}
 
-    def _inject_edited(self, f, x, z, spacing, sub):
+    def _inject_edited(self, world, edited, f, x, z, spacing, sub):
         """Rewrite the sub-records that stand on columns the player changed, from their real
         tops: one block per sub-cell when the sub-cells are block-sized or finer, else the
-        blocks each sub-cell covers aggregated together — a house stays a house at any level."""
-        if not self.world.edited_columns:
+        blocks each sub-cell covers aggregated together — a house stays a house at any level.
+        `edited` is a snapshot of world.edited_columns taken on the game's thread."""
+        if not edited:
             return
         ss = spacing // sub  # blocks covered by one side of a sub-cell (>= 1: sub <= spacing)
         if ss == 1:
             # One block per sub-cell (the finest level): a direct lookup per sampled point
             bx, bz = np.floor(x).astype(np.int64), np.floor(z).astype(np.int64)
             cx, cz = bx >> 4, bz >> 4
-            touched = set(zip(cx.tolist(), cz.tolist())) & self.world.edited_columns.keys()
+            touched = set(zip(cx.tolist(), cz.tolist())) & edited.keys()
             for ccx, ccz in touched:
-                tops = self.world.edited_tops(ccx, ccz)
+                tops = world.edited_tops(ccx, ccz)
                 m = (cx == ccx) & (cz == ccz)
                 if not m.any():
                     continue
@@ -1484,8 +1519,8 @@ class FarTerrain:
                     f[k][idx] = bf[k][lx, lz]
             return
         sx, sz = np.floor(x / ss).astype(np.int64), np.floor(z / ss).astype(np.int64)
-        for ccx, ccz in set(zip((sx * ss >> 4).tolist(), (sz * ss >> 4).tolist())) & self.world.edited_columns.keys():
-            tops = self.world.edited_tops(ccx, ccz)
+        for ccx, ccz in set(zip((sx * ss >> 4).tolist(), (sz * ss >> 4).tolist())) & edited.keys():
+            tops = world.edited_tops(ccx, ccz)
             bf = self._block_fields(tops)
             gx0, gz0 = ccx * 16, ccz * 16
             for gsx in range(gx0 // ss - 1, (gx0 + 16) // ss + 1):
@@ -1503,12 +1538,12 @@ class FarTerrain:
                     for k in f:
                         f[k][sel] = rec[k][0]
 
-    def _children_known(self, level, gx, gz):
+    def _children_known(self, rec, level, gx, gz):
         """Which cells of a level have all four finer children sampled in place: their records
         can be aggregated instead of sampling the generator again (cheaper, and it is what makes
         a level inherit the real detail — edited blocks included — of the level under it)."""
         n = self.size
-        finer = self.rec[level - 1]
+        finer = rec[level - 1]
         o = self.origins[level - 1]
         if o is None:
             return np.zeros(gx.shape, bool)
@@ -1519,42 +1554,45 @@ class FarTerrain:
                       & (finer["tagx"][cx % n, cz % n] == cx) & (finer["tagz"][cx % n, cz % n] == cz))
         return known
 
-    def _aggregate_children(self, level, px, pz):
+    def _aggregate_children(self, rec, level, px, pz):
         """A level's cells as the aggregate of the four finer cells covering each."""
         n = self.size
         fields = {}
-        for k, arr in self.rec[level - 1].items():
+        for k, arr in rec[level - 1].items():
             if k in ("tagx", "tagz"):
                 continue
             fields[k] = np.stack([arr[(2 * px + dx) % n, (2 * pz + dz) % n]
                                   for dx, dz in ((0, 0), (1, 0), (0, 1), (1, 1))], axis=1)
         return self._aggregate(fields)
 
-    def produce(self, level, gx, gz, sub=LOD_SUB):
+    def produce(self, level, gx, gz, sub, job):
         """Records for the flat cells (gx, gz) of a level: finer records where they exist (the
         cascade), the generator's sampled sub-records elsewhere; remembered in the CPU records
-        so the next level can aggregate them."""
+        so the next level can aggregate them. `job` = (world, edited, rec, marks): the world
+        being sampled, a snapshot of its edited columns, the records store and the dirty sets
+        of this batch — all the state the sampler thread is allowed to touch."""
+        world, edited, rec_store, marks = job
         if level == 0:
-            rec = self._sample_cells(0, gx, gz, sub)
+            rec = self._sample_cells(0, gx, gz, sub, world, edited)
         else:
-            ok = self._children_known(level, gx, gz)
+            ok = self._children_known(rec_store, level, gx, gz)
             if ok.all():
-                rec = self._aggregate_children(level, gx, gz)
+                rec = self._aggregate_children(rec_store, level, gx, gz)
             else:
                 rec = self._empty(len(gx))
                 if ok.any():
-                    casc = self._aggregate_children(level, gx[ok], gz[ok])
+                    casc = self._aggregate_children(rec_store, level, gx[ok], gz[ok])
                     for k in rec:
                         rec[k][ok] = casc[k]
                 if (~ok).any():
-                    samp = self._sample_cells(level, gx[~ok], gz[~ok], sub)
+                    samp = self._sample_cells(level, gx[~ok], gz[~ok], sub, world, edited)
                     for k in rec:
                         rec[k][~ok] = samp[k]
         # The parent only has to be resampled where the child actually changed — a cell
         # resampled to the same values is a no-op for the cascade
         n = self.size
         u, v = gx % n, gz % n
-        f = self.rec[level]
+        f = rec_store[level]
         changed = ((f["tagx"][u, v] != gx) | (f["tagz"][u, v] != gz)
                    | (f["ground"][u, v] != rec["ground"]) | (f["wsurf"][u, v] != rec["wsurf"])
                    | (f["surf"][u, v] != rec["surf"]) | (f["fill"][u, v] != rec["fill"])
@@ -1562,21 +1600,21 @@ class FarTerrain:
                    | (f["cov"][u, v] != rec["cov"]) | (f["wetcov"][u, v] != rec["wetcov"])
                    | (f["icecov"][u, v] != rec["icecov"]) | (f["flags"][u, v] != rec["flags"])
                    | (f["depth"][u, v] != rec["depth"]) | (f["tint"][u, v] != rec["tint"]).any(axis=1))
-        self._store(level, gx, gz, rec)
+        self._store(rec_store, level, gx, gz, rec)
         if level + 1 < self.n_levels and changed.any():
-            self.dirty[level + 1].update(zip((gx[changed] >> 1).tolist(), (gz[changed] >> 1).tolist()))
+            marks[level + 1].update(zip((gx[changed] >> 1).tolist(), (gz[changed] >> 1).tolist()))
         return rec
 
-    def _store(self, level, gx, gz, rec):
+    def _store(self, rec_store, level, gx, gz, rec):
         """Remember the records of cells (gx, gz) texel for texel, tagged by their grid point."""
         n = self.size
         u, v = gx % n, gz % n
-        for k, arr in self.rec[level].items():
+        for k, arr in rec_store[level].items():
             if k in ("tagx", "tagz"):
                 continue
             arr[u, v] = rec[k]
-        self.rec[level]["tagx"][u, v] = gx
-        self.rec[level]["tagz"][u, v] = gz
+        rec_store[level]["tagx"][u, v] = gx
+        rec_store[level]["tagz"][u, v] = gz
 
     def _pack(self, rec):
         """Records to texels: biome color (rgba, the canopy's shade over the ground baked in) and
@@ -1594,17 +1632,22 @@ class FarTerrain:
                          rec["wsurf"].astype("f4").view("u4"), misc], axis=1)
         return rgba, data, rec["wsurf"] >= 0
 
-    def _write_runs(self, level, runs, sub=LOD_SUB):
+    def _sample_runs(self, level, runs, job, sub=LOD_SUB):
         """Produce all the cells of the given writes in one pass — sampling is much cheaper in
-        one big batch — then upload each rectangle: textures, wet mask and records."""
-        n = self.size
+        one big batch — and pack them for the textures. Runs on the sampler thread."""
         flat = []
         for xs, zs in runs:
             gz, gx = np.meshgrid(zs, xs, indexing="ij")  # texture rows are z
             flat.append((gx.ravel(), gz.ravel()))
         gx = np.concatenate([g[0] for g in flat])
         gz = np.concatenate([g[1] for g in flat])
-        rgba, data, wet = self._pack(self.produce(level, gx, gz, sub))
+        rgba, data, wet = self._pack(self.produce(level, gx, gz, sub, job))
+        return flat, rgba, data, wet
+
+    def _upload_runs(self, level, runs, flat, rgba, data, wet):
+        """Write a level's packed runs into its textures, wet mask included. Game thread only:
+        the GL calls live here."""
+        n = self.size
         start = 0
         for (xs, zs), (fx, _) in zip(runs, flat):
             end = start + len(fx)
@@ -1617,23 +1660,24 @@ class FarTerrain:
             start = end
         self.wet_dirty[level] = True
 
-    def _dirty_runs(self, level, budget, claimed=()):
+    def _dirty_runs(self, level, budget, marks, claimed=()):
         """Up to `budget` cells of the set marked dirty under a level, grouped into runs along
         x or z, whichever makes fewer writes (a moved strip makes a line of parents, not a
-        scatter). The rest stay dirty for another frame. A cell out of the window is not
+        scatter). The rest stay dirty for another batch. A cell out of the window is not
         written — its texel means somewhere else — but the level above still inherits it.
-        `claimed` cells are already being written this frame: they drop out of the set."""
-        cells = self.dirty[level]
+        `claimed` cells are already being written this batch: they drop out of the set.
+        `marks` is the batch's own list of dirty sets (the sampler thread's, not self.dirty)."""
+        cells = marks[level]
         if self.origins[level] is None or not cells:
-            self.dirty[level] = set()
+            marks[level] = set()
             return []
         n = self.size
         ox, oz = self.origins[level]
         inside = {(x, z) for x, z in cells - claimed if ox <= x < ox + n and oz <= z < oz + n}
         if level + 1 < self.n_levels:
-            self.dirty[level + 1].update((x >> 1, z >> 1) for x, z in cells - inside - claimed)
+            marks[level + 1].update((x >> 1, z >> 1) for x, z in cells - inside - claimed)
         if not inside:
-            self.dirty[level] = set()
+            marks[level] = set()
             return []
         # Group the cells into runs, along x or along z: whichever orientation needs fewer
         # writes (a moved strip makes a line of parents, not a scatter of single cells)
@@ -1682,7 +1726,7 @@ class FarTerrain:
             taken.append(w)
             taken_n += len(w[0]) * len(w[1])
         covered = {(int(x), int(z)) for xs, zs in taken for x in xs for z in zs}
-        self.dirty[level] = inside - covered
+        marks[level] = inside - covered
         return taken
 
     def block_changed(self, x, z):
@@ -1714,33 +1758,61 @@ class FarTerrain:
             writes += [(level, np.array([x]), zs) for x in gx]
             gz = range(old[1] + n, new[1] + n) if new[1] > old[1] else range(new[1], old[1])
             writes += [(level, xs, np.array([z])) for z in gz]
-        # Whole levels (a new world, a jump far away) are done at once; edge strips a few per frame,
-        # oldest first, so several levels moving together don't make one long frame
+        # Whole levels (a new world, a jump far away) are done at once; edge strips a few per
+        # batch, oldest first, so several levels moving together don't make one long batch
         self.queue += writes
-        if any(len(w[1]) * len(w[2]) > n for w in self.queue):
-            writes, self.queue = self.queue, []
-        else:
-            writes, self.queue = self.queue[:LOD_STRIPS_PER_FRAME], self.queue[LOD_STRIPS_PER_FRAME:]
-        if not writes and not any(self.dirty):
-            return
-        self.version += 1
-        # Level after level so the cascade sees fresh records: a level's writes mark the cells
-        # they touch in the level above, which is then written in its turn. Strip and dirty
-        # cells of a level are sampled in one pass — the sampling setup dominates the cost.
+        # A finished sampling job lands in the textures now (sampling itself runs on its thread:
+        # numpy frees the GIL through its big loops, so it really works beside the game's thread)
+        if self.sampling is not None and self.sampling[3].done():
+            batch, world, marks, future = self.sampling
+            self.sampling = None
+            out = future.result()
+            if world is self.world:  # else the world changed since: stale, dropped
+                self.version += 1
+                for level, runs, flat, rgba, data, wet in out:
+                    self._upload_runs(level, runs, flat, rgba, data, wet)
+                # The cells the batch had no room for are still dirty — plus whatever
+                # block_changed added while it ran
+                for level in range(self.n_levels):
+                    self.dirty[level] |= marks[level]
+        # Feed the sampler: strips and dirty cells go to its thread as one job. The job gets its
+        # own view of the shared state — the world, a snapshot of its edited columns, the
+        # records store and the dirty sets (handed over: they come back when the job lands).
+        if self.sampling is None and (self.queue or any(self.dirty)):
+            if any(len(w[1]) * len(w[2]) > n for w in self.queue):
+                batch, self.queue = self.queue, []
+            else:
+                batch, self.queue = self.queue[:LOD_STRIPS_PER_FRAME], self.queue[LOD_STRIPS_PER_FRAME:]
+            world = self.world
+            marks, self.dirty = self.dirty, [set() for _ in range(self.n_levels)]
+            edited = {k: set(v) for k, v in world.edited_columns.items()}
+            job = (world, edited, self.rec, marks)
+            self.sampling = (batch, world, marks,
+                             self.pool.submit(self._produce_batch, batch, job))
+
+    def _produce_batch(self, batch, job):
+        """All the texels for a batch of writes, produced level by level so the cascade sees
+        fresh records: a level's writes mark the cells they touch in the level above, written
+        in its turn. Strip and dirty cells of a level are sampled in one pass — the sampling
+        setup dominates the cost. On the pool's thread, so the game's frame never waits."""
+        _, _, _, marks = job
         by_level = [[] for _ in range(self.n_levels)]
-        for level, xs, zs in writes:
+        for level, xs, zs in batch:
             by_level[level].append((xs, zs))
+        out = []  # (level, runs, flat, rgba, data, wet) — textures written on landing
         budget = LOD_DIRTY_PER_FRAME
         for level in range(self.n_levels):
             dirty_runs = []
-            if budget and self.dirty[level]:
+            if budget and marks[level]:
                 claimed = {(int(x), int(z)) for xs, zs in by_level[level]
                            for x in xs for z in zs}
-                dirty_runs = self._dirty_runs(level, budget, claimed)
+                dirty_runs = self._dirty_runs(level, budget, marks, claimed)
                 budget -= sum(len(w[0]) * len(w[1]) for w in dirty_runs)
             runs = by_level[level] + dirty_runs
             if runs:
-                self._write_runs(level, runs)
+                flat, rgba, data, wet = self._sample_runs(level, runs, job)
+                out.append((level, runs, flat, rgba, data, wet))
+        return out
 
     def _wet_list(self, level):
         """The wet cells of a level, as their local coordinates for the shader: the water pass
@@ -2157,6 +2229,7 @@ class Renderer:
             self.far.version = far.version + 1  # the shadow maps are drawn again
             for res in far.data_maps + far.color_maps + far.wet_texs + [far.tile_avg, far.vbo, far.vao]:
                 res.release()
+            far.pool.shutdown(wait=False)
 
     def make_framebuffers(self):
         ctx = self.ctx
