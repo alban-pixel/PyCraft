@@ -6,6 +6,19 @@ through `moderngl`), lit by the sun with shadows, and each finished frame is tur
 256 colors and copied into Pyxel's screen. Pyxel runs the window, keyboard, mouse, menus, HUD, sound
 effects and music.
 
+## Warning: a lot of graphical bugs
+
+**This version has a lot of graphical bugs**, mostly in the distant terrain (the columns drawn
+beyond the real blocks). They were already there before the November 9 performance work, which
+didn't fix them. Seen so far:
+
+- Holes in the distant terrain: the sky shows through mountains, in rows of gaps
+- Distant mountainsides drawn as stacked, wavy stripes of columns instead of a solid slope
+- Seen from close, a mountain can look like a wall of loose columns with sky between them
+
+The performance changes were measured in headless tests (no window); they still need playing in a
+real window.
+
 ## Run it
 
 ```bash
@@ -117,17 +130,21 @@ With the 3D resolution on **Auto**, the game measures every frame (and, with an 
 long the graphics card took for it). When the frames take longer than the frame rate allows and the
 graphics card is a large part of that, the 3D view is drawn smaller, by steps of 5% from 100% down
 to 50% (never fewer than 540 lines). When frames have time to spare it grows back, one step every
-1.5 seconds. The menus, the HUD and the dithering always stay at the full resolution. In a test at
-2560x1440 with fast graphics on the AMD Radeon 880M, a frame took 78 ms at 100% and 33 ms on Auto
-(drawn at 1280x720): part of the work (the distant terrain's shapes) doesn't shrink with the
-picture. The F3 screen shows the size the 3D view is drawn at.
- The mouse turns the same amount for the same hand movement at every resolution. On
-Windows, the game uses the screen's real pixels: on a high-DPI screen, Windows would otherwise draw
-the window at a lower resolution and stretch it, blurred.
+1.5 seconds. The menus, the HUD and the dithering always stay at the full resolution. The F3
+screen shows the size the 3D view is drawn at. Part of the work doesn't shrink with the picture:
+the distant terrain's shapes cost about the same at any resolution (see below).
 
-On a laptop graphics chip (AMD Radeon 880M), with fancy graphics, the game runs at about 200 frames
-per second at 1280x720, 150 at 1920x1080 and 100 at 2560x1440. If it doesn't keep up with the frame
-rate you chose, lower the resolution or switch to fast graphics.
+The mouse turns the same amount for the same hand movement at every resolution. On Windows, the
+game uses the screen's real pixels: on a high-DPI screen, Windows would otherwise draw the window at
+a lower resolution and stretch it, blurred.
+
+On a laptop with an AMD Ryzen AI 9 H 365 and its Radeon 880M graphics, at a render distance of 64
+chunks, medium LOD quality and 100% 3D resolution, a still view takes about 22 ms a frame at
+1280x720 (46 FPS with fast graphics, 43 with fancy) and 26 to 28 ms at 2560x1440 (39 and 36 FPS),
+and flying fast about as long. The distant terrain alone takes about 3 ms of the graphics card's
+time a frame at low LOD quality, 9 at medium, 11 at high and 19 at ultra, whatever the resolution.
+If the game doesn't keep up with the frame rate you chose, lower the LOD quality first, then the
+render distance or the resolution, or switch to fast graphics.
 
 The frame rate is the number of frames the game draws per second. It's useful above 60 only if
 your screen's refresh rate (set in your system's display settings) is that high too.
@@ -187,16 +204,18 @@ generating a column about 3 times faster.
 Near the camera, each 16x16 column gets one mesh, made of the visible faces of its sections.
 Building meshes takes far longer than a frame, so worker processes do it in parallel — three on
 the SWE-2 branch, scaled to the machine's cores (`cpu_count - 4`, minus what the game, its window
-and the GL driver need) on m1-pro — each with its own copy of the world: Python threads would wait
+and the GL driver need) on m1-pro and claude, at most 8 on claude (`cpu_count` counts hardware
+threads, twice the cores on most PC processors: 16 workers did no better than 8 on a 10-core Ryzen)
+— each with its own copy of the world: Python threads would wait
 for each other on this work. The game asks them for the nearest columns first — spread over all the
-workers on m1-pro — uploads what they send back, and rebuilds a section itself right away when you
+workers on m1-pro and claude — uploads what they send back, and rebuilds a section itself right away when you
 change a block. Each column counts its changes, so a mesh built from older blocks is thrown away and
 asked for again. While building a face, the workers also count the blocks around each of its corners:
 the more there are, the darker the corner (ambient occlusion). Plants are not cubes: each one is two
 quads crossed along the diagonals of its block, seen from both sides, whose see-through texels are
 cut out (in the shadows too) and which are lit like the top of a block.
 
-On m1-pro, two more jobs leave the game's thread: packing a finished mesh for the card runs on a
+On m1-pro and claude, two more jobs leave the game's thread: packing a finished mesh for the card runs on a
 small pool of threads, and the distant terrain's sampling runs on its own thread — NumPy releases
 the GIL through its big loops, so both really work beside the game's thread, while the card's calls
 themselves stay on it.
@@ -210,7 +229,11 @@ color — so rivers, forests and even the player's buildings survive at range in
 away. The seabed is drawn as true terrain and the water as a see-through layer over it, like the
 water between the blocks. The records are kept in textures that wrap around, so when the camera
 moves only the new edge is produced. Each level leaves a hole where a finer level (or the blocks)
-is drawn. Steep slopes show as rock, and distant terrain fades into a blue haze.
+is drawn. Steep slopes show as rock, and distant terrain fades into a blue haze. Its shader finds
+the texture of each block's face in a small table kept as a texture: as a constant array in the
+shader, picked per pixel by block, the AMD Radeon 880M's driver copied it into every pixel's
+scratch memory, and the distant terrain took 73 ms of the card's time a frame at 2560x1440
+instead of 9.
 
 Everything is drawn relative to the camera, which keeps the numbers small and precise anywhere in
 the endless world. The distant terrain and the blocks each get their own depth range, so both stay
@@ -238,10 +261,12 @@ still view doesn't flicker.
 Pyxel's frame rate can't change once its window is open, so the game starts Pyxel with a very high
 one and paces the frames itself (`App.run`, with `pyxel.flip`). Movement uses the real time between
 frames, so the game runs at the same speed at any frame rate. The resolution changes with
-`pyxel.resize`, and the renderer then makes a new off-screen image of the same size. Under 100%
-3D resolution, the full-color image is smaller: the shader that turns it into palette colors scales
-it up first, with a Catmull-Rom filter (sharper than a bilinear one, from 9 bilinear samples), so
-the dithering stays at the screen's own resolution.
+`pyxel.resize`, and the renderer then makes a new off-screen image of the same size. The last shader
+draws the frame's rows upside down, top to bottom like Pyxel's screen, so the frame is read straight
+into it, without being flipped afterward. Under 100% 3D resolution, the full-color image is smaller:
+the shader that turns it into palette colors scales it up first, with a Catmull-Rom filter (sharper
+than a bilinear one, from 9 bilinear samples), so the dithering stays at the screen's own
+resolution.
 
 ## Limits
 

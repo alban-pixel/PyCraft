@@ -147,12 +147,21 @@ image hors écran à la nouvelle taille.
 
 ## Différences entre branches
 
-| | `SWE-2` | `m1-pro` |
-|---|---|---|
-| Workers de terrain/mesh | 3 processus | `max(3, cpu_count − 4)` processus |
-| Répartition des requêtes de colonnes | un seul worker | tous les workers |
-| Emballage des meshes pour la carte | sur le thread du jeu | pool de 2 threads |
-| Échantillonnage du terrain lointain | par batch, sur le thread du jeu | thread dédié |
+| | `SWE-2` | `m1-pro` | `claude` (PC : Ryzen AI 9 H 365, Radeon 880M) |
+|---|---|---|---|
+| Workers de terrain/mesh | 3 processus | `max(3, cpu_count − 4)` processus | `max(3, min(cpu_count − 4, 8))` processus |
+| Répartition des requêtes de colonnes | un seul worker | tous les workers | tous les workers |
+| Emballage des meshes pour la carte | sur le thread du jeu | pool de 2 threads | pool de 2 threads |
+| Échantillonnage du terrain lointain | par batch, sur le thread du jeu | thread dédié | thread dédié |
+| Tuiles des blocs dans le shader du terrain lointain | tableau constant | tableau constant | petite texture entière |
+| Lecture de l'image indexée | copie, puis lignes retournées | copie, puis lignes retournées | directement dans l'écran de Pyxel |
+
+Sur `claude`, `cpu_count` compte les threads matériels : 20 sur le Ryzen AI 9 H 365 (10 cœurs),
+et 16 workers n'y faisaient pas mieux que 8. Le tableau constant `BLOCK_TILES`, indexé par pixel
+selon le bloc, est recopié par le pilote AMD dans la mémoire scratch de chaque pixel : le terrain
+lointain prenait 73 ms de carte par image à 2560x1440, 9 ms avec la texture. Sur ce PC, une image
+fixe passe de 87 à 26 ms à 2560x1440 (graphismes rapides), le vol rapide de 198 à 26 ms, et le
+chargement d'un monde de 13 s à moins d'une seconde.
 
 ## Limites connues
 
