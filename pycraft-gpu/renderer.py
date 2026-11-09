@@ -755,6 +755,7 @@ POST_FRAGMENT_SHADER = """
 uniform sampler2D scene;
 uniform sampler2D palette;  // 256x1: each palette color in OKLab
 uniform usampler2D lut;     // 32x32x32 colors -> the two palette colors to dither between
+uniform vec2 out_size;      // size of the frame on screen: the scene can be drawn smaller (render scale)
 out float index;
 """ + OKLAB + FINISH + """
 int bayer8(ivec2 p) {  // ordered dithering threshold, 0-63
@@ -762,9 +763,32 @@ int bayer8(ivec2 p) {  // ordered dithering threshold, 0-63
     for (int i = 0; i < 3; i++) v = (v << 2) | (((xy >> i) & 1) << 1) | ((p.y >> i) & 1);
     return v;
 }
+vec3 scene_color(ivec2 p) {
+    ivec2 size = textureSize(scene, 0);
+    if (size == ivec2(out_size)) return texelFetch(scene, p, 0).rgb;
+    // Drawn smaller: scaled up with a Catmull-Rom filter (sharper than a bilinear one), its 4x4
+    // texels read as 3x3 bilinear samples
+    vec2 pos = gl_FragCoord.xy / out_size * vec2(size) - 0.5;
+    vec2 base = floor(pos);
+    vec2 f = pos - base;
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3 = f * f * (-0.5 + 0.5 * f);
+    vec2 w12 = w1 + w2;
+    vec2 inv = 1.0 / vec2(size);
+    vec2 t0 = (base - 0.5) * inv, t12 = (base + 0.5 + w2 / w12) * inv, t3 = (base + 2.5) * inv;
+    vec3 c = (texture(scene, vec2(t0.x, t0.y)).rgb * w0.x + texture(scene, vec2(t12.x, t0.y)).rgb * w12.x
+              + texture(scene, vec2(t3.x, t0.y)).rgb * w3.x) * w0.y;
+    c += (texture(scene, vec2(t0.x, t12.y)).rgb * w0.x + texture(scene, vec2(t12.x, t12.y)).rgb * w12.x
+          + texture(scene, vec2(t3.x, t12.y)).rgb * w3.x) * w12.y;
+    c += (texture(scene, vec2(t0.x, t3.y)).rgb * w0.x + texture(scene, vec2(t12.x, t3.y)).rgb * w12.x
+          + texture(scene, vec2(t3.x, t3.y)).rgb * w3.x) * w3.y;
+    return max(c, 0.0);  // (the filter can overshoot a little at sharp edges)
+}
 void main() {
     ivec2 p = ivec2(gl_FragCoord.xy);
-    vec3 c = finish(texelFetch(scene, p, 0).rgb);
+    vec3 c = finish(scene_color(p));
     ivec3 cell = ivec3(c * 31.0 + 0.5);
     uvec2 pair = texelFetch(lut, ivec2(cell.r + 32 * (cell.b & 7), cell.g + 32 * (cell.b >> 3)), 0).rg;
     vec3 lab = oklab(c);
@@ -2042,6 +2066,8 @@ class Renderer:
         self.ctx = ctx
         self.fov = fov
         self.size = None
+        self.render_scale = 1.0  # share of the screen's width and height the 3D view is drawn at
+        self.gpu_time = None  # seconds the graphics card spent on the last frame (None if it can't tell)
         self.fbos = []
         self.render_distance = 256  # how far the world is seen, in chunks (blocks, then coarser and coarser)
         self.fancy = True  # shadows and anti-aliasing
@@ -2083,6 +2109,10 @@ class Renderer:
             self.shadows = Shadows(ctx, self.texture)
             self.palette = Palette(ctx, fixed)
             self.palette.apply()
+            try:  # measures how long the graphics card takes to draw a frame
+                self.timer = ctx.query(time=True)
+            except moderngl.Error:
+                self.timer = None
             for p in (self.program, self.lod_program, self.cloud_program):
                 set_uniforms(p, {"atlas": ATLAS_UNIT, "clouds": CLOUDS_UNIT, "tile_avg": TILE_AVG_UNIT,
                                  "shadow_near": SHADOW_UNITS[0],
@@ -2094,6 +2124,20 @@ class Renderer:
         """Draw frames of a new size (when the resolution setting changes)."""
         self.size = (width, height)
         self.make_framebuffers()
+
+    @property
+    def scene_size(self):
+        """Size the 3D view is drawn at, before it is scaled up to the screen's size."""
+        width, height = self.size
+        return max(1, round(width * self.render_scale)), max(1, round(height * self.render_scale))
+
+    def set_render_scale(self, scale):
+        """Draw the 3D view at this share of the screen's width and height (0.5-1): fewer pixels to
+        draw, scaled up afterward. The palette and the dithering stay at the screen's size."""
+        scale = min(max(float(scale), 0.25), 1.0)
+        if scale != self.render_scale:
+            self.render_scale = scale
+            self.make_framebuffers()
 
     def set_fancy(self, fancy):
         """Shadows and anti-aliasing on or off."""
@@ -2115,7 +2159,6 @@ class Renderer:
                 res.release()
 
     def make_framebuffers(self):
-        width, height = self.size
         ctx = self.ctx
         with ctx:
             for obj in self.fbos:
@@ -2123,10 +2166,13 @@ class Renderer:
                     if part is not None:
                         part.release()
             # The frame in full color (with several samples per pixel for anti-aliasing), the same
-            # frame with one color per pixel, and the palette indices read back for Pyxel
+            # frame with one color per pixel, and the palette indices read back for Pyxel. The
+            # first two are smaller with a render scale under 1.
+            width, height = self.scene_size
             samples = MSAA_SAMPLES if self.fancy else 0
             self.scene_texture = ctx.texture((width, height), 4, dtype="f2")
-            self.scene_texture.filter = (moderngl.NEAREST, moderngl.NEAREST)
+            self.scene_texture.filter = (moderngl.LINEAR, moderngl.LINEAR)  # (read between texels when scaled up)
+            self.scene_texture.repeat_x = self.scene_texture.repeat_y = False
             self.resolved_fbo = ctx.framebuffer(color_attachments=[self.scene_texture])
             if samples:
                 self.scene_fbo = ctx.framebuffer(
@@ -2137,6 +2183,7 @@ class Renderer:
                 self.scene_fbo = ctx.framebuffer(color_attachments=[self.scene_texture],
                                                  depth_attachment=ctx.depth_renderbuffer((width, height)))
                 self.fbos = [self.scene_fbo]
+            width, height = self.size
             self.index_texture = ctx.texture((width, height), 1, dtype="f1")
             self.index_fbo = ctx.framebuffer(color_attachments=[self.index_texture])
             self.fbos.append(self.index_fbo)
@@ -2209,87 +2256,101 @@ class Renderer:
             "block_fade": (0.5 * fade_end, float(fade_end)), "cam_cell": cell,
             "cam_in_cell": (float(cam[0] - 2 * cell[0]), float(cam[2] - 2 * cell[1])),
             "cam_frac": (float(cam[0] % 256.0), float(cam[2] % 256.0)), "cam_x": float(cam[0]),
-            "px_per_block": height / (2 * math.tan(math.radians(self.fov) / 2)),
+            "px_per_block": self.scene_size[1] / (2 * math.tan(math.radians(self.fov) / 2)),
         })
         self.far.view_distance = self.view_distance
         finish = {"dim": float(self.dim), "tint": (0.75, 0.9, 1.0) if self.underwater else (1.0, 1.0, 1.0)}
         # Every OpenGL call, setting shader values included, must happen inside `with self.ctx`:
         # outside it, Pyxel's own context is the current one (with a window; not in headless tests)
         with self.ctx:
-            ctx = self.ctx
-            self.palette.apply()
-            if self.chunks.ready_changed:
-                self.chunks.ready_texture.write(self.chunks.ready.tobytes())
-                self.chunks.ready_changed = False
-            if self.fancy:
-                values.update(self.shadows.update(cam, env["light_dir"], self.chunks, self.far, self.program,
-                                                  self.lod_program))
-                self.shadows.use()
-            for p in (self.program, self.lod_program, self.sky_program, self.cloud_program):
-                set_uniforms(p, values)
-            self.clouds.use(CLOUDS_UNIT)
-            fbo = self.scene_fbo
-            fbo.use()
-            fbo.clear(depth=1.0)
-
-            ctx.disable(moderngl.DEPTH_TEST)
-            self.sky_program["inv_vp"].write(matrix_bytes(np.linalg.inv(far_vp)))
-            self.sky_vao.render(moderngl.TRIANGLE_STRIP)
-
-            # Distant terrain and far clouds first, then clear the depth (not the colors) and draw
-            # the blocks on top: each pass gets the depth precision it needs
-            ctx.enable(moderngl.DEPTH_TEST)
-            if None not in self.far.origins:
-                self.far.render(far_vp, cam, self.chunks)
-            near_radius = (self.sim_distance + 2) * CHUNK
-            self.render_clouds(far_vp, near_radius, near_pass=False)
-            fbo.color_mask = (False, False, False, False)
-            fbo.clear(depth=1.0)
-            fbo.color_mask = (True, True, True, True)
-            fbo.use()  # masks only come back into effect when the framebuffer is bound
-
-            self.texture.use(ATLAS_UNIT)
-            self.far.tile_avg.use(TILE_AVG_UNIT)
-            self.program["vp"].write(matrix_bytes(near_vp))
-            self.program["mode"] = 0
-            self.drawn = self.chunks.find_in_view(near_vp, cam)
-            self.chunks.render()
-            ctx.enable(moderngl.BLEND)
-            ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
-            fbo.depth_mask = False
-            fbo.use()
-            self.program["mode"] = 1
-            self.chunks.render(water=True)
-            ctx.disable(moderngl.BLEND)
-            fbo.depth_mask = True
-            fbo.use()
-            self.render_clouds(near_vp, near_radius, near_pass=True)
-
-            if target:
-                corners = np.array([(x, y, z) for x in (0, 1) for y in (0, 1) for z in (0, 1)], dtype=np.float64)
-                corners = (corners - 0.5) * 1.004 + 0.5 + np.array(target) - np.array(cam)
-                lines = corners[np.array(CUBE_EDGES).ravel()]
-                self.outline_vbo.write(lines.astype("f4").tobytes())
-                self.outline_program["vp"].write(matrix_bytes(near_vp))
-                self.outline_vao.render(moderngl.LINES)
-
-            # Down to one color per pixel, then to Pyxel's palette
-            ctx.disable(moderngl.DEPTH_TEST)
-            if fbo is not self.resolved_fbo:
-                ctx.copy_framebuffer(self.resolved_fbo, fbo)
-            self.scene_texture.use(0)
-            self.palette.texture.use(1)
-            self.palette.lut.use(2)
-            set_uniforms(self.post_program, {"scene": 0, "palette": 1, "lut": 2, **finish})
-            self.index_fbo.use()
-            self.post_vao.render(moderngl.TRIANGLE_STRIP)
-            adapt = self.palette.wants_samples()
-            if adapt:
-                self.palette.sample(self.scene_texture, finish)
+            if self.timer is not None:
+                with self.timer:
+                    adapt = self.draw_frame(values, finish, far_vp, near_vp, cam, target)
+            else:
+                adapt = self.draw_frame(values, finish, far_vp, near_vp, cam, target)
             frame = np.frombuffer(self.index_fbo.read(components=1, dtype="f1"), dtype=np.uint8)
             if adapt:
                 self.palette.adapt()  # for the next frame: this one was drawn for the current palette
+            # (read after the frame: the graphics card has finished it)
+            self.gpu_time = self.timer.elapsed / 1e9 if self.timer is not None else None
         screen[:, :] = frame.reshape(height, width)[::-1]  # OpenGL rows go bottom-up
+
+    def draw_frame(self, values, finish, far_vp, near_vp, cam, target):
+        """The OpenGL work of render(): the frame in palette indices into self.index_fbo. Returns
+        whether the palette sampled it (to adapt once the frame is read back)."""
+        ctx = self.ctx
+        env = self.environment
+        self.palette.apply()
+        if self.chunks.ready_changed:
+            self.chunks.ready_texture.write(self.chunks.ready.tobytes())
+            self.chunks.ready_changed = False
+        if self.fancy:
+            values.update(self.shadows.update(cam, env["light_dir"], self.chunks, self.far, self.program,
+                                              self.lod_program))
+            self.shadows.use()
+        for p in (self.program, self.lod_program, self.sky_program, self.cloud_program):
+            set_uniforms(p, values)
+        self.clouds.use(CLOUDS_UNIT)
+        fbo = self.scene_fbo
+        fbo.use()
+        fbo.clear(depth=1.0)
+
+        ctx.disable(moderngl.DEPTH_TEST)
+        self.sky_program["inv_vp"].write(matrix_bytes(np.linalg.inv(far_vp)))
+        self.sky_vao.render(moderngl.TRIANGLE_STRIP)
+
+        # Distant terrain and far clouds first, then clear the depth (not the colors) and draw
+        # the blocks on top: each pass gets the depth precision it needs
+        ctx.enable(moderngl.DEPTH_TEST)
+        if None not in self.far.origins:
+            self.far.render(far_vp, cam, self.chunks)
+        near_radius = (self.sim_distance + 2) * CHUNK
+        self.render_clouds(far_vp, near_radius, near_pass=False)
+        fbo.color_mask = (False, False, False, False)
+        fbo.clear(depth=1.0)
+        fbo.color_mask = (True, True, True, True)
+        fbo.use()  # masks only come back into effect when the framebuffer is bound
+
+        self.texture.use(ATLAS_UNIT)
+        self.far.tile_avg.use(TILE_AVG_UNIT)
+        self.program["vp"].write(matrix_bytes(near_vp))
+        self.program["mode"] = 0
+        self.drawn = self.chunks.find_in_view(near_vp, cam)
+        self.chunks.render()
+        ctx.enable(moderngl.BLEND)
+        ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
+        fbo.depth_mask = False
+        fbo.use()
+        self.program["mode"] = 1
+        self.chunks.render(water=True)
+        ctx.disable(moderngl.BLEND)
+        fbo.depth_mask = True
+        fbo.use()
+        self.render_clouds(near_vp, near_radius, near_pass=True)
+
+        if target:
+            corners = np.array([(x, y, z) for x in (0, 1) for y in (0, 1) for z in (0, 1)], dtype=np.float64)
+            corners = (corners - 0.5) * 1.004 + 0.5 + np.array(target) - np.array(cam)
+            lines = corners[np.array(CUBE_EDGES).ravel()]
+            self.outline_vbo.write(lines.astype("f4").tobytes())
+            self.outline_program["vp"].write(matrix_bytes(near_vp))
+            self.outline_vao.render(moderngl.LINES)
+
+        # Down to one color per pixel, then to Pyxel's palette
+        ctx.disable(moderngl.DEPTH_TEST)
+        if fbo is not self.resolved_fbo:
+            ctx.copy_framebuffer(self.resolved_fbo, fbo)
+        self.scene_texture.use(0)
+        self.palette.texture.use(1)
+        self.palette.lut.use(2)
+        set_uniforms(self.post_program, {"scene": 0, "palette": 1, "lut": 2,
+                                         "out_size": tuple(map(float, self.size)), **finish})
+        self.index_fbo.use()
+        self.post_vao.render(moderngl.TRIANGLE_STRIP)
+        adapt = self.palette.wants_samples()
+        if adapt:
+            self.palette.sample(self.scene_texture, finish)
+        return adapt
 
     def render_clouds(self, vp, near_radius, near_pass):
         ctx = self.ctx
