@@ -85,8 +85,11 @@ def _ao_offsets():
 AO_OFFSETS = _ao_offsets()  # [face] -> (4 corners, 3 neighbors)
 
 # One builder process per core, minus what the game itself, its window and the GL driver need:
-# the workers are where the CPU-heavy work (terrain generation, meshing) happens
-WORKERS = max(3, (os.cpu_count() or 4) - 4)
+# the workers are where the CPU-heavy work (terrain generation, meshing) happens. At most 8:
+# os.cpu_count() counts hardware threads, twice the cores on most PC processors (20 on a Ryzen AI 9
+# H 365 with 10 cores), and 16 workers there did no better than 8 while starting twice as many
+# processes, each with its own copy of the world (6 on an M1 Pro, as before)
+WORKERS = max(3, min((os.cpu_count() or 4) - 4, 8))
 IN_FLIGHT = 4  # columns asked of each worker at a time: enough to keep it busy, few enough to follow the player
 
 

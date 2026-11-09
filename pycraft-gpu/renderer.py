@@ -85,20 +85,17 @@ SHADOW_UNITS = (4, 5, 6)
 DATA_UNIT = 7
 WET_UNIT = 8
 TILE_AVG_UNIT = 9
+BLOCK_TILES_UNIT = 10
 
 # --- Shader code shared by several programs ---------------------------------------------------
 
-# Block numbers, the atlas tile of each face of each block, and the badlands' rock layers, for the
-# distant terrain's shaders
+# Block numbers and the badlands' rock layers, for the distant terrain's shaders. The atlas tile of
+# each face of each block is a small texture (Renderer.block_tiles), not a constant array: picked
+# per pixel by block, a constant array is copied into every pixel's scratch memory by some drivers
+# (AMD Radeon 880M on Windows: the distant terrain took 73 ms of a frame at 2560x1440, 8.8 ms now)
 BLOCK_IDS = "".join("const int %s = %d;\n" % (name, getattr(B, name)) for name in (
     "GRASS", "DIRT", "STONE", "PODZOL", "MUD", "MOSS", "GRAVEL", "SNOW", "WATER", "ICE", "TERRACOTTA", "RED_SAND",
     "LEAVES", "SPRUCE_LEAVES", "BIRCH_LEAVES", "JUNGLE_LEAVES", "ACACIA_LEAVES"))
-# Only the blocks the terrain generator places (numbered up to MOSS): the building blocks and the plants
-# never show in the distant terrain, and a longer constant array makes its shader much slower on some
-# graphics cards (AMD: from 46 to 109 ms a frame at 2560x1440 with all 101 blocks)
-TERRAIN_BLOCKS = B.MOSS + 1
-BLOCK_TILES_GLSL = "const int BLOCK_TILES[%d] = int[](%s);\n" % (
-    TERRAIN_BLOCKS * 6, ", ".join(str(int(t)) for t in BLOCK_TILES[:TERRAIN_BLOCKS].ravel()))
 BANDS_GLSL = "const int BANDS[%d] = int[](%s);\n" % (len(T.BANDS), ", ".join(str(int(b)) for b in T.BANDS))
 
 LIGHT = """
@@ -567,7 +564,8 @@ flat in vec2 v_corner;
 flat in vec2 v_aux;
 flat in int v_flags;
 out vec4 out_color;
-""" + LIGHT + CLOUDS + SHADOWS + WAVES + BLOCK_SHADING + BLOCK_IDS + BLOCK_TILES_GLSL + BANDS_GLSL + """
+uniform usampler2D block_tiles;  // 6 x NUM_BLOCKS: the atlas tile of each face of each block
+""" + LIGHT + CLOUDS + SHADOWS + WAVES + BLOCK_SHADING + BLOCK_IDS + BANDS_GLSL + """
 // The very top of the column of a cell: worked out per pixel, only where a top needs its ambient
 // occlusion — a cell is a few pixels wide at the distances where the cost matters
 float lod_top(ivec2 cell) {
@@ -602,7 +600,7 @@ void main() {
     if (block == 255) {
         albedo = v_tint;
     } else {
-        int tile = BLOCK_TILES[block * 6 + v_face];
+        int tile = int(texelFetch(block_tiles, ivec2(v_face, block), 0).r);
         bool leaves = block == LEAVES || block == SPRUCE_LEAVES || block == BIRCH_LEAVES || block == JUNGLE_LEAVES
                       || block == ACACIA_LEAVES;
         vec3 tint = block == GRASS || block == WATER ? v_tint
@@ -764,12 +762,12 @@ int bayer8(ivec2 p) {  // ordered dithering threshold, 0-63
     for (int i = 0; i < 3; i++) v = (v << 2) | (((xy >> i) & 1) << 1) | ((p.y >> i) & 1);
     return v;
 }
-vec3 scene_color(ivec2 p) {
+vec3 scene_color(vec2 at) {
     ivec2 size = textureSize(scene, 0);
-    if (size == ivec2(out_size)) return texelFetch(scene, p, 0).rgb;
+    if (size == ivec2(out_size)) return texelFetch(scene, ivec2(at), 0).rgb;
     // Drawn smaller: scaled up with a Catmull-Rom filter (sharper than a bilinear one), its 4x4
     // texels read as 3x3 bilinear samples
-    vec2 pos = gl_FragCoord.xy / out_size * vec2(size) - 0.5;
+    vec2 pos = at / out_size * vec2(size) - 0.5;
     vec2 base = floor(pos);
     vec2 f = pos - base;
     vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
@@ -788,8 +786,11 @@ vec3 scene_color(ivec2 p) {
     return max(c, 0.0);  // (the filter can overshoot a little at sharp edges)
 }
 void main() {
-    ivec2 p = ivec2(gl_FragCoord.xy);
-    vec3 c = finish(scene_color(p));
+    // Upside down: OpenGL's rows go bottom-up, Pyxel's top-down, so the frame read back is
+    // already in Pyxel's order
+    vec2 at = vec2(gl_FragCoord.x, out_size.y - gl_FragCoord.y);
+    ivec2 p = ivec2(at);
+    vec3 c = finish(scene_color(at));
     ivec3 cell = ivec3(c * 31.0 + 0.5);
     uvec2 pair = texelFetch(lut, ivec2(cell.r + 32 * (cell.b & 7), cell.g + 32 * (cell.b >> 3)), 0).rg;
     vec3 lab = oklab(c);
@@ -2166,6 +2167,11 @@ class Renderer:
                                             fragment_shader=POST_FRAGMENT_SHADER)
             self.texture = ctx.texture((atlas.shape[1], atlas.shape[0]), 4, atlas.tobytes())
             self.texture.filter = (moderngl.NEAREST, moderngl.NEAREST)
+            # The atlas tile of each face (x) of each block (y), for the distant terrain's shader
+            self.block_tiles = ctx.texture((6, len(BLOCK_TILES)), 1, np.asarray(BLOCK_TILES, "u2").tobytes(),
+                                           dtype="u2")
+            self.block_tiles.filter = (moderngl.NEAREST, moderngl.NEAREST)
+            self.lod_program["block_tiles"] = BLOCK_TILES_UNIT
             self.clouds = ctx.texture((512, 512), 1, cloud_texture().tobytes(), dtype="f4")
             self.clouds.filter = (moderngl.LINEAR_MIPMAP_LINEAR, moderngl.LINEAR)
             self.clouds.build_mipmaps()
@@ -2341,12 +2347,14 @@ class Renderer:
                     adapt = self.draw_frame(values, finish, far_vp, near_vp, cam, target)
             else:
                 adapt = self.draw_frame(values, finish, far_vp, near_vp, cam, target)
-            frame = np.frombuffer(self.index_fbo.read(components=1, dtype="f1"), dtype=np.uint8)
+            # Straight into Pyxel's screen: the last shader drew the rows top-down, in Pyxel's order
+            # (reading into a new array, then flipping it into the screen, took 2 ms more a frame
+            # at 2560x1440)
+            self.index_fbo.read_into(screen, components=1, dtype="f1")
             if adapt:
                 self.palette.adapt()  # for the next frame: this one was drawn for the current palette
             # (read after the frame: the graphics card has finished it)
             self.gpu_time = self.timer.elapsed / 1e9 if self.timer is not None else None
-        screen[:, :] = frame.reshape(height, width)[::-1]  # OpenGL rows go bottom-up
 
     def draw_frame(self, values, finish, far_vp, near_vp, cam, target):
         """The OpenGL work of render(): the frame in palette indices into self.index_fbo. Returns
@@ -2354,6 +2362,7 @@ class Renderer:
         ctx = self.ctx
         env = self.environment
         self.palette.apply()
+        self.block_tiles.use(BLOCK_TILES_UNIT)  # (the shadow maps draw the distant terrain too)
         if self.chunks.ready_changed:
             self.chunks.ready_texture.write(self.chunks.ready.tobytes())
             self.chunks.ready_changed = False
