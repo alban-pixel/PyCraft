@@ -57,8 +57,12 @@ a real graphics card driver.
   in the world
 - Walking, sprinting, jumping, swimming and flying (and flying fast)
 - An 8-minute day and night cycle, with a sun, a moon and sunsets
-- A title screen, a pause menu and a block inventory
-- Settings: resolution, frame rate, render distance, LOD quality, graphics and music
+- A title screen, a pause menu and a block inventory with tabs: Nature, Building, Colors, Plants
+  and Special
+- Settings: resolution, interface size, 3D resolution, frame rate, render distance, LOD quality,
+  graphics and music
+- Automatic scaling: the menus and the HUD keep the same size at every resolution, and the 3D view
+  is drawn at a lower resolution while the game can't keep up with the frame rate
 - Saving: the game saves when you leave through the menu, and every 2 minutes
 - Sound effects and generated background music
 
@@ -75,11 +79,12 @@ a real graphics card driver.
 | Left click | Break block (hold to repeat) |
 | Right click | Place block |
 | 1-9 / mouse wheel | Choose a hotbar slot |
-| E | All blocks: click one to put it in the selected slot. If they don't all fit on the screen, they go on pages: mouse wheel, Left/Right, Page Up/Down or the arrows under the slots turn them |
+| E | All blocks: click one to put it in the selected slot (click a hotbar slot to select it). Tab / Shift+Tab or a click change the tab. If a tab's blocks don't all fit on the screen, they go on pages: mouse wheel, Left/Right, Page Up/Down or the arrows under the slots turn them |
 | Esc | Pause menu (settings, save and quit) |
 | Tab | Release / capture the mouse |
-| F3 | FPS, position, altitude, biome, chunks and seed |
-| H | Show / hide help |
+| F3 | FPS, the size the 3D view is drawn at and the graphics card's time, position, altitude, biome, chunks and seed |
+| H | Show / hide the controls |
+| T or / | Chat: `/tp x y z`, `/time set day\|noon\|sunset\|night\|midnight` |
 
 The save file, `world2.npz`, is in Pyxel's user data folder
 (`pyxel.user_data_dir("PyCraft", "PyCraft GPU")`). Only the blocks you changed are saved: the rest
@@ -89,21 +94,34 @@ automatic save. A `world.npz` from the earlier, smaller version of the game is l
 ## Settings
 
 Open **Settings** from the title screen or the pause menu. Click a setting (or press Right) for its
-next value, right-click it (or press Left) for the previous one. Changes apply right away and are
-saved in `settings.json`, next to the save file.
+next value; right-click it, click its `<` (or press Left) for the previous one. The line under the
+settings explains the one selected. Changes apply right away and are saved in `settings.json`, next
+to the save file.
 
 | Setting | Values |
 |---|---|
 | Resolution | 320x180, 384x216, 480x270, 640x360, 800x450, 960x540, 1280x720 (default), 1600x900, 1920x1080, 2560x1440 |
+| Interface size | Auto (default), or 1x up to the largest that leaves the menus room (the screen's height / 180) |
+| 3D resolution | Auto (default), 100%, 75%, 50% of the resolution, in width and in height |
 | Frame rate | 30, 60 (default), 75, 120, 144, 165, 240 FPS |
 | Render distance | 32, 64, 128, 256 (default), 512 chunks of 16 blocks; the distant terrain goes on beyond |
 | LOD quality | low (default), medium, high, ultra: the detail of the distant terrain — grid width from 127 to 511 columns, 6 to 8 levels, finest column 1 or 2 blocks |
 | Graphics | fancy (default): shadows and anti-aliasing; fast: without them, for slower graphics cards |
 | Music | on / off |
 
-A higher resolution makes the 3D view sharper. The HUD and menus grow with it (each of their pixels
-covers 2 to 5 pixels of the screen above 960x540), so they keep about the same size and stay
-readable. The mouse turns the same amount for the same hand movement at every resolution. On
+A higher resolution makes the 3D view sharper. With the interface size on Auto, the HUD and menus
+grow with it (each of their pixels covers 2 to 5 pixels of the screen above 960x540), so they keep
+about the same size and stay readable; a fixed size makes them smaller or bigger.
+
+With the 3D resolution on **Auto**, the game measures every frame (and, with an OpenGL timer, how
+long the graphics card took for it). When the frames take longer than the frame rate allows and the
+graphics card is a large part of that, the 3D view is drawn smaller, by steps of 5% from 100% down
+to 50% (never fewer than 540 lines). When frames have time to spare it grows back, one step every
+1.5 seconds. The menus, the HUD and the dithering always stay at the full resolution. In a test at
+2560x1440 with fast graphics on the AMD Radeon 880M, a frame took 78 ms at 100% and 33 ms on Auto
+(drawn at 1280x720): part of the work (the distant terrain's shapes) doesn't shrink with the
+picture. The F3 screen shows the size the 3D view is drawn at.
+ The mouse turns the same amount for the same hand movement at every resolution. On
 Windows, the game uses the screen's real pixels: on a high-DPI screen, Windows would otherwise draw
 the window at a lower resolution and stretch it, blurred.
 
@@ -136,7 +154,9 @@ pyxel.screen  The frame is copied into Pyxel's screen, then Pyxel draws the HUD 
 - `blocks.py`: block types, their properties (solid, see-through...) and the textures, generated by
   code into one 256x256 "atlas" (16x16 tiles of 16x16 pixels)
 - `player.py`: walking, jumping, swimming, flying, and collisions with blocks
-- `ui.py`: draws the HUD and menus scaled up at high resolutions
+- `ui.py`: draws the HUD and menus scaled up at high resolutions, and their parts: panels, buttons,
+  setting rows, progress bars, tooltips
+- `autoscale.py`: picks the 3D view's render scale from the time frames take (3D resolution: Auto)
 - `main.py`: the Pyxel app: screens, input, breaking and placing, day/night, saving, sound and HUD
 
 ### The terrain
@@ -218,7 +238,10 @@ still view doesn't flicker.
 Pyxel's frame rate can't change once its window is open, so the game starts Pyxel with a very high
 one and paces the frames itself (`App.run`, with `pyxel.flip`). Movement uses the real time between
 frames, so the game runs at the same speed at any frame rate. The resolution changes with
-`pyxel.resize`, and the renderer then makes a new off-screen image of the same size.
+`pyxel.resize`, and the renderer then makes a new off-screen image of the same size. Under 100%
+3D resolution, the full-color image is smaller: the shader that turns it into palette colors scales
+it up first, with a Catmull-Rom filter (sharper than a bilinear one, from 9 bilinear samples), so
+the dithering stays at the screen's own resolution.
 
 ## Limits
 
