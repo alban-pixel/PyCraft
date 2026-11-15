@@ -186,22 +186,51 @@ def wanted_sections(world, cx, cz):
 
 # --- Worker processes ----------------------------------------------------------------------------
 
-def _worker(tasks, results):
+def _help_sampler(world, shared, helpers):
+    """With nothing to build, take one chunk of the distant terrain's sampling off the sampler's
+    hands (see lod.Sampler._sample_shared): a whole level to sample is seconds of work, and
+    this process has the world it takes, the blocks the player changed included."""
+    work, done, current = shared
+    try:
+        call, i, seed, spacing, colors, level, gx, gz, sub = work.get_nowait()
+    except queue.Empty:
+        return
+    rec = None
+    try:
+        if call[0] == current.value and world is not None and world.seed == seed:
+            import lod  # (not at the top: lod imports this module)
+            key = (id(world), spacing)
+            if key not in helpers:
+                helpers.clear()
+                helpers[key] = lod.Sampler(world, spacing, 0, 0, colors, threads=1)
+            rec = helpers[key]._sample_chunk(level, gx, gz, sub)
+    finally:
+        done.put((call, i, rec))  # (None: not done here — the sampler does it itself)
+
+
+def _worker(tasks, results, shared=None):
     """Main loop of a worker process. Messages:
     ("world", generation, seed, edited sections) start over with another world
     ("set", x, y, z, block)                      a block the player changed
     ("columns", generation, [column])            send these columns back (for the game's own world)
     ("build", generation, (cx, cy, cz) of the camera, [(column, version, sections done, caves)])
+    shared: the queues where the distant terrain's sampler leaves work for idle builders.
     """
     world = generation = None
     forget_center = None
+    helpers = {}
     parent = multiprocessing.parent_process()
     while True:
         try:
-            msg = tasks.get(timeout=1.0)
+            msg = tasks.get(timeout=0.05 if shared else 1.0)
         except queue.Empty:
             if parent is not None and not parent.is_alive():
                 return  # the game is gone
+            if shared:
+                try:
+                    _help_sampler(world, shared, helpers)
+                except Exception:  # noqa: BLE001 - reported by the game
+                    results.put(("error", traceback.format_exc()))
             continue
         try:
             if msg[0] == "world":
@@ -236,14 +265,17 @@ def _worker(tasks, results):
 class Builders:
     """The game's side of the worker processes."""
 
-    def __init__(self, count=WORKERS):
+    def __init__(self, count=WORKERS, shared=None):
+        """shared: where the distant terrain's sampler leaves work for the builders with nothing
+        to build (lod.SamplerProcess.shared)."""
         ctx = multiprocessing.get_context("spawn")
         self.results = ctx.Queue()
         self.tasks = [ctx.Queue() for _ in range(count)]
         self.in_flight = [set() for _ in range(count)]  # columns each worker is building
         self.generation = 0
         for tasks in self.tasks:
-            ctx.Process(target=_worker, args=(tasks, self.results), daemon=True, name="terrain builder").start()
+            ctx.Process(target=_worker, args=(tasks, self.results, shared), daemon=True,
+                        name="terrain builder").start()
 
     def set_world(self, world):
         """Start building another world (with the sections the player changed in it)."""

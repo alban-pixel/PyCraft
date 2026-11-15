@@ -1106,12 +1106,15 @@ class App:
         sw, sh = r.scene_size
         gpu = "" if r.gpu_time is None else f"  GPU {r.gpu_time * 1000:.1f} ms"
         auto = ", auto" if self.settings["render_scale"] == "auto" else ""
+        first, last = r.far.shown
+        far = f"levels {first + 1}-{last + 1} of {r.far.levels()}" if last >= first else "not ready yet"
         lines = [f"FPS {self.fps:4.0f} / {self.settings['fps']}  {pyxel.width}x{pyxel.height}"
                  + ("" if self.settings["fancy"] else "  fast graphics"),
                  f"3D drawn at {sw}x{sh} ({r.render_scale:.0%}{auto}){gpu}",
                  f"XYZ {px:7.1f} {py:6.1f} {pz:7.1f}  Altitude {py - SEA_LEVEL - 1:5.0f}",
                  f"Biome {biome}",
                  f"Chunks {r.drawn} drawn / {len(r.chunks.meshes)} built",
+                 f"Distant terrain: {far}",
                  f"Time {hours:02d}:00  Seed {self.world.seed}" + ("  FLY" if self.player.flying else "")]
         return self.draw_text_panel(y, [(line, TEXT) for line in lines])
 

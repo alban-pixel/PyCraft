@@ -28,11 +28,11 @@ import time
 import moderngl
 import numpy as np
 
-from blocks import (ACACIA_LEAVES, ALL_LEAVES, ATLAS_TILES, BIRCH_LEAVES, BLOCK_TILES, ICE, JUNGLE_LEAVES, LEAVES,
-                    SPRUCE_LEAVES, TILE, TINT_ALPHA, WATER)
+from blocks import ALL_LEAVES, ATLAS_TILES, BLOCK_TILES, TILE, TINT_ALPHA
 import blocks as B
 import terrain as T
-from builder import IN_FLIGHT, TINT, WATER_SURFACE, WORKERS, Builders, mesh_section
+from builder import IN_FLIGHT, WORKERS, Builders, mesh_section
+from lod import SamplerProcess, oklab_to_srgb, srgb_to_oklab
 from terrain import CHUNK, SEA_LEVEL, WORLD_HEIGHT
 
 LOD_QUALITIES = {  # name -> (width of a column on the finest level in blocks, grid points per side, levels)
@@ -42,29 +42,31 @@ LOD_QUALITIES = {  # name -> (width of a column on the finest level in blocks, g
     "ultra": (1, 512, 6),  # one column per block as far as the blocks go, every level twice as wide
 }
 LOD_QUALITY_NAMES = list(LOD_QUALITIES)
-LOD_STRIPS_PER_FRAME = 4
+# A level's grid follows the camera by steps of 4 to 16 cells, along x and along z on their own:
+# a strip of new cells a few cells wide costs the sampler half as much per cell as thin ones (it
+# also samples the points around the strip, for the slopes), and a job stays short
+LOD_STEP_MIN, LOD_STEP_MAX = 4, 16
 LOD_MARGIN = 4  # columns along the edge of a level that the next, coarser one always draws
 LOD_BAND = 24  # columns over which a level gives way to the next one, cell by cell
-LOD_SUB = 2  # directly sampled cells: sub-samples per side of a cell's footprint, aggregated together
-LOD_DIRTY_PER_FRAME = 256  # cells of inherited change resampled per frame at most
-CROWN_MIN_COV = 38  # canopy coverage (of 255) under which a cell gets no crown of leaves
-CANOPY_SHADE = 0.3  # how much a full canopy darkens the ground under it
 CROWN_DARK = 0.45  # how dark the leaves of an open crown are (its inner air folding into the color)
-PLANT_MIX = 0.3  # share of a plant's color mixed into the ground it grows on
+CROWN_RISE = 48  # blocks over which the crowns rise to their height, past the blocks: a slope, not a wall of leaves
 WET_ALPHA_MIN = 0.35  # opacity of the water of a cell only a little wet (1: like a full one)
-CUSTOM = 255  # "block" of a column carrying its own color: the blocks the player changed
 FAR_LIMIT = 8000.0  # the coarsest level reaches about 8 km
 SIM_DISTANCES = {32: 6, 64: 8, 128: 10, 256: 12, 512: 12}  # render distance -> radius drawn as blocks (chunks)
-CUBE_FACES = (  # (normal, 6 corners) for the 5 visible faces of a unit cube, corners CCW seen from outside
-    ((0, 1, 0), ((0, 1, 0), (1, 1, 1), (1, 1, 0), (0, 1, 0), (0, 1, 1), (1, 1, 1))),
-    ((1, 0, 0), ((1, 1, 0), (1, 0, 1), (1, 0, 0), (1, 1, 0), (1, 1, 1), (1, 0, 1))),
-    ((-1, 0, 0), ((0, 1, 1), (0, 0, 0), (0, 0, 1), (0, 1, 1), (0, 1, 0), (0, 0, 0))),
-    ((0, 0, 1), ((0, 1, 1), (0, 0, 1), (1, 0, 1), (0, 1, 1), (1, 0, 1), (1, 1, 1))),
-    ((0, 0, -1), ((1, 1, 0), (1, 0, 0), (0, 0, 0), (1, 1, 0), (0, 0, 0), (0, 1, 0))),
+COLUMN_FACES = (  # (normal, 4 corners) of a column's top and of its four sides
+    ((0, 1, 0), ((0, 1, 0), (0, 1, 1), (1, 1, 1), (1, 1, 0))),
+    ((1, 0, 0), ((1, 1, 0), (1, 1, 1), (1, 0, 1), (1, 0, 0))),
+    ((0, 0, 1), ((0, 1, 1), (0, 0, 1), (1, 0, 1), (1, 1, 1))),
+    ((-1, 0, 0), ((0, 1, 0), (0, 0, 0), (0, 0, 1), (0, 1, 1))),
+    ((0, 0, -1), ((0, 1, 0), (1, 1, 0), (1, 0, 0), (0, 0, 0))),
 )
+LOD_TILES = 8  # a level's grid is drawn as 8x8 tiles: only those that may be in view are sent to the card
 READY_SIZE = 64  # the map of columns drawn as blocks covers 64x64 chunks around the camera
 SHADOW_SIZE = 2048  # texels per side of each shadow map
 SHADOW_DEPTH = 4500.0  # the shadow maps hold what is less than this far from the camera along the light
+# A map whose content changed is drawn again at most this often (seconds; the blocks' map, then the
+# distant terrain's two): while the player flies, new meshes and new cells land many times a second
+SHADOW_EVERY = (0.1, 0.5, 0.5)
 TERRAIN_SHADOW_HALF = (1024.0, 8192.0)  # half the width of the two shadow maps of the distant terrain
 CLOUD_HEIGHT = SEA_LEVEL + 940.0  # high mountains rise through the clouds
 CLOUD_PERIOD = 4096.0  # the cloud pattern repeats every 4096 blocks
@@ -86,6 +88,8 @@ DATA_UNIT = 7
 WET_UNIT = 8
 TILE_AVG_UNIT = 9
 BLOCK_TILES_UNIT = 10
+COARSE_UNIT = 11
+FINE_UNIT = 12
 
 # --- Shader code shared by several programs ---------------------------------------------------
 
@@ -362,8 +366,12 @@ LOD_VERTEX_SHADER = """
 #version 330
 uniform mat4 vp;
 uniform usampler2D data;     // grid_size x grid_size, wrapping: heights and blocks of each grid point
+uniform usampler2D coarse_data;  // the same for the next, coarser level (when fade_own is 1)
+uniform usampler2D fine_data;    // and for the finer level (when fade_inner is 1)
 uniform sampler2D colors;    // same layout: the biome's color of the grass (or of the water)
 uniform ivec2 grid_origin;   // grid coordinates of point (0, 0)
+uniform ivec2 coarse_origin; // the same for the coarser and the finer level, in their own grids
+uniform ivec2 fine_origin;
 uniform vec2 origin;         // its position relative to the camera (x, z)
 uniform float cam_y;
 uniform float spacing;
@@ -377,6 +385,9 @@ uniform vec4 own;            // this level's square
 uniform int fade_own;        // 1 when a coarser level takes over at the edge of this one
 uniform int use_ready;       // leave out what the blocks draw (not in the shadow maps)
 uniform vec4 clip_planes[3]; // left, right and near planes of vp: nothing is drawn outside them
+uniform ivec2 tiles[64];     // the tiles of the grid to draw (LOD_TILES x LOD_TILES at most): the cell at the corner of each
+uniform int tile_width;      // cells along a tile's side
+uniform vec2 lee;            // a shadow map: the horizontal direction the light travels in
 uniform usampler2D wet_cells; // the water pass's cells (local coordinates), one per instance
 uniform sampler2D ready;     // 64x64 wrapping map of the chunk columns drawn as blocks
 uniform ivec2 cam_chunk;
@@ -388,24 +399,30 @@ flat out int v_face;
 flat out ivec3 v_blocks;     // top block, the block under it, crown leaves (0: no tree)
 flat out vec3 v_tint;
 flat out vec2 v_tops;        // heights of the ground and of the column (with its crown), in the world
-flat out float v_bottom;     // a side: height of the column it faces
+flat out float v_bottom;     // a side: height of the lowest column it faces
 flat out ivec2 v_local;      // the column's cell in the grid, for the top's ambient occlusion
 flat out vec2 v_corner;      // the column's corner, relative to the camera
 flat out vec2 v_aux;         // canopy coverage, water coverage of the cell (0-1)
 flat out int v_flags;        // bit 0: the cell's color is emissive (a lamp a player placed)
-""" + BLOCK_IDS + CELLS + """
-const int FACE_OF[6] = int[](0, 1, 2, 4, 5, 3);  // in_norm -> face number (+x -x +y +z -z)
+""" + CELLS + """
 // A grid point's texel: height of the ground's top surface (as float bits), then the 4 packed
 // bytes (top block, block under it, crown leaves or 0, crown height), then the water's surface
-// (bits, -1 where the cell is dry or frozen over)
+// (bits, -1 where the cell is dry or frozen over). The sampler has already put bare rock where
+// the ground is too steep for soil, and no trees there (see lod.py)
 uvec4 data_at(ivec2 local) { return texelFetch(data, (grid_origin + local) & (grid_size - 1), 0); }
 float height_of(uvec4 d) { return uintBitsToFloat(d.x); }
 float wsurf_of(uvec4 d) { return uintBitsToFloat(d.z); }
 ivec4 blocks_of(uvec4 d) { return ivec4(d.y & 255u, (d.y >> 8) & 255u, (d.y >> 16) & 255u, d.y >> 24); }
-float height_at(ivec2 local) { return height_of(data_at(local)); }
-// The very top of a column's texel: the terrain plus its crown of leaves, if it has one
-float column_top(uvec4 d) {
-    return height_of(d) + (((d.y >> 16) & 255u) != 0u ? float(d.y >> 24) : 0.0);
+// How high the column of a texel is drawn: up to its ground and, beyond the blocks, up to its
+// crown of leaves if it has one (where the blocks are drawn they have the real trees: no fake
+// crowns there, and past them the crowns rise little by little). c: the column's center,
+// relative to the camera. Every column that looks at another one works out its height with
+// this, so their sides always meet
+float drawn_top(uvec4 d, vec2 c) {
+    float h = height_of(d);
+    if (((d.y >> 16) & 255u) != 0u)
+        h += float(d.y >> 24) * smoothstep(block_fade.y, block_fade.y + %(rise)d.0, length(c));
+    return h;
 }
 float level_fade(vec2 center, vec4 rect, float fine) {  // 1 at the edge of a finer level's square, 0 well inside
     float d = min(min(center.x - rect.x, rect.z - center.x), min(center.y - rect.y, rect.w - center.y));
@@ -418,46 +435,40 @@ void main() {
     if (water_pass == 1)
         local = ivec2(texelFetch(wet_cells,
                                  ivec2(gl_InstanceID %% grid_size, gl_InstanceID / grid_size), 0).rg);
-    else
-        local = ivec2(gl_InstanceID %% (grid_size - 1), gl_InstanceID / (grid_size - 1));
+    else {
+        // The cells come tile by tile, for the tiles that may be in view
+        int per = tile_width * tile_width, k = gl_InstanceID %% per;
+        local = tiles[gl_InstanceID / per] + ivec2(k %% tile_width, k / tile_width);
+    }
     ivec2 g = grid_origin + local;
     vec2 center = origin + (vec2(local) + 0.5) * spacing;
     uvec4 own_data = data_at(local);
-    float top;
-    ivec4 b = ivec4(0);
     float ground = height_of(own_data);
-    if (water_pass == 1) {
-        top = wsurf_of(own_data);
-        if (top < 0.0) {  // a dry cell slipped into the list: nothing to draw
-            gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-            return;
-        }
-    }
+    float top = water_pass == 1 ? wsurf_of(own_data) : drawn_top(own_data, center);
+    bool keep = water_pass == 0 || top >= 0.0;  // (a dry cell slipped into the water's list: nothing to draw)
+    keep = keep && max(local.x, local.y) < grid_size - 1;  // (the last tiles reach one cell past the grid)
     // Is this cell drawn by this level? Each 2x2 group of its cells is drawn either by this level
     // or by the next, coarser one: both pick it with the same number
-    bool keep = true, band = false;
-    if (fade_inner == 1) {
-        float f = level_fade(center, inner, spacing * 0.5);
-        keep = cell_hash(g, level) < f;
-        band = f > 0.0 && f < 1.0;
-    }
+    if (fade_inner == 1) keep = keep && cell_hash(g, level) < level_fade(center, inner, spacing * 0.5);
     if (fade_own == 1) {
         ivec2 parent = g >> 1;
-        float f = level_fade(origin + (vec2(parent * 2 - grid_origin) + 1.0) * spacing, own, spacing);
-        keep = keep && cell_hash(parent, level + 1) >= f;
-        band = band || (f > 0.0 && f < 1.0);
+        keep = keep && cell_hash(parent, level + 1)
+                       >= level_fade(origin + (vec2(parent * 2 - grid_origin) + 1.0) * spacing, own, spacing);
     }
     float dist = length(center);
-    // A chunk drawn as blocks covers the cell: the columns fold away inside block_fade.x, and
-    // further out keep only their sides (their tops would poke through the real terrain)
-    bool in_chunk = false;
+    // Where the blocks are all drawn, the columns fold away. Further out the blocks give way to
+    // them cell by cell: there the columns are drawn whole, under the blocks too. A block that
+    // gives way then shows the column behind it, never a hole — a real slope and its columns
+    // don't have the same shape, and on a cliff their sides would not meet
     if (use_ready == 1 && dist < block_fade.y + spacing) {
         ivec2 rel = ivec2(floor((center + cam_in_chunk) / 16.0));
-        in_chunk = abs(rel.x) < 32 && abs(rel.y) < 32
-                   && texelFetch(ready, (cam_chunk + rel) & 63, 0).r > 0.5;
+        bool in_chunk = abs(rel.x) < 32 && abs(rel.y) < 32
+                        && texelFetch(ready, (cam_chunk + rel) & 63, 0).r > 0.5;
         if (in_chunk && dist + 0.71 * spacing < block_fade.x) keep = false;
+        // The water is a see-through layer over the aquatic floor: cells whose water the blocks
+        // already draw have nothing to add
+        if (water_pass == 1 && in_chunk && drawn_as_blocks(cell_of(center))) keep = false;
     }
-    band = band || (dist > block_fade.x && dist < block_fade.y + 2.0 * spacing);
     // Nothing of the column reaches the view if a box one cell wide and as tall as the world is
     // outside one of the planes. The box is generous on purpose: the missing vertices can only
     // hide things that no pixel would have shown anyway
@@ -471,75 +482,88 @@ void main() {
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0);  // every vertex at the same place outside the view: nothing drawn
         return;
     }
-    bool under_blocks = in_chunk && drawn_as_blocks(cell_of(center));
-    if (water_pass == 1) {
-        // The water is a see-through layer over the aquatic floor: cells whose water the blocks
-        // already draw have nothing to add
-        if (under_blocks) {
-            gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-            return;
-        }
-    } else {
-        b = blocks_of(own_data);
-        // Bare rock where it is too steep for soil (snow on the peaks holds a little longer)
-        float h10 = height_at(local + ivec2(1, 0));
-        float h01 = height_at(local + ivec2(0, 1)), h11 = height_at(local + ivec2(1, 1));
-        float slope = (max(max(ground, h10), max(h01, h11)) - min(min(ground, h10), min(h01, h11))) / spacing;
-        bool soil = b.x == GRASS || b.x == PODZOL || b.x == MUD || b.x == MOSS || b.x == DIRT
-                    || b.x == GRAVEL || (b.x == SNOW && b.y == DIRT);
-        if ((slope >= 2.0 && soil) || (slope >= 4.0 && b.x == SNOW)) { b.x = STONE; b.y = STONE; b.z = 0; }
-        // Where the blocks are drawn they have the real trees: no fake crowns under them
-        top = ground + (b.z != 0 && dist > block_fade.y ? float(b.w) : 0.0);
-        if (in_norm.y > 0.5 && under_blocks) {
-            gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-            return;
-        }
+    // A shadow map only gets two of a column's sides, the first two of the mesh, put on the
+    // sides turned away from the light. With the tops they stop the same light as all four would
+    // (light that enters the ground through a missing side can only leave it through one of
+    // them), and they also stop the light that slips under the terrain at the edge of a grid.
+    // The view itself keeps the four sides: where a block gives way on a steep slope, a slit can
+    // open between its neighbors and the column behind, and the back of the columns further on
+    // is what shows through it instead of the sky
+    vec3 corner = in_pos, norm = in_norm;
+    if (mode == 1) {
+        if (in_norm.x != 0.0 && lee.x < 0.0) { corner.x = 0.0; norm.x = -1.0; }
+        if (in_norm.z != 0.0 && lee.y < 0.0) { corner.z = 0.0; norm.z = -1.0; }
     }
-    // A side goes down to the next surface below the top: the column it faces, or its ground
-    // under a taller crown — and folds away when nothing it faces is lower. Where two levels or
-    // the blocks share the cells, the neighbor may be drawn by the other one: then every side
-    // goes down a bit further.
-    ivec2 ncell = local + ivec2(int(in_norm.x), int(in_norm.z));
-    float neighbor = top;
-    if (in_norm.y == 0.0) {
-        if (min(ncell.x, ncell.y) < 0 || max(ncell.x, ncell.y) >= grid_size - 1) {
-            neighbor = water_pass == 1 ? ground : top - 4.0 * spacing;
-        } else {
-            uvec4 nd = data_at(ncell);
-            if (water_pass == 1)
-                neighbor = max(wsurf_of(nd), ground);  // the neighbor's water, else down to the bed
-            else {
-                float ntop = column_top(nd);
-                neighbor = ntop < top ? ntop : height_of(nd);
+    // A side goes down to the lowest surface it may face, and folds away when nothing it faces
+    // is lower. What it faces is the column next to it in this level — or, where two levels share
+    // the cells, the coarser column or the two finer columns that may be drawn there instead
+    float low = top;
+    bool seam = false;  // the side may touch the columns of another level
+    if (norm.y == 0.0) {
+        ivec2 dn = ivec2(int(norm.x), int(norm.z));
+        ivec2 ncell = local + dn, gn = g + dn;
+        vec2 ncenter = center + vec2(dn) * spacing;
+        if (min(ncell.x, ncell.y) < 0 || max(ncell.x, ncell.y) >= grid_size - 1)
+            low = top - 4.0 * spacing;  // the edge of the grid
+        else
+            low = min(low, drawn_top(data_at(ncell), ncenter));
+        if (fade_own == 1 && (gn >> 1) != (g >> 1)) {
+            ivec2 p = gn >> 1;  // the coarser cell on the other side
+            vec2 pc = origin + (vec2(p * 2 - grid_origin) + 1.0) * spacing;
+            if (level_fade(pc, own, spacing) > 0.0) {
+                seam = true;
+                if (all(greaterThanEqual(p, coarse_origin)) && all(lessThan(p, coarse_origin + grid_size - 1)))
+                    low = min(low, drawn_top(texelFetch(coarse_data, p & (grid_size - 1), 0), pc));
+            }
+        }
+        if (fade_inner == 1 && level_fade(ncenter, inner, spacing * 0.5) < 1.0) {
+            seam = true;
+            // The two finer cells along this side, inside the cell it faces
+            ivec2 c = 2 * gn + ivec2(dn.x < 0 ? 1 : 0, dn.y < 0 ? 1 : 0);
+            ivec2 along = ivec2(abs(dn.y), abs(dn.x));
+            for (int i = 0; i < 2; i++) {
+                if (all(greaterThanEqual(c, fine_origin)) && all(lessThan(c, fine_origin + grid_size - 1)))
+                    low = min(low, drawn_top(texelFetch(fine_data, c & (grid_size - 1), 0),
+                                             origin + (vec2(c - 2 * grid_origin) + 0.5) * (spacing * 0.5)));
+                c += along;
             }
         }
     }
     float y = top;
-    if (in_pos.y < 0.5) {
-        if (band) y = min(neighbor, top) - spacing;
-        else if (neighbor < top) y = neighbor - 0.5;
+    if (corner.y < 0.5) {  // the bottom of a side
+        // Where two levels meet, a side always goes down a little: their corners don't fall at
+        // exactly the same places, and no pixel must show through between them
+        if (seam) y = min(low, top) - max(0.5, 0.5 * spacing);
+        else if (low < top) y = low - 0.5;
     }
-    vec3 pos = vec3(origin.x + (float(local.x) + in_pos.x) * spacing, y - cam_y,
-                    origin.y + (float(local.y) + in_pos.z) * spacing);
+    // The faces of the ground overlap by a hair — the top juts out all around, a side at both of
+    // its ends: the corners of two faces don't fall at the same places along the edge they share
+    // (their heights differ), and now and then a pixel of sky would show between them
+    vec2 grow = vec2(0.0);
+    if (water_pass == 0) {
+        vec2 out_ = (corner.xz * 2.0 - 1.0) * (0.01 * spacing);
+        grow = norm.y != 0.0 ? out_ : norm.x != 0.0 ? vec2(0.0, out_.y) : vec2(out_.x, 0.0);
+    }
+    vec3 pos = vec3(origin.x + (float(local.x) + corner.x) * spacing + grow.x, y - cam_y,
+                    origin.y + (float(local.y) + corner.z) * spacing + grow.y);
     v_pos = pos;
     gl_Position = vp * vec4(pos, 1.0);
     if (mode == 1) {
         gl_Position.z = max(gl_Position.z, -1.0);  // nearer the light than the map: flattened onto it
         return;
     }
-    int axis = in_norm.x > 0.5 ? 0 : in_norm.x < -0.5 ? 1 : in_norm.y > 0.5 ? 2 : in_norm.z > 0.5 ? 3 : 4;
-    v_face = FACE_OF[axis];
-    v_blocks = b.xyz;
+    v_face = norm.x > 0.5 ? 0 : norm.x < -0.5 ? 1 : norm.y > 0.5 ? 2 : norm.z > 0.5 ? 4 : 5;
+    v_blocks = water_pass == 1 ? ivec3(0) : blocks_of(own_data).xyz;
     vec4 c = texelFetch(colors, g & (grid_size - 1), 0);
     v_tint = c.rgb;
     v_tops = vec2(ground, top);
     v_aux = vec2(float(own_data.w & 255u), float((own_data.w >> 8) & 255u)) / 255.0;
     v_flags = int((own_data.w >> 16) & 255u);
-    v_bottom = neighbor;
+    v_bottom = low;
     v_corner = origin + vec2(local) * spacing;
     v_local = local;  // the fragment shader works out which columns around are taller
 }
-""" % {"margin": LOD_MARGIN, "band": LOD_BAND}
+""" % {"margin": LOD_MARGIN, "band": LOD_BAND, "rise": CROWN_RISE}
 
 LOD_FRAGMENT_SHADER = """
 #version 330
@@ -553,6 +577,7 @@ uniform sampler2D atlas;
 uniform usampler2D data;     // the level's grid: heights and blocks (see the vertex shader)
 uniform ivec2 grid_origin;
 uniform int grid_size;
+uniform vec2 block_fade;     // distances where the blocks give way to the columns (see CELLS)
 in vec3 v_pos;
 flat in int v_face;
 flat in ivec3 v_blocks;
@@ -566,11 +591,16 @@ flat in int v_flags;
 out vec4 out_color;
 uniform usampler2D block_tiles;  // 6 x NUM_BLOCKS: the atlas tile of each face of each block
 """ + LIGHT + CLOUDS + SHADOWS + WAVES + BLOCK_SHADING + BLOCK_IDS + BANDS_GLSL + """
-// The very top of the column of a cell: worked out per pixel, only where a top needs its ambient
-// occlusion — a cell is a few pixels wide at the distances where the cost matters
+// The very top of the column of a cell, as it is drawn (see drawn_top in the vertex shader):
+// worked out per pixel, only where a top needs its ambient occlusion — a cell is a few pixels
+// wide at the distances where the cost matters
 float lod_top(ivec2 cell) {
     uvec4 d = texelFetch(data, (grid_origin + cell) & (grid_size - 1), 0);
-    return uintBitsToFloat(d.x) + (((d.y >> 16) & 255u) != 0u ? float(d.y >> 24) : 0.0);
+    float h = uintBitsToFloat(d.x);
+    if (((d.y >> 16) & 255u) != 0u)
+        h += float(d.y >> 24) * smoothstep(block_fade.y, block_fade.y + %(rise)d.0,
+                                           length(v_corner + (vec2(cell - v_local) + 0.5) * spacing));
+    return h;
 }
 void main() {
     if (mode == 1) return;  // shadow map: only the depth counts
@@ -654,7 +684,8 @@ void main() {
     }
     out_color = vec4(fog(shade_opaque(albedo, v_face, ao, direct), dist), 1.0);
 }
-""" % {"bands": len(T.BANDS), "atlas": ATLAS_TILES, "crown_dark": CROWN_DARK, "wet_min": WET_ALPHA_MIN}
+""" % {"bands": len(T.BANDS), "atlas": ATLAS_TILES, "crown_dark": CROWN_DARK, "wet_min": WET_ALPHA_MIN,
+       "rise": CROWN_RISE}
 
 SKY_FRAGMENT_SHADER = """
 #version 330
@@ -902,19 +933,6 @@ void main() { sum = v_sum; square = v_square; }
 
 CUBE_EDGES = [(0, 1), (1, 3), (3, 2), (2, 0), (4, 5), (5, 7), (7, 6), (6, 4), (0, 4), (1, 5), (2, 6), (3, 7)]
 
-# Distant terrain: the leaves of each biome's trees, and how high their crowns reach above the
-# ground (the average of its kinds of trees, weighted by how many there are)
-CANOPY_LEAVES = np.full(len(T.BIOME_NAMES), LEAVES)
-CANOPY_LEAVES[[T.TAIGA, T.SNOWY_TAIGA, T.SNOWY_TUNDRA, T.ALPINE]] = SPRUCE_LEAVES
-CANOPY_LEAVES[T.BIRCH_FOREST] = BIRCH_LEAVES
-CANOPY_LEAVES[T.JUNGLE] = JUNGLE_LEAVES
-CANOPY_LEAVES[T.SAVANNA] = ACACIA_LEAVES
-CROWN_ABOVE = {T.SPRUCE: 3, T.JUNGLE_TREE: 2}  # leaves above the trunk's top (1 for the other trees)
-CANOPY_HEIGHT = np.zeros(len(T.BIOME_NAMES), np.uint8)
-for _biome, _kinds in T.TREES.items():
-    _tall = [(sum(T.TREE_HEIGHTS[k]) / 2 + CROWN_ABOVE.get(k, 1), w) for k, w in _kinds.items() if k != T.CACTUS_PLANT]
-    if _tall:
-        CANOPY_HEIGHT[_biome] = round(sum(h * w for h, w in _tall) / sum(w for _, w in _tall))
 LEAF_TILES = {int(t) for b in ALL_LEAVES for t in BLOCK_TILES[b]}
 
 
@@ -949,30 +967,6 @@ FACE_TRIANGLES = np.array([0, 1, 2, 0, 2, 3], np.uint32)
 FLIPPED_TRIANGLES = np.array([1, 2, 3, 1, 3, 0], np.uint32)
 
 
-def srgb_to_oklab(rgb):
-    """OKLab of sRGB colors (0-1), arrays of shape (..., 3)."""
-    rgb = np.asarray(rgb, dtype=np.float64)
-    c = np.where(rgb > 0.04045, ((rgb + 0.055) / 1.055) ** 2.4, rgb / 12.92)
-    lms = np.cbrt(c @ np.array([[0.4122214708, 0.2119034982, 0.0883024619],
-                                [0.5363325363, 0.6806995451, 0.2817188376],
-                                [0.0514459929, 0.1073969566, 0.6299787005]]))
-    return lms @ np.array([[0.2104542553, 1.9779984951, 0.0259040371],
-                           [0.7936177850, -2.4285922050, 0.7827717662],
-                           [-0.0040720468, 0.4505937099, -0.8086757660]])
-
-
-def oklab_to_srgb(lab):
-    """sRGB colors (0-1, clipped) of OKLab colors."""
-    lms = np.asarray(lab, dtype=np.float64) @ np.array([[1.0, 1.0, 1.0],
-                                                        [0.3963377774, -0.1055613458, -0.0894841775],
-                                                        [0.2158037573, -0.0638541728, -1.2914855480]])
-    c = (lms ** 3) @ np.array([[4.0767416621, -1.2684380046, -0.0041960863],
-                               [-3.3077115913, 2.6097574011, -0.7034186147],
-                               [0.2309699292, -0.3413193965, 1.7076147010]])
-    c = np.clip(c, 0.0, 1.0)
-    return np.where(c > 0.0031308, 1.055 * c ** (1 / 2.4) - 0.055, 12.92 * c)
-
-
 def perspective(fov, aspect, near, far):
     f = 1 / math.tan(math.radians(fov) / 2)
     return np.array([
@@ -981,6 +975,16 @@ def perspective(fov, aspect, near, far):
         [0, 0, (far + near) / (near - far), 2 * far * near / (near - far)],
         [0, 0, -1, 0],
     ], dtype="f4")
+
+
+def depth_half(vp, far_half):
+    """vp with its depths squeezed into the nearer or the farther half of the depth buffer. The
+    blocks are drawn into the nearer half and the distant terrain into the farther one, each with
+    the projection that suits it: whatever their real depths, a block is in front of the distant
+    terrain, which is not even shaded where a block hides it."""
+    m = np.array(vp, dtype="f4")
+    m[2] = 0.5 * m[2] + (0.5 if far_half else -0.5) * m[3]
+    return m
 
 
 def look_at(eye, forward):
@@ -1095,13 +1099,14 @@ class Chunks:
     Packing a mesh for the card is done on a pool of threads (numpy frees the GIL for it), so the
     frames stay smooth while whole areas arrive."""
 
-    def __init__(self, ctx, program, world):
+    def __init__(self, ctx, program, world, shared=None):
+        """shared: work the builders can take when they have nothing to build (see builder.py)."""
         self.ctx, self.program = ctx, program
         self.meshes = {}  # (cx, cz) -> ColumnMesh
         self.radius = 8
         self.version = 0  # counts the changes to the meshes (the shadow map is drawn again)
         self.in_view = []  # (mesh, (x, y, z) of its corner relative to the camera) seen in the last frame
-        self.builders = Builders()
+        self.builders = Builders(shared=shared)
         self.pool = concurrent.futures.ThreadPoolExecutor(2, thread_name_prefix="mesh prep")
         self.preparing = {}  # (cx, cz) -> (version, future of prepare_faces)
         self.ready = np.zeros((READY_SIZE, READY_SIZE), np.uint8)  # [cz & 63, cx & 63] = 255 when drawn
@@ -1150,6 +1155,10 @@ class Chunks:
             self.version += 1
         for key in [k for k in self.built if is_far(k)]:
             del self.built[key]
+        # (a mesh being packed goes with its column: flying diagonally, a column at the edge can
+        # be far one frame and near again the next, and its packed faces would land on no mesh)
+        for key in [k for k in self.preparing if is_far(k)]:
+            del self.preparing[key]
         meshes, columns = self.builders.finished()
         for col in columns:
             self.world.columns.setdefault((col.cx, col.cz), col)
@@ -1177,7 +1186,7 @@ class Chunks:
             if time.perf_counter() >= deadline:
                 break
             version, future = self.preparing.pop(key)
-            if is_far(key) or version != self.versions.get(key, 0):
+            if key not in self.meshes or version != self.versions.get(key, 0):
                 self.built.pop(key, None)  # built from blocks changed since: asked for again
                 continue
             self.upload(key, self.meshes[key], future.result())
@@ -1283,20 +1292,34 @@ class FarTerrain:
     there, with the same textures and light as the blocks near the camera, and trees as crowns of
     leaves. Heights, colors and blocks live in textures that wrap around: when the camera moves, only
     the new rows or columns at the edge are sampled. Each level gives way to the next one cell by
-    cell (see CELLS). The LOD quality setting picks (spacing, size, levels) from LOD_QUALITIES."""
+    cell (see CELLS). The LOD quality setting picks (spacing, size, levels) from LOD_QUALITIES.
 
-    def __init__(self, ctx, program, world, atlas_texture, atlas, spacing=2, size=128, levels=7):
-        self.ctx, self.program, self.world, self.atlas = ctx, program, world, atlas_texture
+    The texels come from the sampler's process (lod.py), a job at a time. A level's grid only
+    follows the camera once its new cells have landed: until then the level is drawn where it
+    was, so the textures never show cells that are not sampled yet."""
+
+    def __init__(self, ctx, program, world, atlas_texture, atlas, sampler, spacing=2, size=128, levels=7):
+        self.ctx, self.program, self.atlas = ctx, program, atlas_texture
         self.atlas_data = atlas  # kept to rebuild the tile averages if the quality changes
         self.spacing, self.size, self.n_levels = spacing, size, levels
+        self.sampler = sampler  # lod.SamplerProcess: it makes the texels
         n = size
-        # A unit cube (no bottom face: it is never seen), drawn once per cell of the grid. The
-        # shader stretches each side down to the top of the column it faces.
-        verts = []
-        for normal, face in CUBE_FACES:
+        # A column, drawn once per cell: its top and its four sides (the bottom is never seen).
+        # The shader stretches each side down to the top of the column it faces. Most of the
+        # card's time for the distant terrain goes into these vertices: 20 a column, shared
+        # between its triangles, and 12 for a shadow map, which only needs two of the sides
+        verts, indices = [], []
+        for normal, face in COLUMN_FACES:
+            indices += [len(verts) + i for i in (0, 1, 2, 0, 2, 3)]
             verts += [corner + normal for corner in face]
         self.vbo = ctx.buffer(np.array(verts, dtype="f4").tobytes())
-        self.vao = ctx.vertex_array(program, [(self.vbo, "3f 3f", "in_pos", "in_norm")])
+        self.ibo = ctx.buffer(np.array(indices, dtype="u4").tobytes())
+        self.vao = ctx.vertex_array(program, [(self.vbo, "3f 3f", "in_pos", "in_norm")], index_buffer=self.ibo)
+        # The grid's tiles: the cell at the corner of each one, and the list sent to the shader
+        self.tile_width = n // LOD_TILES
+        t = np.arange(LOD_TILES) * self.tile_width
+        self.tile_cells = np.stack(np.meshgrid(t, t, indexing="xy"), axis=-1).reshape(-1, 2).astype("i4")
+        self.tile_list = np.zeros((LOD_TILES ** 2, 2), dtype="i4")
         self.data_maps = [ctx.texture((n, n), 4, dtype="u4") for _ in range(levels)]
         self.color_maps = [ctx.texture((n, n), 4, dtype="f1") for _ in range(levels)]
         self.wet_texs = [ctx.texture((n, n), 2, dtype="u2") for _ in range(levels)]
@@ -1309,350 +1332,80 @@ class FarTerrain:
         self.wet_masks = [np.zeros((n, n), dtype="u1") for _ in range(levels)]
         self.wet_bufs = [np.zeros((n * n, 2), dtype="u2") for _ in range(levels)]
         self.wet_counts = [0] * levels
-        self.wet_dirty = [True] * levels
-        self.origins = [None] * levels  # grid coordinates of each level's point (0, 0)
-        self.queue = []  # texture writes still to do
         self.version = 0  # counts the changes (the shadow maps of the terrain are drawn again)
         self.view_distance = FAR_LIMIT  # beyond it the fog hides everything: no level drawn there
         self.block_colors = B.block_colors(atlas)  # flat colors for plants and player's blocks
-        # What each level knows about every cell of its grid (see _aggregate): the values a level
-        # hands to the coarser one for the cells it covers, texel for texel
-        self.rec = [self._new_records() for _ in range(levels)]
-        self.dirty = [set() for _ in range(levels)]  # cells to resample: finer data changed under them
-        # Producing records and texels for the new strips is heavy (up to millions of samples when
-        # the camera jumps): it runs on its own thread, the textures are written when it lands
-        self.pool = concurrent.futures.ThreadPoolExecutor(1, thread_name_prefix="lod sampler")
-        self.sampling = None  # (batch, world, marks, future) being sampled
-
-    def _new_records(self):
-        """An empty grid of cells for one level. tagx/tagz say which grid point each texel
-        currently holds: a cell's children are usable only where the tags match."""
-        n = self.size
-        return {"ground": np.zeros((n, n), "f4"), "wsurf": -np.ones((n, n), "f4"),
-                "surf": np.zeros((n, n), "u1"), "fill": np.zeros((n, n), "u1"),
-                "leaves": np.zeros((n, n), "u1"), "crown": np.zeros((n, n), "u1"),
-                "cov": np.zeros((n, n), "u1"), "wetcov": np.zeros((n, n), "u1"),
-                "icecov": np.zeros((n, n), "u1"), "flags": np.zeros((n, n), "u1"),
-                "depth": np.zeros((n, n), "u1"), "tint": np.zeros((n, n, 3), "u1"),
-                "tagx": np.full((n, n), -(1 << 30), "i4"), "tagz": np.full((n, n), -(1 << 30), "i4")}
+        self.set_world(world)
 
     def set_world(self, world):
+        """Start over, with another world (or with the same one, for a new grid)."""
         self.world = world
-        self.origins = [None] * self.n_levels
-        self.queue = []
+        self.origins = [None] * self.n_levels  # grid coordinates of each level's point (0, 0); None: nothing landed
+        self.working = False  # the sampler has a job of ours
+        self.pending = 0  # cells the sampler has yet to sample again (changes climbing the levels)
+        self.edits = set()  # finest cells where the player changed a block since the last job
+        self.shown = (0, -1)  # the levels drawn in the last frame (first, last)
         for mask in self.wet_masks:
             mask.fill(0)
         self.wet_dirty = [True] * self.n_levels
-        self.rec = [self._new_records() for _ in range(self.n_levels)]
-        self.dirty = [set() for _ in range(self.n_levels)]
+        self.sampler.configure(world, self.spacing, self.size, self.n_levels, self.block_colors)
         self.version += 1
 
-    def _fields(self, gen, x, z, sx, sz, level, clim=None):
-        """Sub-records at world points (x, z), sub-lattice cells (sx, sz) of a level: one value
-        per array, everything the aggregation needs to weigh over a cell's footprint."""
-        s = gen.sample(x, z, clim)
-        top = np.floor(s["height"]).astype(np.int32)
-        wet = top < s["water"]
-        ice = wet & (s["temperature"] < -0.55)
-        # The column is the ground itself — the aquatic floor too, under the water. The water is
-        # another column on top of it, see-through like the blocks' (a solid ice column where the
-        # water is frozen, a full block tall like the ice blocks are)
-        f = {"ground": np.where(ice, s["water"] + 1.0, top + 1).astype("f4"),
-             "wsurf": np.where(wet & ~ice, s["water"] + WATER_SURFACE, -1.0).astype("f4"),
-             "flags": np.zeros(x.shape, "u1")}
-        # The same top blocks as the generator's, but for the slope (the shader does the steep rock)
-        surface, filler, _ = T._surface(s, top, np.zeros_like(top), gen.surface.fbm2(x / 9, z / 9, 2) * 2)
-        surface = np.where(ice, ICE, surface)
-        filler = np.where(ice, ICE, filler)
-        f["surf"], f["fill"] = surface.astype("u1"), filler.astype("u1")
-        # Trees: a sub-cell is under a crown as often as the biome's trees cover the ground; the
-        # coverage becomes a continuous value when the cell's sub-samples are aggregated
-        biome = s["biome"]
-        trees = (cell_hashes(sx, sz, level) < T.CANOPY[biome]) & ~wet & np.isin(surface, (B.GRASS, B.PODZOL, B.SNOW))
-        f["leaves"] = np.where(trees, CANOPY_LEAVES[biome], 0).astype("u1")
-        f["crown"] = np.where(trees, CANOPY_HEIGHT[biome], 0).astype("u1")
-        f["cov"] = (trees * 255).astype("u1")
-        f["wetcov"] = ((wet & ~ice) * 255).astype("u1")
-        f["icecov"] = (ice * 255).astype("u1")
-        grass, _, water = T.tints(s["temperature"], s["humidity"], biome)
-        tint = np.where(wet[:, None], water, grass)
-        # Plants have no geometry out here, but their color still speckles the ground
-        plants = T._scatter_plants(gen, x, z, biome, surface, top, s["water"])
-        has_plant = plants > 0
-        if has_plant.any():
-            pcolor = self.block_colors[plants]
-            tinted = TINT[plants] == 1  # grass-tinted plants take the biome's color
-            pcolor[tinted] *= tint[tinted]
-            tint[has_plant] = tint[has_plant] * (1 - PLANT_MIX) + pcolor[has_plant] * PLANT_MIX
-        f["tint"] = (np.clip(tint, 0, 1) * 255).astype("u1")
-        f["depth"] = np.clip(np.where(wet, s["water"] - top, 0), 0, 255).astype("u1")  # down to the bottom
-        return f
+    def block_changed(self, x, y, z):
+        """A block the player changed may show in the distant terrain: the finest cell it stands
+        in is sampled again, and the change climbs the levels from there."""
+        self.sampler.block_changed(x, y, z, self.world.get(x, y, z))
+        self.edits.add((math.floor(x / self.spacing), math.floor(z / self.spacing)))
 
-    def _aggregate(self, f):
-        """Merge K sub-records per cell into one record: the mean solid top, the majority top
-        block (the highest sub-column wins ties), continuous canopy and water coverage, colors
-        averaged in a perceptual space, and an emissive flag that never dies out."""
-        K = f["ground"].shape[1]
-        n = f["ground"].shape[0]
-        out = {"ground": f["ground"].mean(axis=1)}
-        wet = f["wetcov"].astype("f4") / 255
-        ice = f["icecov"].astype("f4") / 255
-        out["wetcov"] = (wet.mean(axis=1) * 255).astype("u1")
-        out["icecov"] = (ice.mean(axis=1) * 255).astype("u1")
-        wsum = np.maximum(wet.sum(axis=1), 1e-9)
-        wsurf = (f["wsurf"] * wet).sum(axis=1) / wsum  # the liquid water's mean surface
-        frozen = out["icecov"] > out["wetcov"]  # the frozen part wins: the cell is ice
-        out["wsurf"] = np.where(frozen | (wet.sum(axis=1) == 0), -1.0, wsurf)
-        # Top block: the majority rules, and the higher the sub-column the bigger its say —
-        # a tower poking far above the cell's mean outvotes the lowland it stands on (the
-        # drawn top face sits where the tall part's material is, not where the valley's is)
-        surf = f["surf"].astype("u4")
-        votes = (surf[:, :, None] == surf[:, None, :]).sum(axis=2).astype("f4")
-        votes += np.clip(f["ground"] - out["ground"][:, None], 0, 32) / 4
-        win = votes.argmax(axis=1)
-        out["surf"] = surf[np.arange(n), win].astype("u1")
-        out["fill"] = f["fill"][np.arange(n), win]
-        cov = f["cov"].astype("f4") / 255
-        out["cov"] = (cov.mean(axis=1) * 255).astype("u1")
-        # Crown: the leaf kind with the most coverage wins; under the threshold no crown at all
-        lw = np.zeros((n, 256), "f4")
-        np.add.at(lw, (np.repeat(np.arange(n), K), f["leaves"].ravel()), cov.ravel())
-        out["leaves"] = lw.argmax(axis=1).astype("u1")
-        cw = np.maximum((cov * (f["crown"] > 0)).sum(axis=1), 1e-9)
-        out["crown"] = np.clip((f["crown"] * cov).sum(axis=1) / cw, 0, 255).astype("u1")
-        bare = out["cov"] < CROWN_MIN_COV
-        out["leaves"][bare] = out["crown"][bare] = 0
-        out["tint"] = np.clip(oklab_to_srgb(srgb_to_oklab(f["tint"].astype("f4") / 255).mean(axis=1)) * 255, 0, 255).astype("u1")
-        out["depth"] = np.clip((f["depth"] * wet).sum(axis=1) / wsum, 0, 255).astype("u1")
-        out["flags"] = f["flags"].max(axis=1)
-        return out
-
-    def _empty(self, count):
-        return {"ground": np.zeros(count, "f4"), "wsurf": -np.ones(count, "f4"),
-                "surf": np.zeros(count, "u1"), "fill": np.zeros(count, "u1"),
-                "leaves": np.zeros(count, "u1"), "crown": np.zeros(count, "u1"),
-                "cov": np.zeros(count, "u1"), "wetcov": np.zeros(count, "u1"),
-                "icecov": np.zeros(count, "u1"), "flags": np.zeros(count, "u1"),
-                "depth": np.zeros(count, "u1"), "tint": np.zeros((count, 3), "u1")}
-
-    def _sample_cells(self, level, gx, gz, sub, world, edited):
-        """Records of cells (gx, gz): the footprint of each is sampled on a small sub-grid and
-        aggregated. The edited columns are read at every level."""
-        spacing = self.spacing << level
-        sub = min(sub, spacing)  # no sub-samples finer than a block: spacing 1 means one
-        side = np.arange(sub)
-        sx = np.broadcast_to(gx[:, None, None] * sub + side[None, :, None],
-                             (len(gx), sub, sub)).ravel()
-        sz = np.broadcast_to(gz[:, None, None] * sub + side[None, None, :],
-                             (len(gz), sub, sub)).ravel()
-        x = (sx + 0.5) * (spacing / sub)
-        z = (sz + 0.5) * (spacing / sub)
-        # The broad climate (a kilometer-scale field) is evaluated once per cell under 32 blocks
-        # of spacing — it does not meaningfully change across them — and shared by the sub-samples
-        clim = None
-        if sub > 1 and spacing < 32:
-            clim = {k: np.repeat(v, sub * sub)
-                    for k, v in world.gen.climate((gx + 0.5) * spacing, (gz + 0.5) * spacing).items()}
-        f = self._fields(world.gen, x, z, sx, sz, level, clim)
-        self._inject_edited(world, edited, f, x, z, spacing, sub)  # the player's work shows at every level
-        return self._aggregate({k: v.reshape(len(gx), -1, v.shape[-1]) if v.ndim == 2 else v.reshape(len(gx), -1)
-                                for k, v in f.items()})
-
-    def _block_fields(self, tops):
-        """One sub-record per block of an edited column, from its real top: a crown of leaves
-        sits on the block under it (the trunk), like the generator's trees; a block the shader
-        doesn't know carries its own resolved color."""
-        ty, tb = tops["top_y"], tops["top_b"]
-        wy, fb = tops["water_y"], tops["fill_b"]
-        leaf = np.isin(tb, ALL_LEAVES)
-        lh = tops["leaf_h"]
-        safe_leaf = np.where(tb <= B.MOSS, tb, LEAVES)  # unknown leaves look like oak
-        custom = tb > B.MOSS
-        surf = np.where(custom, CUSTOM, tb)
-        surf = np.where(leaf, np.where(fb == B.AIR, safe_leaf, np.where(fb > B.MOSS, CUSTOM, fb)), surf)
-        fill = np.where(fb == B.AIR, B.STONE, np.where(fb > B.MOSS, CUSTOM, fb))
-        grass = tops["grass"].astype("f4")
-        own = surf == CUSTOM
-        which = np.where(custom | (leaf & (fb > B.MOSS)), np.where(custom, tb, fb), surf)
-        tint = np.where(own[..., None],
-                        self.block_colors[which] * np.where((TINT[which] > 0)[..., None], grass / 255, 1.0) * 255,
-                        grass)
-        pl = tops["plant"]  # plants have no geometry out here: their color speckles the ground
-        pcolor = self.block_colors[pl] * 255
-        pcolor[TINT[pl] == 1] *= grass[TINT[pl] == 1] / 255
-        tint = np.clip(np.where((pl > 0)[..., None], tint * (1 - PLANT_MIX) + pcolor * PLANT_MIX, tint), 0, 255)
-        return {"ground": np.where(leaf, ty - lh + 1, ty + 1).astype("f4"),
-                "wsurf": np.where(wy > ty, wy + WATER_SURFACE, -1.0).astype("f4"),
-                "surf": surf.astype("u1"), "fill": fill.astype("u1"),
-                "leaves": np.where(leaf, safe_leaf, 0).astype("u1"),
-                "crown": np.where(leaf, np.minimum(lh, 255), 0).astype("u1"),
-                "cov": np.where(leaf, 255, 0).astype("u1"),
-                "wetcov": np.where(wy > ty, 255, 0).astype("u1"),
-                "icecov": np.zeros((CHUNK, CHUNK), "u1"),
-                "flags": B.GLOWING[tb].astype("u1"),
-                "depth": np.clip(np.where(wy > ty, wy - ty, 0), 0, 255).astype("u1"),
-                "tint": tint.astype("u1")}
-
-    def _inject_edited(self, world, edited, f, x, z, spacing, sub):
-        """Rewrite the sub-records that stand on columns the player changed, from their real
-        tops: one block per sub-cell when the sub-cells are block-sized or finer, else the
-        blocks each sub-cell covers aggregated together — a house stays a house at any level.
-        `edited` is a snapshot of world.edited_columns taken on the game's thread."""
-        if not edited:
-            return
-        ss = spacing // sub  # blocks covered by one side of a sub-cell (>= 1: sub <= spacing)
-        if ss == 1:
-            # One block per sub-cell (the finest level): a direct lookup per sampled point
-            bx, bz = np.floor(x).astype(np.int64), np.floor(z).astype(np.int64)
-            cx, cz = bx >> 4, bz >> 4
-            touched = set(zip(cx.tolist(), cz.tolist())) & edited.keys()
-            for ccx, ccz in touched:
-                tops = world.edited_tops(ccx, ccz)
-                m = (cx == ccx) & (cz == ccz)
-                if not m.any():
-                    continue
-                lx, lz = bx[m] & 15, bz[m] & 15
-                if not tops["changed"][lx, lz].any():
-                    continue
-                bf = self._block_fields(tops)
-                idx = np.nonzero(m)[0]
-                for k in f:
-                    f[k][idx] = bf[k][lx, lz]
-            return
-        sx, sz = np.floor(x / ss).astype(np.int64), np.floor(z / ss).astype(np.int64)
-        for ccx, ccz in set(zip((sx * ss >> 4).tolist(), (sz * ss >> 4).tolist())) & edited.keys():
-            tops = world.edited_tops(ccx, ccz)
-            bf = self._block_fields(tops)
-            gx0, gz0 = ccx * 16, ccz * 16
-            for gsx in range(gx0 // ss - 1, (gx0 + 16) // ss + 1):
-                for gsz in range(gz0 // ss - 1, (gz0 + 16) // ss + 1):
-                    sel = (sx == gsx) & (sz == gsz)
-                    if not sel.any():
-                        continue
-                    bx0, bz0 = max(gsx * ss - gx0, 0), max(gsz * ss - gz0, 0)
-                    bx1, bz1 = min(gsx * ss + ss - gx0, 16), min(gsz * ss + ss - gz0, 16)
-                    if bx1 <= bx0 or bz1 <= bz0 or not tops["changed"][bx0:bx1, bz0:bz1].any():
-                        continue
-                    rec = self._aggregate({k: v[bx0:bx1, bz0:bz1].reshape(1, -1) if k != "tint"
-                                           else v[bx0:bx1, bz0:bz1].reshape(1, -1, 3)
-                                           for k, v in bf.items()})
-                    for k in f:
-                        f[k][sel] = rec[k][0]
-
-    def _children_known(self, rec, level, gx, gz):
-        """Which cells of a level have all four finer children sampled in place: their records
-        can be aggregated instead of sampling the generator again (cheaper, and it is what makes
-        a level inherit the real detail — edited blocks included — of the level under it)."""
+    def update(self, cam):
+        """Write the texels the sampler has finished, then ask it for the cells the camera's
+        moves bring into the grids."""
         n = self.size
-        finer = rec[level - 1]
-        o = self.origins[level - 1]
-        if o is None:
-            return np.zeros(gx.shape, bool)
-        known = np.ones(gx.shape, bool)
-        for dx, dz in ((0, 0), (1, 0), (0, 1), (1, 1)):
-            cx, cz = 2 * gx + dx, 2 * gz + dz
-            known &= ((cx >= o[0]) & (cx < o[0] + n) & (cz >= o[1]) & (cz < o[1] + n)
-                      & (finer["tagx"][cx % n, cz % n] == cx) & (finer["tagz"][cx % n, cz % n] == cz))
-        return known
-
-    def _aggregate_children(self, rec, level, px, pz):
-        """A level's cells as the aggregate of the four finer cells covering each."""
-        n = self.size
-        fields = {}
-        for k, arr in rec[level - 1].items():
-            if k in ("tagx", "tagz"):
-                continue
-            fields[k] = np.stack([arr[(2 * px + dx) % n, (2 * pz + dz) % n]
-                                  for dx, dz in ((0, 0), (1, 0), (0, 1), (1, 1))], axis=1)
-        return self._aggregate(fields)
-
-    def produce(self, level, gx, gz, sub, job):
-        """Records for the flat cells (gx, gz) of a level: finer records where they exist (the
-        cascade), the generator's sampled sub-records elsewhere; remembered in the CPU records
-        so the next level can aggregate them. `job` = (world, edited, rec, marks): the world
-        being sampled, a snapshot of its edited columns, the records store and the dirty sets
-        of this batch — all the state the sampler thread is allowed to touch."""
-        world, edited, rec_store, marks = job
-        if level == 0:
-            rec = self._sample_cells(0, gx, gz, sub, world, edited)
-        else:
-            ok = self._children_known(rec_store, level, gx, gz)
-            if ok.all():
-                rec = self._aggregate_children(rec_store, level, gx, gz)
+        for msg in self.sampler.finished():
+            if msg[0] == "level":
+                _, _, level, origin, runs, rgba, data, wet = msg
+                self._upload_runs(level, runs, rgba, data, wet)
+                self.origins[level] = origin  # the grid moves now that its cells are there
+                self.version += 1
+            else:  # ("done", number, cells left to sample again)
+                self.working, self.pending = False, msg[2]
+        if self.working:
+            return
+        wanted = self.levels()
+        batch, origins = [], [None] * self.n_levels
+        for level in range(wanted):
+            spacing = self.spacing << level
+            old = self.origins[level]
+            new = (math.floor(cam[0] / spacing) - n // 2, math.floor(cam[2] / spacing) - n // 2)
+            if old is None or max(abs(new[0] - old[0]), abs(new[1] - old[1])) >= n // 2:
+                # A whole level (a new world, a jump far away). Texel (u, v) holds grid point
+                # (x, z) with x & (n - 1) == u and z & (n - 1) == v
+                batch.append((level, new[0] + (np.arange(n) - new[0]) % n, new[1] + (np.arange(n) - new[1]) % n))
             else:
-                rec = self._empty(len(gx))
-                if ok.any():
-                    casc = self._aggregate_children(rec_store, level, gx[ok], gz[ok])
-                    for k in rec:
-                        rec[k][ok] = casc[k]
-                if (~ok).any():
-                    samp = self._sample_cells(level, gx[~ok], gz[~ok], sub, world, edited)
-                    for k in rec:
-                        rec[k][~ok] = samp[k]
-        # The parent only has to be resampled where the child actually changed — a cell
-        # resampled to the same values is a no-op for the cascade
-        n = self.size
-        u, v = gx % n, gz % n
-        f = rec_store[level]
-        changed = ((f["tagx"][u, v] != gx) | (f["tagz"][u, v] != gz)
-                   | (f["ground"][u, v] != rec["ground"]) | (f["wsurf"][u, v] != rec["wsurf"])
-                   | (f["surf"][u, v] != rec["surf"]) | (f["fill"][u, v] != rec["fill"])
-                   | (f["leaves"][u, v] != rec["leaves"]) | (f["crown"][u, v] != rec["crown"])
-                   | (f["cov"][u, v] != rec["cov"]) | (f["wetcov"][u, v] != rec["wetcov"])
-                   | (f["icecov"][u, v] != rec["icecov"]) | (f["flags"][u, v] != rec["flags"])
-                   | (f["depth"][u, v] != rec["depth"]) | (f["tint"][u, v] != rec["tint"]).any(axis=1))
-        self._store(rec_store, level, gx, gz, rec)
-        if level + 1 < self.n_levels and changed.any():
-            marks[level + 1].update(zip((gx[changed] >> 1).tolist(), (gz[changed] >> 1).tolist()))
-        return rec
+                # Only the new columns (x) and rows (z) that come into view, a few steps at a time
+                new = tuple(o + (max(-LOD_STEP_MAX, min(LOD_STEP_MAX, v - o)) if abs(v - o) >= LOD_STEP_MIN else 0)
+                            for o, v in zip(old, new))
+                xs = new[0] + (np.arange(n) - new[0]) % n  # grid x of each texel column
+                zs = new[1] + (np.arange(n) - new[1]) % n  # grid z of each texel row
+                gx = range(old[0] + n, new[0] + n) if new[0] > old[0] else range(new[0], old[0])
+                batch += [(level, np.array([x]), zs) for x in gx]
+                gz = range(old[1] + n, new[1] + n) if new[1] > old[1] else range(new[1], old[1])
+                batch += [(level, xs, np.array([z])) for z in gz]
+            origins[level] = new
+        for level in range(wanted, self.n_levels):
+            self.origins[level] = None  # beyond the view: left alone, sampled again if the view grows
+        if batch or self.edits or self.pending:
+            self.sampler.request(batch, origins, self.edits)
+            self.working, self.edits = True, set()
 
-    def _store(self, rec_store, level, gx, gz, rec):
-        """Remember the records of cells (gx, gz) texel for texel, tagged by their grid point."""
-        n = self.size
-        u, v = gx % n, gz % n
-        for k, arr in rec_store[level].items():
-            if k in ("tagx", "tagz"):
-                continue
-            arr[u, v] = rec[k]
-        rec_store[level]["tagx"][u, v] = gx
-        rec_store[level]["tagz"][u, v] = gz
-
-    def _pack(self, rec):
-        """Records to texels: biome color (rgba, the canopy's shade over the ground baked in) and
-        the packed texel (ground top bits, then top block, the block under it, crown leaves or 0,
-        crown height, then the water's surface bits or -1, then coverage and flags)."""
-        cov = rec["cov"].astype("f4") / 255
-        shade = np.where(rec["surf"] == CUSTOM, 1.0, 1.0 - CANOPY_SHADE * cov)
-        rgba = np.concatenate([np.clip(rec["tint"].astype("f4") * shade[:, None], 0, 255),
-                               rec["depth"][:, None].astype("f4")], axis=1).astype("u1")
-        packed = (rec["surf"].astype("u4") | rec["fill"].astype("u4") << 8
-                  | rec["leaves"].astype("u4") << 16 | rec["crown"].astype("u4") << 24)
-        misc = (rec["cov"].astype("u4") | rec["wetcov"].astype("u4") << 8
-                | rec["flags"].astype("u4") << 16 | rec["icecov"].astype("u4") << 24)
-        data = np.stack([rec["ground"].astype("f4").view("u4"), packed,
-                         rec["wsurf"].astype("f4").view("u4"), misc], axis=1)
-        return rgba, data, rec["wsurf"] >= 0
-
-    def _sample_runs(self, level, runs, job, sub=LOD_SUB):
-        """Produce all the cells of the given writes in one pass — sampling is much cheaper in
-        one big batch — and pack them for the textures. Runs on the sampler thread."""
-        flat = []
-        for xs, zs in runs:
-            gz, gx = np.meshgrid(zs, xs, indexing="ij")  # texture rows are z
-            flat.append((gx.ravel(), gz.ravel()))
-        gx = np.concatenate([g[0] for g in flat])
-        gz = np.concatenate([g[1] for g in flat])
-        rgba, data, wet = self._pack(self.produce(level, gx, gz, sub, job))
-        return flat, rgba, data, wet
-
-    def _upload_runs(self, level, runs, flat, rgba, data, wet):
-        """Write a level's packed runs into its textures, wet mask included. Game thread only:
-        the GL calls live here."""
+    def _upload_runs(self, level, runs, rgba, data, wet):
+        """Write a level's runs of texels (xs, zs), one after the other in the arrays, into its
+        textures, wet mask included."""
         n = self.size
         start = 0
-        for (xs, zs), (fx, _) in zip(runs, flat):
-            end = start + len(fx)
-            u, v = xs[0] % n, zs[0] % n
+        for xs, zs in runs:
+            end = start + len(xs) * len(zs)
+            u, v = int(xs[0]) % n, int(zs[0]) % n
             viewport = (u, v, len(xs), len(zs))
             self.data_maps[level].write(data[start:end].tobytes(), viewport=viewport)
             self.color_maps[level].write(rgba[start:end].tobytes(), viewport=viewport)
@@ -1660,160 +1413,6 @@ class FarTerrain:
                 wet[start:end].reshape(len(zs), len(xs)).T)
             start = end
         self.wet_dirty[level] = True
-
-    def _dirty_runs(self, level, budget, marks, claimed=()):
-        """Up to `budget` cells of the set marked dirty under a level, grouped into runs along
-        x or z, whichever makes fewer writes (a moved strip makes a line of parents, not a
-        scatter). The rest stay dirty for another batch. A cell out of the window is not
-        written — its texel means somewhere else — but the level above still inherits it.
-        `claimed` cells are already being written this batch: they drop out of the set.
-        `marks` is the batch's own list of dirty sets (the sampler thread's, not self.dirty)."""
-        cells = marks[level]
-        if self.origins[level] is None or not cells:
-            marks[level] = set()
-            return []
-        n = self.size
-        ox, oz = self.origins[level]
-        inside = {(x, z) for x, z in cells - claimed if ox <= x < ox + n and oz <= z < oz + n}
-        if level + 1 < self.n_levels:
-            marks[level + 1].update((x >> 1, z >> 1) for x, z in cells - inside - claimed)
-        if not inside:
-            marks[level] = set()
-            return []
-        # Group the cells into runs, along x or along z: whichever orientation needs fewer
-        # writes (a moved strip makes a line of parents, not a scatter of single cells)
-        xs_, zs_ = (np.fromiter((c[i] for c in inside), np.int64, len(inside)) for i in (0, 1))
-        x0, z0 = xs_.min(), zs_.min()
-        grid = np.zeros((int(zs_.max() - z0) + 1, int(xs_.max() - x0) + 1), bool)
-        grid[zs_ - z0, xs_ - x0] = True
-
-        def runs(grid, across):
-            """Contiguous runs of True in a boolean grid: for across, rows of (xs, [z])."""
-            g = grid if across else grid.T
-            out = []
-            for r, row in enumerate(g):
-                starts = np.nonzero(np.diff(row.astype(np.int8), prepend=0) == 1)[0]
-                ends = np.nonzero(np.diff(row.astype(np.int8), append=0) == -1)[0]
-                for a, b in zip(starts, ends):
-                    vs = np.arange(a, b + 1) + (x0 if across else z0)  # b is the last True, included
-                    key = np.array([r + (z0 if across else x0)])
-                    # Split where the texel address wraps around the grid
-                    while len(vs) and vs[-1] % n < len(vs) - 1:
-                        w = int(len(vs) - 1 - vs[-1] % n)
-                        out.append((vs[:w], key) if across else (key, vs[:w]))
-                        vs = vs[w:]
-                    if len(vs):
-                        out.append((vs, key) if across else (key, vs))
-            return out
-
-        writes = min((runs(grid, True), runs(grid, False)), key=len)
-        # The cells that need it first are the ones about to be drawn: close to the finer
-        # level's edge, where this level takes over cell by cell
-        if level > 0 and sum(len(w[0]) * len(w[1]) for w in writes) > budget \
-                and self.origins[level - 1] is not None:
-            fx, fz = self.origins[level - 1]
-            fn = self.size
-
-            def distance(w):
-                xs, zs = w
-                dx = min(min(2 * x - fx, fx + fn - 2 - 2 * x) for x in xs)
-                dz = min(min(2 * z - fz, fz + fn - 2 - 2 * z) for z in zs)
-                return min(dx, dz)
-            writes.sort(key=distance)
-        taken, taken_n = [], 0
-        for w in writes:
-            if taken_n and taken_n + len(w[0]) * len(w[1]) > budget:
-                break
-            taken.append(w)
-            taken_n += len(w[0]) * len(w[1])
-        covered = {(int(x), int(z)) for xs, zs in taken for x in xs for z in zs}
-        marks[level] = inside - covered
-        return taken
-
-    def block_changed(self, x, z):
-        """A block the player changed may show in the distant terrain: the finest cell it stands
-        in is sampled again, and the change climbs the cascade from there."""
-        gx, gz = math.floor(x / self.spacing), math.floor(z / self.spacing)
-        self.dirty[0].add((gx, gz))
-        self.version += 1
-
-    def update(self, cam):
-        n = self.size
-        writes = []  # (level, grid xs, grid zs)
-        for level in range(self.n_levels):
-            spacing = self.spacing << level
-            new = (math.floor(cam[0] / spacing) - n // 2, math.floor(cam[2] / spacing) - n // 2)
-            old = self.origins[level]
-            if old == new:
-                continue
-            self.origins[level] = new
-            # Texel (u, v) holds grid point (x, z) with x & 127 == u and z & 127 == v
-            xs = new[0] + (np.arange(n) - new[0]) % n  # grid x of each texel column
-            zs = new[1] + (np.arange(n) - new[1]) % n  # grid z of each texel row
-            if old is None or abs(new[0] - old[0]) >= n or abs(new[1] - old[1]) >= n:
-                writes.append((level, xs, zs))
-                self.dirty[level] = set()  # a fresh grid: pending resamples mean other places
-                continue
-            # Only the new columns (x) and rows (z) that came into view
-            gx = range(old[0] + n, new[0] + n) if new[0] > old[0] else range(new[0], old[0])
-            writes += [(level, np.array([x]), zs) for x in gx]
-            gz = range(old[1] + n, new[1] + n) if new[1] > old[1] else range(new[1], old[1])
-            writes += [(level, xs, np.array([z])) for z in gz]
-        # Whole levels (a new world, a jump far away) are done at once; edge strips a few per
-        # batch, oldest first, so several levels moving together don't make one long batch
-        self.queue += writes
-        # A finished sampling job lands in the textures now (sampling itself runs on its thread:
-        # numpy frees the GIL through its big loops, so it really works beside the game's thread)
-        if self.sampling is not None and self.sampling[3].done():
-            batch, world, marks, future = self.sampling
-            self.sampling = None
-            out = future.result()
-            if world is self.world:  # else the world changed since: stale, dropped
-                self.version += 1
-                for level, runs, flat, rgba, data, wet in out:
-                    self._upload_runs(level, runs, flat, rgba, data, wet)
-                # The cells the batch had no room for are still dirty — plus whatever
-                # block_changed added while it ran
-                for level in range(self.n_levels):
-                    self.dirty[level] |= marks[level]
-        # Feed the sampler: strips and dirty cells go to its thread as one job. The job gets its
-        # own view of the shared state — the world, a snapshot of its edited columns, the
-        # records store and the dirty sets (handed over: they come back when the job lands).
-        if self.sampling is None and (self.queue or any(self.dirty)):
-            if any(len(w[1]) * len(w[2]) > n for w in self.queue):
-                batch, self.queue = self.queue, []
-            else:
-                batch, self.queue = self.queue[:LOD_STRIPS_PER_FRAME], self.queue[LOD_STRIPS_PER_FRAME:]
-            world = self.world
-            marks, self.dirty = self.dirty, [set() for _ in range(self.n_levels)]
-            edited = {k: set(v) for k, v in world.edited_columns.items()}
-            job = (world, edited, self.rec, marks)
-            self.sampling = (batch, world, marks,
-                             self.pool.submit(self._produce_batch, batch, job))
-
-    def _produce_batch(self, batch, job):
-        """All the texels for a batch of writes, produced level by level so the cascade sees
-        fresh records: a level's writes mark the cells they touch in the level above, written
-        in its turn. Strip and dirty cells of a level are sampled in one pass — the sampling
-        setup dominates the cost. On the pool's thread, so the game's frame never waits."""
-        _, _, _, marks = job
-        by_level = [[] for _ in range(self.n_levels)]
-        for level, xs, zs in batch:
-            by_level[level].append((xs, zs))
-        out = []  # (level, runs, flat, rgba, data, wet) — textures written on landing
-        budget = LOD_DIRTY_PER_FRAME
-        for level in range(self.n_levels):
-            dirty_runs = []
-            if budget and marks[level]:
-                claimed = {(int(x), int(z)) for xs, zs in by_level[level]
-                           for x in xs for z in zs}
-                dirty_runs = self._dirty_runs(level, budget, marks, claimed)
-                budget -= sum(len(w[0]) * len(w[1]) for w in dirty_runs)
-            runs = by_level[level] + dirty_runs
-            if runs:
-                flat, rgba, data, wet = self._sample_runs(level, runs, job)
-                out.append((level, runs, flat, rgba, data, wet))
-        return out
 
     def _wet_list(self, level):
         """The wet cells of a level, as their local coordinates for the shader: the water pass
@@ -1831,13 +1430,72 @@ class FarTerrain:
         self.wet_dirty[level] = False
 
     def levels(self):
-        """The levels to draw: up to the first that reaches past the view distance."""
+        """The levels the view needs: up to the first that reaches past the view distance."""
         for level in range(self.n_levels):
             if (self.size // 2 - LOD_MARGIN) * (self.spacing << level) >= self.view_distance:
                 return level + 1
         return self.n_levels
 
+    def progress(self):
+        """Share of the levels the view needs that have landed (for the loading screen)."""
+        wanted = self.levels()
+        return sum(origin is not None for origin in self.origins[:wanted]) / wanted
+
+    def drawn_levels(self, cam):
+        """(first, last) of the levels to draw, (0, -1) for none: the longest run of levels
+        whose grids are around the camera — the coarser run, of two as long. A level whose cells
+        are late (a jump far away, a camera faster than the sampler) is left out until its grid
+        has caught up to an eighth of its width: each grid then fits well inside the next one."""
+        n = self.size
+        best, start = (0, -1), None
+        wanted = self.levels()
+        for level in range(wanted + 1):
+            near = False
+            if level < wanted and self.origins[level] is not None:
+                spacing = self.spacing << level
+                ox, oz = self.origins[level]
+                near = max(abs(math.floor(cam[0] / spacing) - n // 2 - ox),
+                           abs(math.floor(cam[2] / spacing) - n // 2 - oz)) <= n // 8
+            if near and start is None:
+                start = level
+            elif not near and start is not None:
+                if level - start >= best[1] - best[0] + 1:
+                    best = (start, level - 1)
+                start = None
+        return best
+
+    def tiles_in_view(self, planes, cam, first, last, rects):
+        """For each level from first to last, the corner cells of the tiles of its grid to draw,
+        nearest first. A tile is left out when a box around it as tall as the world is outside
+        one of the planes, or when the finer level draws all of its cells (the hole in the middle
+        of a level). Without this every cell of every grid goes through the vertex shader each
+        frame, and at the finest qualities that is where the card's time went: more than two
+        thirds of the cells are behind the camera or beside the view."""
+        levels = range(first, last + 1)
+        spacing = np.array([float(self.spacing << level) for level in levels])[:, None]
+        corner = np.array([rects[level][:2] for level in levels])
+        lo_x = corner[:, :1] + self.tile_cells[None, :, 0] * spacing
+        lo_z = corner[:, 1:] + self.tile_cells[None, :, 1] * spacing
+        hi_x, hi_z = lo_x + self.tile_width * spacing, lo_z + self.tile_width * spacing
+        pad = 0.5 * spacing  # (the sides at the edge of a grid and the faces' overlap reach a little outside)
+        bottom, top = np.full_like(lo_x, -600.0 - cam[1]), np.full_like(lo_x, 4200.0 - cam[1])
+        lo = np.stack([lo_x - pad, bottom, lo_z - pad], axis=-1)
+        hi = np.stack([hi_x + pad, top, hi_z + pad], axis=-1)
+        show = boxes_visible(planes, lo.reshape(-1, 3), hi.reshape(-1, 3)).reshape(lo_x.shape)
+        for i, level in enumerate(levels):
+            if level > first:  # the cells well inside the finer level's square are all drawn by it
+                x0, z0, x1, z1 = rects[level - 1]
+                m = (LOD_MARGIN + LOD_BAND) * 0.5 * spacing[i, 0]
+                show[i] &= ~((lo_x[i] >= x0 + m) & (hi_x[i] <= x1 - m) & (lo_z[i] >= z0 + m) & (hi_z[i] <= z1 - m))
+        near = (lo_x + hi_x) ** 2 + (lo_z + hi_z) ** 2  # nearest first: what is behind is not shaded for nothing
+        return [self.tile_cells[np.flatnonzero(show[i])[np.argsort(near[i][show[i]])]] for i in range(len(spacing))]
+
     def render(self, vp, cam, chunks, shadow=False):
+        first, last = self.drawn_levels(cam)
+        if not shadow:
+            self.shown = (first, last)
+        if last < first:
+            return
         p = self.program
         p["vp"].write(matrix_bytes(vp))
         p["mode"] = 1 if shadow else 0
@@ -1848,21 +1506,25 @@ class FarTerrain:
             set_uniforms(p, {"cam_chunk": (pcx, pcz), "ready": READY_UNIT,
                              "cam_in_chunk": (float(cam[0] - pcx * CHUNK), float(cam[2] - pcz * CHUNK))})
             chunks.ready_texture.use(READY_UNIT)
-        set_uniforms(p, {"data": DATA_UNIT, "colors": COLORS_UNIT, "wet_cells": WET_UNIT,
-                         "tile_avg": TILE_AVG_UNIT, "atlas": ATLAS_UNIT, "grid_size": self.size})
-        p["clip_planes"].write(frustum_planes(vp)[[0, 1, 4]].astype("f4").tobytes())  # left right near
+        set_uniforms(p, {"data": DATA_UNIT, "coarse_data": COARSE_UNIT, "fine_data": FINE_UNIT,
+                         "colors": COLORS_UNIT, "wet_cells": WET_UNIT, "tile_avg": TILE_AVG_UNIT,
+                         "atlas": ATLAS_UNIT, "grid_size": self.size})
+        planes = frustum_planes(vp)
+        p["clip_planes"].write(planes[[0, 1, 4]].astype("f4").tobytes())  # left right near
+        p["tile_width"] = self.tile_width
+        p["lee"] = (float(vp[2][0]), float(vp[2][2])) if shadow else (0.0, 0.0)  # (depth grows away from the light)
         self.atlas.use(ATLAS_UNIT)
         self.tile_avg.use(TILE_AVG_UNIT)
-        count = self.levels()
-        rects = []
-        for level in range(count):
+        rects = {}
+        for level in range(first, last + 1):
             spacing = self.spacing << level
             gx, gz = self.origins[level]
             ox, oz = gx * spacing - cam[0], gz * spacing - cam[2]
             extent = (self.size - 1) * spacing
-            rects.append((float(ox), float(oz), float(ox + extent), float(oz + extent)))
+            rects[level] = (float(ox), float(oz), float(ox + extent), float(oz + extent))
+        tiles = self.tiles_in_view(planes[:5], cam, first, last, rects)
         # The ground and the aquatic floor first, then the water over them: see-through like the
-        # blocks' water. It only needs its top face (the cube's first 6 vertices): the ground
+        # blocks' water. It only needs its top face (the mesh's first 6 vertices): the ground
         # columns close the edges, and the shadow maps skip water anyway. And only the cells that
         # actually have water are drawn (one instance per wet cell, read from wet_cells)
         for wpass in ((0,) if shadow else (0, 1)):
@@ -1872,15 +1534,20 @@ class FarTerrain:
                 ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
                 ctx.fbo.depth_mask = False
             p["water_pass"] = wpass
-            for level in range(count):
-                spacing = self.spacing << level
-                gx, gz = self.origins[level]
-                set_uniforms(p, {"level": level, "grid_origin": (gx, gz), "origin": rects[level][:2],
-                                 "spacing": float(spacing), "own": rects[level],
-                                 "fade_own": int(level < count - 1),
-                                 "inner": rects[level - 1] if level else (0.0, 0.0, 0.0, 0.0),
-                                 "fade_inner": int(level > 0)})
+            for level in range(first, last + 1):
+                finer, coarser = level > first, level < last
+                set_uniforms(p, {"level": level, "grid_origin": self.origins[level], "origin": rects[level][:2],
+                                 "spacing": float(self.spacing << level), "own": rects[level],
+                                 "fade_own": int(coarser),
+                                 "coarse_origin": self.origins[level + 1] if coarser else (0, 0),
+                                 "inner": rects[level - 1] if finer else (0.0, 0.0, 0.0, 0.0),
+                                 "fade_inner": int(finer),
+                                 "fine_origin": self.origins[level - 1] if finer else (0, 0)})
+                # (a level without a neighbor gets its own grid in its place: never read, but an
+                # integer texture must be bound where the shader has an integer sampler)
                 self.data_maps[level].use(DATA_UNIT)
+                self.data_maps[level + 1 if coarser else level].use(COARSE_UNIT)
+                self.data_maps[level - 1 if finer else level].use(FINE_UNIT)
                 self.color_maps[level].use(COLORS_UNIT)
                 if wpass:
                     if self.wet_dirty[level]:
@@ -1888,23 +1555,14 @@ class FarTerrain:
                     if self.wet_counts[level]:
                         self.wet_texs[level].use(WET_UNIT)
                         self.vao.render(vertices=6, instances=self.wet_counts[level])
-                else:
-                    self.vao.render(vertices=30, instances=(self.size - 1) ** 2)
+                elif len(tiles[level - first]):
+                    cells = tiles[level - first]
+                    self.tile_list[:len(cells)] = cells
+                    p["tiles"].write(self.tile_list.tobytes())
+                    self.vao.render(vertices=18 if shadow else 30, instances=len(cells) * self.tile_width ** 2)
             if wpass:
                 ctx.fbo.depth_mask = True
                 ctx.disable(moderngl.BLEND)
-
-
-def cell_hashes(gx, gz, level):
-    """A number in [0, 1) for each grid cell of a level, always the same (where trees grow)."""
-    with np.errstate(over="ignore"):
-        h = (np.asarray(gx).astype(np.uint64) * np.uint64(0x9E3779B97F4A7C15)
-             ^ np.asarray(gz).astype(np.uint64) * np.uint64(0xC2B2AE3D27D4EB4F)
-             ^ np.asarray(level).astype(np.uint64) * np.uint64(0x165667B19E3779F9))
-        h ^= h >> np.uint64(33)
-        h *= np.uint64(0xFF51AFD7ED558CCD)
-        h ^= h >> np.uint64(33)
-    return (h >> np.uint64(11)).astype(np.float64) / float(1 << 53)
 
 
 # --- Shadows -----------------------------------------------------------------------------------
@@ -1915,6 +1573,7 @@ class ShadowMap:
 
     def __init__(self, light, half, cam, key, version):
         self.key, self.version, self.half, self.cam = key, version, half, cam
+        self.time = time.perf_counter()  # when it was drawn
         # Axes of the light's view: right, up, and toward the light
         helper = np.array([0.0, 0.0, 1.0]) if abs(light[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
         right = np.cross(helper, light)
@@ -1968,14 +1627,16 @@ class Shadows:
         light /= np.linalg.norm(light)
         halves = ((chunks.radius + 1.5) * CHUNK, *TERRAIN_SHADOW_HALF)
         versions = (chunks.version, far.version, far.version)
+        now = time.perf_counter()
         for i in range(3):
             old = self.maps[i]
-            if (old is not None and old.key == key and old.version == versions[i] and old.half == halves[i]
+            if (old is not None and old.key == key and old.half == halves[i]
                     and math.hypot(cam[0] - old.cam[0], cam[2] - old.cam[2]) < 0.15 * halves[i]
-                    and abs(cam[1] - old.cam[1]) < 0.5 * SHADOW_DEPTH):
+                    and abs(cam[1] - old.cam[1]) < 0.5 * SHADOW_DEPTH
+                    and (old.version == versions[i] or now - old.time < SHADOW_EVERY[i])):
                 continue
-            if i > 0 and None in far.origins:
-                continue
+            if i > 0 and far.drawn_levels(cam)[1] < 0:
+                continue  # (no level of the distant terrain has landed yet)
             new = ShadowMap(light, halves[i], cam, key, versions[i])
             self.maps[i] = new
             self.draw(i, new.matrix(cam), cam, chunks, far, block_program, lod_program)
@@ -2181,8 +1842,9 @@ class Renderer:
             self.post_vao = ctx.vertex_array(self.post_program, [(quad, "2f", "in_pos")])
             self.outline_vbo = ctx.buffer(reserve=24 * 3 * 4)
             self.outline_vao = ctx.vertex_array(self.outline_program, [(self.outline_vbo, "3f", "in_pos")])
-            self.chunks = Chunks(ctx, self.program, world)
-            self.far = FarTerrain(ctx, self.lod_program, world, self.texture, atlas,
+            self.sampler = SamplerProcess()  # makes the distant terrain's texels, in its own process
+            self.chunks = Chunks(ctx, self.program, world, self.sampler.shared)
+            self.far = FarTerrain(ctx, self.lod_program, world, self.texture, atlas, self.sampler,
                                   *LOD_QUALITIES[LOD_QUALITY_NAMES[0]])
             self.shadows = Shadows(ctx, self.texture)
             self.palette = Palette(ctx, fixed)
@@ -2231,11 +1893,10 @@ class Renderer:
             return
         with self.ctx:
             self.far = FarTerrain(self.ctx, self.lod_program, self.world, self.texture,
-                                  far.atlas_data, spacing, size, levels)
+                                  far.atlas_data, self.sampler, spacing, size, levels)
             self.far.version = far.version + 1  # the shadow maps are drawn again
             for res in far.data_maps + far.color_maps + far.wet_texs + [far.tile_avg, far.vbo, far.vao]:
                 res.release()
-            far.pool.shutdown(wait=False)
 
     def make_framebuffers(self):
         ctx = self.ctx
@@ -2284,6 +1945,7 @@ class Renderer:
         distant terrain around it."""
         with self.ctx:
             self.chunks.radius = self.sim_distance
+            self.far.view_distance = self.view_distance
             self.far.update(cam)
             self.chunks.update(cam, budget)
 
@@ -2299,12 +1961,14 @@ class Renderer:
         return min(self.render_distance * CHUNK, FAR_LIMIT)
 
     def progress(self, cam, radius=3):
-        return self.chunks.progress(cam, radius)
+        """Share of the world around the camera that is ready to be seen (for the loading screen):
+        the blocks within radius chunks for one half, the distant terrain for the other."""
+        return 0.5 * self.chunks.progress(cam, radius) + 0.5 * self.far.progress()
 
     def block_changed(self, x, y, z):
         with self.ctx:
             self.chunks.block_changed(x, y, z)
-            self.far.block_changed(x, z)
+            self.far.block_changed(x, y, z)
 
     def render(self, screen, eye, forward, target=None):
         """Draw the world seen from eye into screen (a (height, width) uint8 view of pyxel.screen).
@@ -2381,24 +2045,25 @@ class Renderer:
         self.sky_program["inv_vp"].write(matrix_bytes(np.linalg.inv(far_vp)))
         self.sky_vao.render(moderngl.TRIANGLE_STRIP)
 
-        # Distant terrain and far clouds first, then clear the depth (not the colors) and draw
-        # the blocks on top: each pass gets the depth precision it needs
+        # The blocks first, then the distant terrain and the far clouds behind them: the blocks
+        # take the nearer half of the depth buffer and the distant terrain the farther half, so
+        # each keeps the precision of its own projection, and the distant terrain costs nothing
+        # where the blocks hide it (it is drawn whole under the blocks that give way to it)
+        near_draw, far_draw = depth_half(near_vp, False), depth_half(far_vp, True)
         ctx.enable(moderngl.DEPTH_TEST)
-        if None not in self.far.origins:
-            self.far.render(far_vp, cam, self.chunks)
-        near_radius = (self.sim_distance + 2) * CHUNK
-        self.render_clouds(far_vp, near_radius, near_pass=False)
-        fbo.color_mask = (False, False, False, False)
-        fbo.clear(depth=1.0)
-        fbo.color_mask = (True, True, True, True)
-        fbo.use()  # masks only come back into effect when the framebuffer is bound
-
         self.texture.use(ATLAS_UNIT)
         self.far.tile_avg.use(TILE_AVG_UNIT)
-        self.program["vp"].write(matrix_bytes(near_vp))
+        self.program["vp"].write(matrix_bytes(near_draw))
         self.program["mode"] = 0
         self.drawn = self.chunks.find_in_view(near_vp, cam)
         self.chunks.render()
+        self.far.render(far_draw, cam, self.chunks)
+        near_radius = (self.sim_distance + 2) * CHUNK
+        self.render_clouds(far_draw, near_radius, near_pass=False)
+
+        # The blocks' water, see-through, over all of that; then the clouds nearby
+        self.texture.use(ATLAS_UNIT)
+        self.far.tile_avg.use(TILE_AVG_UNIT)
         ctx.enable(moderngl.BLEND)
         ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA
         fbo.depth_mask = False
@@ -2408,14 +2073,14 @@ class Renderer:
         ctx.disable(moderngl.BLEND)
         fbo.depth_mask = True
         fbo.use()
-        self.render_clouds(near_vp, near_radius, near_pass=True)
+        self.render_clouds(near_draw, near_radius, near_pass=True)
 
         if target:
             corners = np.array([(x, y, z) for x in (0, 1) for y in (0, 1) for z in (0, 1)], dtype=np.float64)
             corners = (corners - 0.5) * 1.004 + 0.5 + np.array(target) - np.array(cam)
             lines = corners[np.array(CUBE_EDGES).ravel()]
             self.outline_vbo.write(lines.astype("f4").tobytes())
-            self.outline_program["vp"].write(matrix_bytes(near_vp))
+            self.outline_program["vp"].write(matrix_bytes(near_draw))
             self.outline_vao.render(moderngl.LINES)
 
         # Down to one color per pixel, then to Pyxel's palette

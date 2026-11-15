@@ -1,10 +1,11 @@
 # PyCraft — Technique
 
 > Comment le moteur fonctionne réellement, tel qu'implémenté dans `pycraft-gpu/`
-> (branches `SWE-2` puis `m1-pro`). Pour le jeu lui-même (contrôles, réglages,
+> (branches `SWE-2`, `m1-pro` puis `claude`). Pour le jeu lui-même (contrôles, réglages,
 > limites), voir [`pycraft-gpu/README.md`](../pycraft-gpu/README.md).
 >
-> Document rédigé le 4 novembre 2026. L'approche initiale (rendu 2D par
+> Document rédigé le 4 novembre 2026, mis à jour le 15 novembre 2026 pour la branche
+> `claude` (terrain lointain refait). L'approche initiale (rendu 2D par
 > `pyxel.tri`, voir `SPEC.md` et `tasks/`) a été abandonnée au profit du GPU.
 
 ## Vue d'ensemble
@@ -20,6 +21,7 @@ HUD par-dessus.
 terrain.py  génération procédurale du monde (bruit, biomes, grottes, arbres)
 world.py    sections 16×16×16 créées à la demande, accès blocs, sauvegarde
 builder.py  processus workers : génération + recherche des faces visibles
+lod.py      processus d'échantillonnage du terrain lointain (branche `claude`)
 renderer.py OpenGL : maillages de blocs, clipmap lointain, ombres, ciel, palette
 main.py     application Pyxel : écrans, entrées, casser/poser, jour/nuit, son
 ```
@@ -89,8 +91,9 @@ cellule) sur ~24 colonnes.
 - **Edits du joueur** : `world.edited_tops` reconstruit le vrai sommet des
   colonnes modifiées (surface, remplissage, eau, couronne, teinte) ; ils sont
   injectés à tous les niveaux pendant l'échantillonnage, et `block_changed`
-  marque la cellule L0 « dirty » — la modification remonte la cascade, cadre
-  par cadre, là où les records ont vraiment changé. Un bloc inconnu du shader
+  marque la cellule L0 « dirty » — la modification remonte la cascade, job
+  après job, là où les records ont vraiment changé (une tour posée à 170 blocs
+  apparaît à quatre niveaux en 1,5 s environ). Un bloc inconnu du shader
   passe par la sentinelle `surf=255` + sa couleur résolue dans la teinte.
 - **Plantes et arbres** : les plantes n'ont pas de géométrie lointaine mais
   leur couleur tachette le sol ; la canopée devient une couverture continue
@@ -99,30 +102,91 @@ cellule) sur ~24 colonnes.
   proportionnel à la couverture mouillée de la cellule ; la glace est un
   solide de la colonne du sol.
 - Textures **qui bouclent** (wrap) : quand la caméra avance, seuls les
-  nouveaux bords sont échantillonnés — par bandes, quelques-unes par frame.
-- Les resamples « dirty » d'un niveau sont regroupés en runs contigus (ligne
-  ou colonne, le moins cher), plafonnés par frame et **priorisés près du
-  bord du niveau plus fin** — là où le niveau prend le relais cellule par
-  cellule. Le climat (champ kilométrique) n'est évalué qu'une fois par
-  cellule sous 32 blocs d'espacement.
-- Sur `m1-pro`, toute la production de records et de texels (sampling,
-  cascade, injection des édits) tourne sur **son propre thread** (même
-  raison : numpy libère le GIL) — un saut de caméra ne fige plus la frame.
-  Le job travaille niveau par niveau sur son instantané (monde, colonnes
-  éditées copiées, records, ensembles dirty) et les écritures de textures
+  nouveaux bords sont échantillonnés, par bandes de 4 à 16 cellules. Le
+  climat (champ kilométrique) n'est évalué qu'une fois par cellule sous
+  32 blocs d'espacement.
+- Sur `m1-pro`, toute la production de records et de texels tourne sur **son
+  propre thread** (numpy libère le GIL) et les écritures de textures
   atterrissent sur le thread du jeu quand le futur se termine.
+
+### Sur `claude` : un processus, et des murs qui se rejoignent
+
+Trois défauts venaient de là : des trous dans les montagnes lointaines, des
+versants en bandes ondulées, des murs de colonnes séparées par du ciel. Leurs
+causes, et ce qui les remplace :
+
+- **Le thread d'échantillonnage n'avançait pas.** Le thread du jeu passe son
+  temps dans des appels OpenGL, qui gardent le GIL : le thread du sampler
+  attendait un appel entier à chacune de ses milliers d'étapes. Sur un PC qui
+  ne tient pas sa cadence, le premier remplissage prenait des minutes et le
+  monde au-delà des blocs restait vide. Le sampler vit maintenant dans **son
+  propre processus** (`lod.py`), avec sa copie du monde (les blocs modifiés
+  lui sont envoyés un par un). Il y répartit un niveau sur quelques threads
+  (de 2 à 6, par paquets de 32 768 points) et **partage un niveau entier avec
+  les workers de `builder.py` qui n'ont rien à construire**, par deux files
+  communes. Le jeu envoie un job (origines voulues, bandes à produire,
+  édits), reçoit les texels niveau par niveau, le plus fin d'abord, et
+  n'écrit que dans les textures.
+- **La grille d'un niveau ne bouge que quand ses cellules sont arrivées.**
+  Avant, l'origine avançait d'abord et les nouvelles bandes montraient
+  l'ancien contenu de la texture torique. Un niveau à plus d'une demi-grille
+  de la caméra (téléportation) est refait en entier ; tant qu'il est à plus
+  d'un huitième de grille, il n'est pas dessiné et les niveaux plus grossiers
+  couvrent son terrain.
+- **La pente est décidée par le sampler**, comme dans le générateur
+  (différence de hauteur maximale avec les quatre voisins de la sous-grille).
+  Une cellule raide est de la roche sans arbres à tous les niveaux. Avant, le
+  shader la devinait à partir des voisins, et un mur s'arrêtait à la hauteur
+  d'une couronne d'arbre que le voisin ne dessinait pas.
+- **Les murs descendent jusqu'au vrai sommet voisin** : `drawn_top` donne la
+  hauteur qu'une cellule dessine vraiment (sol, plus la couronne là où elle
+  en a une). Le côté d'une colonne descend jusqu'au plus bas de : son voisin
+  du même niveau, la cellule plus grossière là où ce niveau prend le relais,
+  et les deux cellules plus fines le long du côté. Les faces se recouvrent
+  de 1 % de l'espacement, ce qui supprime les pixels isolés aux jonctions.
+- **Sous les blocs qui s'estompent**, les colonnes restent entières (elles ne
+  disparaissent que sous les chunks vraiment dessinés) : il y a toujours du
+  sol derrière un bloc absent. Les couronnes montent sur 48 blocs au-delà
+  de cette limite, au lieu d'un mur de feuilles.
+- **Ordre de dessin** : ciel, blocs opaques, terrain lointain, nuages
+  lointains, eau des blocs, nuages proches. Les blocs occupent la moitié
+  proche du tampon de profondeur et le terrain lointain la moitié lointaine :
+  la carte rejette les pixels du terrain lointain déjà couverts par des
+  blocs, et dessiner les colonnes entières sous les blocs ne coûte presque
+  rien (jusqu'à 34 ms par image à 1280x720 sinon).
+- Les cellules à refaire sont de deux sortes : celles d'un bloc modifié
+  (prioritaires, 256 par job) et celles qui viennent d'entrer dans la grille
+  d'un niveau plus fin (jusqu'à 4096 par job, refaites seulement quand leurs
+  quatre filles sont connues).
+- L'écran de chargement attend aussi que tous les niveaux soient arrivés, et
+  F3 affiche les niveaux dessinés.
+- **Tuiles** : la grille de chaque niveau est envoyée à la carte en 8×8
+  tuiles ; seules celles qui peuvent être dans le champ partent, les plus
+  proches d'abord (liste dans un tableau uniforme, un seul appel de dessin
+  par niveau). Une shadow map ne reçoit que deux côtés par colonne, ceux
+  tournés à l'opposé de la lumière : avec les sommets ils arrêtent la même
+  lumière que les quatre. La vue garde les quatre côtés : là où un bloc
+  s'efface sur une pente raide, une fente d'un pixel peut s'ouvrir, et c'est
+  le dos des colonnes plus loin qui la bouche. Passe du terrain lointain à
+  2560x1440 : 1,7 ms en low, 3,3 en medium, 4,4 en high, 11,5 en ultra
+  (14 avant les tuiles).
+
+Vérification : 16 vues de 4 mondes sont rendues deux fois, la seconde avec
+les murs prolongés jusqu'en bas ; aucun pixel de ciel de la première n'est
+couvert dans la seconde, à toutes les qualités.
 
 ## Lumière et ciel
 
 - Le soleil le jour, la lune la nuit ; un cycle complet dure 8 minutes.
 - **Trois shadow maps** (blocs proches, terrain lointain < 1 km, < 8 km),
   redessinées seulement quand la scène change (soleil déplacé, caméra loin,
-  blocs modifiés). Les montagnes projettent des ombres de kilomètres au
+  blocs modifiés) ; sur `claude`, du terrain qui arrive ne redessine une
+  carte qu'au plus toutes les 0,1 s (blocs) ou 0,5 s (terrain lointain). Les montagnes projettent des ombres de kilomètres au
   lever/coucher.
 - Le ciel : soleil, lune, étoiles la nuit, halo autour du soleil, brume bleue
   sur les montagnes lointaines. **Nuages** : couche de bruit bouclable ~940
   blocs au-dessus de la mer, dérivant avec le vent, dessinée deux fois (loin
-  avec le terrain lointain, près après les blocs) et projetant leur ombre.
+  après le terrain lointain, près à la fin) et projetant leur ombre.
 
 ## De la frame au pixel Pyxel
 
@@ -152,16 +216,32 @@ image hors écran à la nouvelle taille.
 | Workers de terrain/mesh | 3 processus | `max(3, cpu_count − 4)` processus | `max(3, min(cpu_count − 4, 8))` processus |
 | Répartition des requêtes de colonnes | un seul worker | tous les workers | tous les workers |
 | Emballage des meshes pour la carte | sur le thread du jeu | pool de 2 threads | pool de 2 threads |
-| Échantillonnage du terrain lointain | par batch, sur le thread du jeu | thread dédié | thread dédié |
+| Échantillonnage du terrain lointain | par batch, sur le thread du jeu | thread dédié | processus dédié (`lod.py`), aidé par les workers inactifs |
+| Pente des colonnes lointaines | devinée par le shader | devinée par le shader | calculée par l'échantillonneur |
+| Ordre de dessin | terrain lointain, puis blocs | terrain lointain, puis blocs | blocs, puis terrain lointain derrière eux |
 | Tuiles des blocs dans le shader du terrain lointain | tableau constant | tableau constant | petite texture entière |
 | Lecture de l'image indexée | copie, puis lignes retournées | copie, puis lignes retournées | directement dans l'écran de Pyxel |
 
 Sur `claude`, `cpu_count` compte les threads matériels : 20 sur le Ryzen AI 9 H 365 (10 cœurs),
 et 16 workers n'y faisaient pas mieux que 8. Le tableau constant `BLOCK_TILES`, indexé par pixel
 selon le bloc, est recopié par le pilote AMD dans la mémoire scratch de chaque pixel : le terrain
-lointain prenait 73 ms de carte par image à 2560x1440, 9 ms avec la texture. Sur ce PC, une image
-fixe passe de 87 à 26 ms à 2560x1440 (graphismes rapides), le vol rapide de 198 à 26 ms, et le
-chargement d'un monde de 13 s à moins d'une seconde.
+lointain prenait 73 ms de carte par image à 2560x1440, 9 ms avec la texture. Le 9 novembre, sur
+ce PC, une image fixe passait ainsi de 87 à 26 ms à 2560x1440 (graphismes rapides) et le vol
+rapide de 198 à 26 ms.
+
+Le 15 novembre (terrain lointain refait ; le PC mesure plus vite ce jour-là, d'où la comparaison
+avec la version précédente relancée le même jour, sans fenêtre et sans limite de cadence) :
+
+| 2560x1440 | avant (0c91c47) | après |
+|---|---|---|
+| Graphismes rapides, LOD medium, 64 chunks : image fixe | 13,5 ms (carte 7,7) | 10,8 ms (carte 6,5) |
+| — monde complet après | 14,9 s dans le test, des minutes en jeu | 3,5 s |
+| Fancy, LOD high, 512 chunks : image fixe | 23,5 ms (carte 16,0) | 20,0 ms (carte 12,9) |
+| — monde complet après | 23,5 s dans le test | 6,9 s |
+
+À 1280x720, LOD medium et 64 chunks, une image fixe prend 7 ms en graphismes rapides et 9 en
+fancy ; le vol rapide (42 blocs/s) environ moitié plus. Premier remplissage par le sampler seul :
+0,8 s en low, 3,3 s en medium, 3,4 s en high, 9,4 s en ultra.
 
 ## Limites connues
 
