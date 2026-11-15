@@ -52,6 +52,7 @@ pycraft-gpu/     # LE JEU : moteur GPU (moderngl) + frontend Pyxel
   main.py        #   application Pyxel : écrans, entrées, casser/poser, cycle jour/nuit
   terrain.py     #   génération du terrain : continents, montagnes, rivières, biomes
   builder.py     #   processus workers : génération + maillage des chunks
+  lod.py         #   processus d'échantillonnage du terrain lointain (LOD)
   renderer.py    #   OpenGL : shadow maps, LOD lointain, ciel, palette Pyxel
   blocks.py      #   types de blocs, textures (atlas généré)
   world.py       #   monde : sections à la demande, sauvegarde

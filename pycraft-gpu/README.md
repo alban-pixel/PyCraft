@@ -6,19 +6,6 @@ through `moderngl`), lit by the sun with shadows, and each finished frame is tur
 256 colors and copied into Pyxel's screen. Pyxel runs the window, keyboard, mouse, menus, HUD, sound
 effects and music.
 
-## Warning: a lot of graphical bugs
-
-**This version has a lot of graphical bugs**, mostly in the distant terrain (the columns drawn
-beyond the real blocks). They were already there before the November 9 performance work, which
-didn't fix them. Seen so far:
-
-- Holes in the distant terrain: the sky shows through mountains, in rows of gaps
-- Distant mountainsides drawn as stacked, wavy stripes of columns instead of a solid slope
-- Seen from close, a mountain can look like a wall of loose columns with sky between them
-
-The performance changes were measured in headless tests (no window); they still need playing in a
-real window.
-
 ## Run it
 
 ```bash
@@ -95,7 +82,7 @@ a real graphics card driver.
 | E | All blocks: click one to put it in the selected slot (click a hotbar slot to select it). Tab / Shift+Tab or a click change the tab. If a tab's blocks don't all fit on the screen, they go on pages: mouse wheel, Left/Right, Page Up/Down or the arrows under the slots turn them |
 | Esc | Pause menu (settings, save and quit) |
 | Tab | Release / capture the mouse |
-| F3 | FPS, the size the 3D view is drawn at and the graphics card's time, position, altitude, biome, chunks and seed |
+| F3 | FPS, the size the 3D view is drawn at and the graphics card's time, position, altitude, biome, chunks, the levels of the distant terrain on screen and seed |
 | H | Show / hide the controls |
 | T or / | Chat: `/tp x y z`, `/time set day\|noon\|sunset\|night\|midnight` |
 
@@ -139,12 +126,17 @@ game uses the screen's real pixels: on a high-DPI screen, Windows would otherwis
 a lower resolution and stretch it, blurred.
 
 On a laptop with an AMD Ryzen AI 9 H 365 and its Radeon 880M graphics, at a render distance of 64
-chunks, medium LOD quality and 100% 3D resolution, a still view takes about 22 ms a frame at
-1280x720 (46 FPS with fast graphics, 43 with fancy) and 26 to 28 ms at 2560x1440 (39 and 36 FPS),
-and flying fast about as long. The distant terrain alone takes about 3 ms of the graphics card's
-time a frame at low LOD quality, 9 at medium, 11 at high and 19 at ultra, whatever the resolution.
-If the game doesn't keep up with the frame rate you chose, lower the LOD quality first, then the
-render distance or the resolution, or switch to fast graphics.
+chunks, medium LOD quality and 100% 3D resolution, a still view takes about 7 ms a frame at
+1280x720 with fast graphics and 9 with fancy (135 and 118 FPS), and 11 and 14 ms at 2560x1440 (88
+and 70 FPS). Flying fast, frames take about half as long again. (Measured without a window, with no
+limit on the frame rate.) At 2560x1440, the distant terrain alone takes about 2 ms of the graphics
+card's time a frame at low LOD quality, 3 at medium, 4 at high and 12 at ultra. If the game doesn't
+keep up with the frame rate you chose, lower the LOD quality first, then the render distance or the
+resolution, or switch to fast graphics.
+
+Opening a world shows a loading bar until the blocks around you and every level of the distant
+terrain are there: about 2 seconds at low LOD quality, 4 at medium and high, and 5 at ultra (11 at
+a render distance of 256 chunks, where the blocks keep the processor busier).
 
 The frame rate is the number of frames the game draws per second. It's useful above 60 only if
 your screen's refresh rate (set in your system's display settings) is that high too.
@@ -161,9 +153,12 @@ world.py     The world: sections made the first time they are needed, block acce
    |
 builder.py   Worker processes that generate the terrain and find every visible block face
    |
-renderer.py  OpenGL draws the shadow maps, then the sky, the distant terrain, the clouds and the
-   |         blocks near the camera, in full color. A last shader turns the frame into Pyxel's
-   |         palette (with dithering), one byte per pixel.
+lod.py       One more process that works out what the terrain far away looks like, at every
+   |         level of detail
+   |
+renderer.py  OpenGL draws the shadow maps, then the sky, the blocks near the camera, the distant
+   |         terrain behind them and the clouds, in full color. A last shader turns the frame
+   |         into Pyxel's palette (with dithering), one byte per pixel.
    v
 pyxel.screen  The frame is copied into Pyxel's screen, then Pyxel draws the HUD and menus on top.
 ```
@@ -215,10 +210,14 @@ the more there are, the darker the corner (ambient occlusion). Plants are not cu
 quads crossed along the diagonals of its block, seen from both sides, whose see-through texels are
 cut out (in the shadows too) and which are lit like the top of a block.
 
-On m1-pro and claude, two more jobs leave the game's thread: packing a finished mesh for the card runs on a
-small pool of threads, and the distant terrain's sampling runs on its own thread — NumPy releases
-the GIL through its big loops, so both really work beside the game's thread, while the card's calls
-themselves stay on it.
+On m1-pro and claude, packing a finished mesh for the card runs on a small pool of threads: NumPy
+releases the GIL through its big loops, so the packing really works beside the game's thread, while
+the card's calls themselves stay on it. On m1-pro the distant terrain's sampling runs on a thread
+as well. On claude it has a process of its own (`lod.py`): the game's thread spends its time inside
+OpenGL calls, which keep the GIL, so a sampling thread waited for a whole call at each of its
+thousands of steps, and on a PC that couldn't hold its frame rate the terrain beyond the blocks
+stayed missing for minutes. In its process the sampler spreads a level over a few threads, and
+shares a whole level with the builder processes that have nothing to build.
 
 Farther away, the terrain is drawn as columns at 6 to 8 levels of detail (the LOD quality setting
 picks the count, the grid width and the finest column: 1 or 2 blocks), each twice as coarse and
@@ -226,28 +225,44 @@ twice as wide as the one before, up to 8 km away. The simplification happens in 
 any meshing: each cell aggregates the sub-samples under its footprint (or its four finer cells,
 when they are known) into a mean top, a majority block, canopy and water coverage and an averaged
 color — so rivers, forests and even the player's buildings survive at range instead of aliasing
-away. The seabed is drawn as true terrain and the water as a see-through layer over it, like the
-water between the blocks. The records are kept in textures that wrap around, so when the camera
-moves only the new edge is produced. Each level leaves a hole where a finer level (or the blocks)
-is drawn. Steep slopes show as rock, and distant terrain fades into a blue haze. Its shader finds
-the texture of each block's face in a small table kept as a texture: as a constant array in the
+away. The sampler measures the slope under each sub-sample the way the terrain generator does, so
+a steep cell is bare rock without trees at every level, as it is in the real blocks. The seabed is
+drawn as true terrain and the water as a see-through layer over it, like the water between the
+blocks. The records are kept in textures that wrap around, so when the camera moves only the new
+edge is produced, a strip of 4 to 16 cells at a time, and a level's grid only moves once the cells
+of its new edge have come back from the sampler. A level that is far behind (after a teleport) is
+left out until it has caught up: the coarser levels cover its ground meanwhile. A block you place
+or break marks its cell, which is sampled again, and the change climbs from level to level.
+
+Each level leaves a hole where a finer level (or the blocks) is drawn, and gives way to it cell by
+cell over a band of 24 columns. The side of a column goes down to the lowest top that is really
+drawn next to it: its neighbor's on the same level, or, where two levels meet, the coarser cell's
+or the two finer cells'. A neighbor only counts with its tree crown where it draws one. Before,
+walls stopped short on steep slopes and the sky showed between the columns, in stripes. Columns
+are drawn whole under the blocks that fade out at the render distance, so there is always ground
+behind a block that isn't drawn, and tree crowns rise over 48 blocks past that edge instead of
+standing there as a wall of leaves. Each level's grid is sent to the card as 8x8 tiles, and only
+the tiles that may be in view are sent, nearest first; a shadow map gets two sides of each column
+instead of four. Distant terrain fades into a blue haze. Its shader finds the
+texture of each block's face in a small table kept as a texture: as a constant array in the
 shader, picked per pixel by block, the AMD Radeon 880M's driver copied it into every pixel's
-scratch memory, and the distant terrain took 73 ms of the card's time a frame at 2560x1440
-instead of 9.
+scratch memory, and the distant terrain took 73 ms of the card's time a frame at 2560x1440.
 
 Everything is drawn relative to the camera, which keeps the numbers small and precise anywhere in
-the endless world. The distant terrain and the blocks each get their own depth range, so both stay
-precise.
+the endless world. The blocks are drawn first, into the near half of the depth buffer, and the
+distant terrain into the far half: each has its own depth range, so both stay precise, the distant
+terrain is always behind the blocks, and the card skips its pixels that blocks already cover.
 
 Light comes from the sun by day and from the moon by night. A face gets the light of the sky (less
 on its sides and underneath) plus the direct light if it faces the sun and isn't in a shadow.
 Shadows come from three shadow maps: pictures of how far everything is from the sun. One holds the
 blocks around the camera, two hold the distant terrain within 1 km and within 8 km. A map is only
 drawn again when what it shows changes: the sun moved a little, the camera went far, or blocks or
-terrain were added. Clouds are a layer of tileable noise about 940 blocks above the sea, drifting
-with the wind. They are drawn twice: far away with the distant terrain, nearby after the blocks.
-Water is drawn last, see-through, mixing its own color with the reflected sky (more at grazing
-angles).
+terrain were added (new terrain alone redraws a map at most every tenth of a second for the
+blocks, every half second for the distant terrain). Clouds are a layer of tileable noise about 940
+blocks above the sea, drifting with the wind. They are drawn twice: far away after the distant
+terrain, nearby at the end. The blocks' water is drawn between the two, see-through, mixing its
+own color with the reflected sky (more at grazing angles).
 
 The frame is drawn in full color, then turned into Pyxel's 256 colors. The first 16 are Pyxel's
 own (used by the HUD), the next 48 suit the block icons, and the last 192 adapt to what is on
@@ -273,8 +288,9 @@ resolution.
 - Water doesn't flow: it stays where it was generated or placed
 - No survival mode (health, hunger, mobs, crafting)
 - Caves get no sunlight, but the light of the sky still reaches them, so they aren't dark
-- The distant terrain is a smooth surface: it shows the shape of the land and its colors, not
-  single blocks or trees
+- The distant terrain shows the shape of the land and its colors, not single blocks or trees: a
+  forest is a layer of leaves over the ground, and a building much smaller than the cell it stands
+  in only leaves its color there
 - The clouds are flat: seen from their own height, they are a thin line
 - Flying fast, you can outrun the block meshes for a moment: the distant terrain fills in until
   they catch up
