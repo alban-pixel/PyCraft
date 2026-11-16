@@ -53,14 +53,12 @@ CROWN_RISE = 48  # blocks over which the crowns rise to their height, past the b
 WET_ALPHA_MIN = 0.35  # opacity of the water of a cell only a little wet (1: like a full one)
 FAR_LIMIT = 8000.0  # the coarsest level reaches about 8 km
 SIM_DISTANCES = {32: 6, 64: 8, 128: 10, 256: 12, 512: 12}  # render distance -> radius drawn as blocks (chunks)
-COLUMN_FACES = (  # (normal, 4 corners) of a column's top and of its four sides
+COLUMN_FACES = (  # (normal, 4 corners) of a column's top, of one side along x and of one along z
     ((0, 1, 0), ((0, 1, 0), (0, 1, 1), (1, 1, 1), (1, 1, 0))),
     ((1, 0, 0), ((1, 1, 0), (1, 1, 1), (1, 0, 1), (1, 0, 0))),
     ((0, 0, 1), ((0, 1, 1), (0, 0, 1), (1, 0, 1), (1, 1, 1))),
-    ((-1, 0, 0), ((0, 1, 0), (0, 0, 0), (0, 0, 1), (0, 1, 1))),
-    ((0, 0, -1), ((0, 1, 0), (1, 1, 0), (1, 0, 0), (0, 0, 0))),
 )
-LOD_TILES = 8  # a level's grid is drawn as 8x8 tiles: only those that may be in view are sent to the card
+LOD_TILES = 16  # a level's grid is drawn as 16x16 tiles: only those that may be in view are sent to the card
 READY_SIZE = 64  # the map of columns drawn as blocks covers 64x64 chunks around the camera
 SHADOW_SIZE = 2048  # texels per side of each shadow map
 SHADOW_DEPTH = 4500.0  # the shadow maps hold what is less than this far from the camera along the light
@@ -85,7 +83,6 @@ READY_UNIT = 2
 CLOUDS_UNIT = 3
 SHADOW_UNITS = (4, 5, 6)
 DATA_UNIT = 7
-WET_UNIT = 8
 TILE_AVG_UNIT = 9
 BLOCK_TILES_UNIT = 10
 COARSE_UNIT = 11
@@ -385,15 +382,16 @@ uniform vec4 own;            // this level's square
 uniform int fade_own;        // 1 when a coarser level takes over at the edge of this one
 uniform int use_ready;       // leave out what the blocks draw (not in the shadow maps)
 uniform vec4 clip_planes[3]; // left, right and near planes of vp: nothing is drawn outside them
-uniform ivec2 tiles[64];     // the tiles of the grid to draw (LOD_TILES x LOD_TILES at most): the cell at the corner of each
+uniform ivec2 tiles[256];     // the tiles of the grid to draw (LOD_TILES x LOD_TILES at most): the cell at the corner of each
 uniform int tile_width;      // cells along a tile's side
 uniform vec2 lee;            // a shadow map: the horizontal direction the light travels in
-uniform usampler2D wet_cells; // the water pass's cells (local coordinates), one per instance
+uniform int far_sides;       // 1: the pass that draws the two other sides of the columns around the blocks
+uniform float block_reach;   // how far from the camera blocks can be drawn
 uniform sampler2D ready;     // 64x64 wrapping map of the chunk columns drawn as blocks
 uniform ivec2 cam_chunk;
 uniform vec2 cam_in_chunk;
 in vec3 in_pos;              // unit cube corner: x, z in {0, 1}; y = 1 on top, 0 down a side
-in vec3 in_norm;             // the face's axis-aligned normal
+in vec3 in_norm;             // the face's normal: up, +x or +z (a side is moved to -x or -z when that is the one to draw)
 out vec3 v_pos;
 flat out int v_face;
 flat out ivec3 v_blocks;     // top block, the block under it, crown leaves (0: no tree)
@@ -429,23 +427,17 @@ float level_fade(vec2 center, vec4 rect, float fine) {  // 1 at the edge of a fi
     return 1.0 - clamp((d - %(margin)d.0 * fine) / (%(band)d.0 * fine), 0.0, 1.0);
 }
 void main() {
-    // One instance per cell of the grid — or per wet cell, for the water pass: a square column
-    // of blocks, like Distant Horizons
-    ivec2 local;
-    if (water_pass == 1)
-        local = ivec2(texelFetch(wet_cells,
-                                 ivec2(gl_InstanceID %% grid_size, gl_InstanceID / grid_size), 0).rg);
-    else {
-        // The cells come tile by tile, for the tiles that may be in view
-        int per = tile_width * tile_width, k = gl_InstanceID %% per;
-        local = tiles[gl_InstanceID / per] + ivec2(k %% tile_width, k / tile_width);
-    }
+    // One instance per cell of the grid: a square column of blocks, like Distant Horizons. The
+    // cells come tile by tile, for the tiles that may be in view (and, for the water pass,
+    // that have water)
+    int per = tile_width * tile_width, k = gl_InstanceID %% per;
+    ivec2 local = tiles[gl_InstanceID / per] + ivec2(k %% tile_width, k / tile_width);
     ivec2 g = grid_origin + local;
     vec2 center = origin + (vec2(local) + 0.5) * spacing;
     uvec4 own_data = data_at(local);
     float ground = height_of(own_data);
     float top = water_pass == 1 ? wsurf_of(own_data) : drawn_top(own_data, center);
-    bool keep = water_pass == 0 || top >= 0.0;  // (a dry cell slipped into the water's list: nothing to draw)
+    bool keep = water_pass == 0 || top >= 0.0;  // (the water pass: a dry cell has nothing to draw)
     keep = keep && max(local.x, local.y) < grid_size - 1;  // (the last tiles reach one cell past the grid)
     // Is this cell drawn by this level? Each 2x2 group of its cells is drawn either by this level
     // or by the next, coarser one: both pick it with the same number
@@ -456,6 +448,7 @@ void main() {
                        >= level_fade(origin + (vec2(parent * 2 - grid_origin) + 1.0) * spacing, own, spacing);
     }
     float dist = length(center);
+    if (far_sides == 1 && dist >= block_reach) keep = false;
     // Where the blocks are all drawn, the columns fold away. Further out the blocks give way to
     // them cell by cell: there the columns are drawn whole, under the blocks too. A block that
     // gives way then shows the column behind it, never a hole — a real slope and its columns
@@ -482,18 +475,21 @@ void main() {
         gl_Position = vec4(2.0, 2.0, 2.0, 1.0);  // every vertex at the same place outside the view: nothing drawn
         return;
     }
-    // A shadow map only gets two of a column's sides, the first two of the mesh, put on the
-    // sides turned away from the light. With the tops they stop the same light as all four would
-    // (light that enters the ground through a missing side can only leave it through one of
-    // them), and they also stop the light that slips under the terrain at the edge of a grid.
-    // The view itself keeps the four sides: where a block gives way on a steep slope, a slit can
-    // open between its neighbors and the column behind, and the back of the columns further on
-    // is what shows through it instead of the sky
+    // Of a column's four sides only the two turned toward the eye can be seen: the mesh has one
+    // side along x and one along z, put there. A shadow map gets the two sides turned away from
+    // the light instead. With the tops they stop the same light as all four would (light that
+    // enters the ground through a missing side can only leave it through one of them), and they
+    // also stop the light that slips under the terrain at the edge of a grid, which the sides
+    // turned toward the light would let through.
+    // The view has one way in under the ground: the mouth of a cave, among the blocks. Deep
+    // inside, a cave has no walls (its sections are only built around the player), and behind
+    // it the terrain is a shell: the eye would go through the mountain and out to the sky. So a
+    // second pass draws the two other sides of the columns around the blocks, and stretches
+    // those at the edge down to the bottom of the world: a wall all around, under the ground
     vec3 corner = in_pos, norm = in_norm;
-    if (mode == 1) {
-        if (in_norm.x != 0.0 && lee.x < 0.0) { corner.x = 0.0; norm.x = -1.0; }
-        if (in_norm.z != 0.0 && lee.y < 0.0) { corner.z = 0.0; norm.z = -1.0; }
-    }
+    vec2 eye = mode == 1 ? lee : far_sides == 1 ? center : -center;
+    if (in_norm.x != 0.0 && eye.x < 0.0) { corner.x = 0.0; norm.x = -1.0; }
+    if (in_norm.z != 0.0 && eye.y < 0.0) { corner.z = 0.0; norm.z = -1.0; }
     // A side goes down to the lowest surface it may face, and folds away when nothing it faces
     // is lower. What it faces is the column next to it in this level — or, where two levels share
     // the cells, the coarser column or the two finer columns that may be drawn there instead
@@ -535,6 +531,7 @@ void main() {
         // exactly the same places, and no pixel must show through between them
         if (seam) y = min(low, top) - max(0.5, 0.5 * spacing);
         else if (low < top) y = low - 0.5;
+        if (far_sides == 1 && dist >= block_reach - 2.0 * spacing) y = low = 0.0;
     }
     // The faces of the ground overlap by a hair — the top juts out all around, a side at both of
     // its ends: the corners of two faces don't fall at the same places along the edge they share
@@ -1304,10 +1301,11 @@ class FarTerrain:
         self.spacing, self.size, self.n_levels = spacing, size, levels
         self.sampler = sampler  # lod.SamplerProcess: it makes the texels
         n = size
-        # A column, drawn once per cell: its top and its four sides (the bottom is never seen).
-        # The shader stretches each side down to the top of the column it faces. Most of the
-        # card's time for the distant terrain goes into these vertices: 20 a column, shared
-        # between its triangles, and 12 for a shadow map, which only needs two of the sides
+        # A column, drawn once per cell: its top and two of its sides, which the shader puts on
+        # the sides to draw (the other two can't be seen, nor the bottom) and stretches down to
+        # the top of the column each one faces. Most of the card's time for the distant terrain
+        # goes into the vertices and the small triangles of the columns in view: 12 vertices and
+        # 6 triangles a column, not the 30 and 10 of a cube without its bottom
         verts, indices = [], []
         for normal, face in COLUMN_FACES:
             indices += [len(verts) + i for i in (0, 1, 2, 0, 2, 3)]
@@ -1320,18 +1318,21 @@ class FarTerrain:
         t = np.arange(LOD_TILES) * self.tile_width
         self.tile_cells = np.stack(np.meshgrid(t, t, indexing="xy"), axis=-1).reshape(-1, 2).astype("i4")
         self.tile_list = np.zeros((LOD_TILES ** 2, 2), dtype="i4")
+        # The heights of every texel (the ground, and the column with its crown), kept here too:
+        # the lowest and highest of each tile say whether it can be in view
+        self.grounds = [np.zeros((n, n), dtype="f4") for _ in range(levels)]
+        self.crowns = [np.zeros((n, n), dtype="f4") for _ in range(levels)]
+        self.height_stamps = [0] * levels  # counts the writes into a level's heights
+        self.tile_heights = [None] * levels  # (origin, stamp, lowest, highest of each tile)
         self.data_maps = [ctx.texture((n, n), 4, dtype="u4") for _ in range(levels)]
         self.color_maps = [ctx.texture((n, n), 4, dtype="f1") for _ in range(levels)]
-        self.wet_texs = [ctx.texture((n, n), 2, dtype="u2") for _ in range(levels)]
         self.tile_avg = ctx.texture((ATLAS_TILES * ATLAS_TILES, 2), 4,
                                     tile_averages(atlas).transpose(1, 0, 2).tobytes(), dtype="f4")
-        for tex in self.data_maps + self.color_maps + self.wet_texs + [self.tile_avg]:
+        for tex in self.data_maps + self.color_maps + [self.tile_avg]:
             tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
-        # Which texels have water: the water pass only draws those cells' tops, so it costs as
-        # much as the water it shows instead of another whole grid per level
+        # Which texels have water, and how high: the water pass only draws the tiles that have some
         self.wet_masks = [np.zeros((n, n), dtype="u1") for _ in range(levels)]
-        self.wet_bufs = [np.zeros((n * n, 2), dtype="u2") for _ in range(levels)]
-        self.wet_counts = [0] * levels
+        self.waters = [np.zeros((n, n), dtype="f4") for _ in range(levels)]
         self.version = 0  # counts the changes (the shadow maps of the terrain are drawn again)
         self.view_distance = FAR_LIMIT  # beyond it the fog hides everything: no level drawn there
         self.block_colors = B.block_colors(atlas)  # flat colors for plants and player's blocks
@@ -1345,9 +1346,9 @@ class FarTerrain:
         self.pending = 0  # cells the sampler has yet to sample again (changes climbing the levels)
         self.edits = set()  # finest cells where the player changed a block since the last job
         self.shown = (0, -1)  # the levels drawn in the last frame (first, last)
+        self.block_reach = 0.0  # how far from the camera blocks can be drawn (set by the renderer)
         for mask in self.wet_masks:
             mask.fill(0)
-        self.wet_dirty = [True] * self.n_levels
         self.sampler.configure(world, self.spacing, self.size, self.n_levels, self.block_colors)
         self.version += 1
 
@@ -1411,23 +1412,35 @@ class FarTerrain:
             self.color_maps[level].write(rgba[start:end].tobytes(), viewport=viewport)
             self.wet_masks[level][u:u + len(xs), v:v + len(zs)] = (
                 wet[start:end].reshape(len(zs), len(xs)).T)
+            ground = data[start:end, 0].view("f4").reshape(len(zs), len(xs)).T
+            packed = data[start:end, 1].reshape(len(zs), len(xs)).T
+            self.grounds[level][u:u + len(xs), v:v + len(zs)] = ground
+            self.crowns[level][u:u + len(xs), v:v + len(zs)] = ground + np.where((packed >> 16) & 255, packed >> 24, 0)
+            self.waters[level][u:u + len(xs), v:v + len(zs)] = data[start:end, 2].view("f4").reshape(len(zs), len(xs)).T
             start = end
-        self.wet_dirty[level] = True
+        self.height_stamps[level] += 1
 
-    def _wet_list(self, level):
-        """The wet cells of a level, as their local coordinates for the shader: the water pass
-        draws one instance per entry instead of one per cell of the grid."""
-        n = self.size
-        ox, oz = self.origins[level]
-        us, vs = np.nonzero(self.wet_masks[level])
-        lu, lv = (us - ox) % n, (vs - oz) % n
-        sel = (lu < n - 1) & (lv < n - 1)  # the grid has size - 1 cells: its last row is points
-        count = int(sel.sum())
-        buf = self.wet_bufs[level]
-        buf[:count] = np.stack([lu[sel], lv[sel]], axis=1).astype("u2")
-        self.wet_texs[level].write(buf.tobytes())
-        self.wet_counts[level] = count
-        self.wet_dirty[level] = False
+    def tile_bounds(self, level):
+        """(lowest, highest) height that the columns and the water of each tile of a level's grid
+        can reach, and whether the tile has water, in the order of tile_cells. Worked out again
+        only when the grid moved or got new cells."""
+        origin, stamp = self.origins[level], self.height_stamps[level]
+        cached = self.tile_heights[level]
+        if cached is None or cached[0] != origin or cached[1] != stamp:
+            n, t, w = self.size, LOD_TILES, self.tile_width
+            shift = (-(origin[0] % n), -(origin[1] % n))  # texels (wrapping around) -> cells of the grid
+            low = np.roll(self.grounds[level], shift, axis=(0, 1)).reshape(t, w, t, w).min(axis=(1, 3))
+            high = np.roll(np.maximum(self.crowns[level], self.waters[level]), shift,
+                           axis=(0, 1)).reshape(t, w, t, w).max(axis=(1, 3))
+            wet = np.roll(self.wet_masks[level], shift, axis=(0, 1)).reshape(t, w, t, w).any(axis=(1, 3))
+            # A side goes down to the top of the column it faces, which may be in the next tile,
+            # and a little further where two levels meet or at the edge of the grid
+            around = np.pad(low, 1, mode="edge")
+            low = np.min([around[1 + i:1 + i + t, 1 + j:1 + j + t] for i in (-1, 0, 1) for j in (-1, 0, 1)], axis=0)
+            spacing = self.spacing << level
+            cached = (origin, stamp, low.T.ravel() - 4.0 * spacing - 1.0, high.T.ravel() + 1.0, wet.T.ravel())
+            self.tile_heights[level] = cached
+        return cached[2:]
 
     def levels(self):
         """The levels the view needs: up to the first that reaches past the view distance."""
@@ -1466,11 +1479,13 @@ class FarTerrain:
 
     def tiles_in_view(self, planes, cam, first, last, rects):
         """For each level from first to last, the corner cells of the tiles of its grid to draw,
-        nearest first. A tile is left out when a box around it as tall as the world is outside
-        one of the planes, or when the finer level draws all of its cells (the hole in the middle
-        of a level). Without this every cell of every grid goes through the vertex shader each
-        frame, and at the finest qualities that is where the card's time went: more than two
-        thirds of the cells are behind the camera or beside the view."""
+        nearest first, those of them that reach where blocks are drawn, and those that have
+        water. A tile is left out
+        when a box around it, from the foot of its lowest column to the top of its highest, is
+        outside one of the planes, or when the finer level draws all of its cells (the hole in
+        the middle of a level). Without this every cell of every grid goes through the vertex
+        shader each frame, and at the finest qualities that is where the card's time went: more
+        than two thirds of the cells are behind the camera, beside the view or under it."""
         levels = range(first, last + 1)
         spacing = np.array([float(self.spacing << level) for level in levels])[:, None]
         corner = np.array([rects[level][:2] for level in levels])
@@ -1478,17 +1493,27 @@ class FarTerrain:
         lo_z = corner[:, 1:] + self.tile_cells[None, :, 1] * spacing
         hi_x, hi_z = lo_x + self.tile_width * spacing, lo_z + self.tile_width * spacing
         pad = 0.5 * spacing  # (the sides at the edge of a grid and the faces' overlap reach a little outside)
-        bottom, top = np.full_like(lo_x, -600.0 - cam[1]), np.full_like(lo_x, 4200.0 - cam[1])
+        heights = [self.tile_bounds(level) for level in levels]
+        bottom = np.array([h[0] for h in heights]) - cam[1]
+        top = np.array([h[1] for h in heights]) - cam[1]
         lo = np.stack([lo_x - pad, bottom, lo_z - pad], axis=-1)
         hi = np.stack([hi_x + pad, top, hi_z + pad], axis=-1)
         show = boxes_visible(planes, lo.reshape(-1, 3), hi.reshape(-1, 3)).reshape(lo_x.shape)
+        lo[..., 1] = -1.0 - cam[1]  # (the sides around the blocks go down to the bottom of the world)
+        deep = boxes_visible(planes, lo.reshape(-1, 3), hi.reshape(-1, 3)).reshape(lo_x.shape)
         for i, level in enumerate(levels):
             if level > first:  # the cells well inside the finer level's square are all drawn by it
                 x0, z0, x1, z1 = rects[level - 1]
                 m = (LOD_MARGIN + LOD_BAND) * 0.5 * spacing[i, 0]
                 show[i] &= ~((lo_x[i] >= x0 + m) & (hi_x[i] <= x1 - m) & (lo_z[i] >= z0 + m) & (hi_z[i] <= z1 - m))
         near = (lo_x + hi_x) ** 2 + (lo_z + hi_z) ** 2  # nearest first: what is behind is not shaded for nothing
-        return [self.tile_cells[np.flatnonzero(show[i])[np.argsort(near[i][show[i]])]] for i in range(len(spacing))]
+        gap_x, gap_z = np.maximum(np.maximum(lo_x, -hi_x), 0.0), np.maximum(np.maximum(lo_z, -hi_z), 0.0)
+        by_blocks = deep & (gap_x ** 2 + gap_z ** 2 < self.block_reach ** 2)
+        out = []
+        for i in range(len(spacing)):
+            order = np.flatnonzero(show[i])[np.argsort(near[i][show[i]])]
+            out.append((self.tile_cells[order], self.tile_cells[by_blocks[i]], self.tile_cells[order[heights[i][2][order]]]))
+        return out
 
     def render(self, vp, cam, chunks, shadow=False):
         first, last = self.drawn_levels(cam)
@@ -1507,11 +1532,12 @@ class FarTerrain:
                              "cam_in_chunk": (float(cam[0] - pcx * CHUNK), float(cam[2] - pcz * CHUNK))})
             chunks.ready_texture.use(READY_UNIT)
         set_uniforms(p, {"data": DATA_UNIT, "coarse_data": COARSE_UNIT, "fine_data": FINE_UNIT,
-                         "colors": COLORS_UNIT, "wet_cells": WET_UNIT, "tile_avg": TILE_AVG_UNIT,
+                         "colors": COLORS_UNIT, "tile_avg": TILE_AVG_UNIT,
                          "atlas": ATLAS_UNIT, "grid_size": self.size})
         planes = frustum_planes(vp)
         p["clip_planes"].write(planes[[0, 1, 4]].astype("f4").tobytes())  # left right near
         p["tile_width"] = self.tile_width
+        p["block_reach"] = self.block_reach
         p["lee"] = (float(vp[2][0]), float(vp[2][2])) if shadow else (0.0, 0.0)  # (depth grows away from the light)
         self.atlas.use(ATLAS_UNIT)
         self.tile_avg.use(TILE_AVG_UNIT)
@@ -1525,8 +1551,8 @@ class FarTerrain:
         tiles = self.tiles_in_view(planes[:5], cam, first, last, rects)
         # The ground and the aquatic floor first, then the water over them: see-through like the
         # blocks' water. It only needs its top face (the mesh's first 6 vertices): the ground
-        # columns close the edges, and the shadow maps skip water anyway. And only the cells that
-        # actually have water are drawn (one instance per wet cell, read from wet_cells)
+        # columns close the edges, and the shadow maps skip water anyway. And only the tiles that
+        # have water are drawn
         for wpass in ((0,) if shadow else (0, 1)):
             if wpass:
                 ctx = self.ctx
@@ -1550,16 +1576,23 @@ class FarTerrain:
                 self.data_maps[level - 1 if finer else level].use(FINE_UNIT)
                 self.color_maps[level].use(COLORS_UNIT)
                 if wpass:
-                    if self.wet_dirty[level]:
-                        self._wet_list(level)
-                    if self.wet_counts[level]:
-                        self.wet_texs[level].use(WET_UNIT)
-                        self.vao.render(vertices=6, instances=self.wet_counts[level])
-                elif len(tiles[level - first]):
-                    cells = tiles[level - first]
-                    self.tile_list[:len(cells)] = cells
-                    p["tiles"].write(self.tile_list.tobytes())
-                    self.vao.render(vertices=18 if shadow else 30, instances=len(cells) * self.tile_width ** 2)
+                    cells = tiles[level - first][2]
+                    if len(cells):
+                        self.tile_list[:len(cells)] = cells
+                        p["tiles"].write(self.tile_list.tobytes())
+                        self.vao.render(vertices=6, instances=len(cells) * self.tile_width ** 2)
+                else:
+                    cells, by_blocks = tiles[level - first][:2]
+                    if len(cells):
+                        self.tile_list[:len(cells)] = cells
+                        p["tiles"].write(self.tile_list.tobytes())
+                        self.vao.render(vertices=18, instances=len(cells) * self.tile_width ** 2)
+                    if len(by_blocks) and not shadow:  # the two other sides (the mesh's last 12 vertices)
+                        self.tile_list[:len(by_blocks)] = by_blocks
+                        p["tiles"].write(self.tile_list.tobytes())
+                        p["far_sides"] = 1
+                        self.vao.render(vertices=12, first=6, instances=len(by_blocks) * self.tile_width ** 2)
+                        p["far_sides"] = 0
             if wpass:
                 ctx.fbo.depth_mask = True
                 ctx.disable(moderngl.BLEND)
@@ -1895,7 +1928,7 @@ class Renderer:
             self.far = FarTerrain(self.ctx, self.lod_program, self.world, self.texture,
                                   far.atlas_data, self.sampler, spacing, size, levels)
             self.far.version = far.version + 1  # the shadow maps are drawn again
-            for res in far.data_maps + far.color_maps + far.wet_texs + [far.tile_avg, far.vbo, far.vao]:
+            for res in far.data_maps + far.color_maps + [far.tile_avg, far.vbo, far.ibo, far.vao]:
                 res.release()
 
     def make_framebuffers(self):
@@ -1994,6 +2027,7 @@ class Renderer:
         # The blocks give way to the distant terrain between these distances: from half-way to the
         # edge of the columns drawn as blocks (a chunk short of it, wherever the camera is in its chunk)
         fade_end = (self.sim_distance - 1) * CHUNK
+        self.far.block_reach = float((self.sim_distance + 3) * CHUNK)  # (past the corner of the farthest mesh)
         cell = (math.floor(cam[0] / 2), math.floor(cam[2] / 2))
         values.update({
             "block_fade": (0.5 * fade_end, float(fade_end)), "cam_cell": cell,
