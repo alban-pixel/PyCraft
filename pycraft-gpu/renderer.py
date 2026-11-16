@@ -933,18 +933,16 @@ CUBE_EDGES = [(0, 1), (1, 3), (3, 2), (2, 0), (4, 5), (5, 7), (7, 6), (6, 4), (0
 LEAF_TILES = {int(t) for b in ALL_LEAVES for t in BLOCK_TILES[b]}
 
 
-def tile_averages(atlas):
-    """(256, 2, 4) float array: for each atlas tile, the average of its texels that keep their own
+def tile_averages(tiles):
+    """(256, 2, 4) float array: for each tile, the average of its texels that keep their own
     color (rgb) and the share of texels the biome colors (a), then the average of those (rgb).
     Far away, a block is smaller than a pixel: the distant terrain uses these instead of the texture.
     The holes in leaves count as the leaves behind them, in the shade; the holes of other tiles
-    (plants, glass) are left out, as they are never drawn."""
+    (plants, glass) are left out, as they are never drawn. tiles: (256, N, N, 4)."""
     out = np.zeros((ATLAS_TILES * ATLAS_TILES, 2, 4), np.float32)
-    rgb, alpha = atlas[..., :3].astype(np.float32) / 255, atlas[..., 3]
+    rgb, alpha = tiles[..., :3].astype(np.float64) / 255, tiles[..., 3]  # (float64: same result at any size)
     for t in range(ATLAS_TILES * ATLAS_TILES):
-        ty, tx = divmod(t, ATLAS_TILES)
-        cell = (slice(ty * TILE, (ty + 1) * TILE), slice(tx * TILE, (tx + 1) * TILE))
-        c, a = rgb[cell].reshape(-1, 3), alpha[cell].ravel()
+        c, a = rgb[t].reshape(-1, 3), alpha[t].ravel()
         tinted = a == TINT_ALPHA
         hole = a < 128
         c = np.where(hole[:, None], c * 0.4, c)  # see-through texels: the shaded leaves inside
@@ -1295,9 +1293,9 @@ class FarTerrain:
     follows the camera once its new cells have landed: until then the level is drawn where it
     was, so the textures never show cells that are not sampled yet."""
 
-    def __init__(self, ctx, program, world, atlas_texture, atlas, sampler, spacing=2, size=128, levels=7):
+    def __init__(self, ctx, program, world, atlas_texture, tiles, sampler, spacing=2, size=128, levels=7):
         self.ctx, self.program, self.atlas = ctx, program, atlas_texture
-        self.atlas_data = atlas  # kept to rebuild the tile averages if the quality changes
+        self.tiles = tiles  # kept to rebuild the tile averages if the quality changes
         self.spacing, self.size, self.n_levels = spacing, size, levels
         self.sampler = sampler  # lod.SamplerProcess: it makes the texels
         n = size
@@ -1327,7 +1325,7 @@ class FarTerrain:
         self.data_maps = [ctx.texture((n, n), 4, dtype="u4") for _ in range(levels)]
         self.color_maps = [ctx.texture((n, n), 4, dtype="f1") for _ in range(levels)]
         self.tile_avg = ctx.texture((ATLAS_TILES * ATLAS_TILES, 2), 4,
-                                    tile_averages(atlas).transpose(1, 0, 2).tobytes(), dtype="f4")
+                                    tile_averages(tiles).transpose(1, 0, 2).tobytes(), dtype="f4")
         for tex in self.data_maps + self.color_maps + [self.tile_avg]:
             tex.filter = (moderngl.NEAREST, moderngl.NEAREST)
         # Which texels have water, and how high: the water pass only draws the tiles that have some
@@ -1335,7 +1333,7 @@ class FarTerrain:
         self.waters = [np.zeros((n, n), dtype="f4") for _ in range(levels)]
         self.version = 0  # counts the changes (the shadow maps of the terrain are drawn again)
         self.view_distance = FAR_LIMIT  # beyond it the fog hides everything: no level drawn there
-        self.block_colors = B.block_colors(atlas)  # flat colors for plants and player's blocks
+        self.block_colors = B.block_colors(tiles)  # flat colors for plants and player's blocks
         self.set_world(world)
 
     def set_world(self, world):
@@ -1827,7 +1825,7 @@ class Palette:
 # --- Renderer ----------------------------------------------------------------------------------
 
 class Renderer:
-    def __init__(self, ctx, world, atlas, width, height, fixed_colors, fov=70):
+    def __init__(self, ctx, world, tiles, width, height, fixed_colors, fov=70):
         """ctx must be created before pyxel.init, so Pyxel's own OpenGL context ends up current.
         fixed_colors: the first 64 colors of the palette (0xRRGGBB), which never change."""
         self.ctx = ctx
@@ -1859,6 +1857,7 @@ class Renderer:
                 vertex_shader=OUTLINE_VERTEX_SHADER, fragment_shader=OUTLINE_FRAGMENT_SHADER)
             self.post_program = ctx.program(vertex_shader=FULLSCREEN_VERTEX_SHADER,
                                             fragment_shader=POST_FRAGMENT_SHADER)
+            atlas = B.tiles_to_atlas(tiles)
             self.texture = ctx.texture((atlas.shape[1], atlas.shape[0]), 4, atlas.tobytes())
             self.texture.filter = (moderngl.NEAREST, moderngl.NEAREST)
             # The atlas tile of each face (x) of each block (y), for the distant terrain's shader
@@ -1877,7 +1876,7 @@ class Renderer:
             self.outline_vao = ctx.vertex_array(self.outline_program, [(self.outline_vbo, "3f", "in_pos")])
             self.sampler = SamplerProcess()  # makes the distant terrain's texels, in its own process
             self.chunks = Chunks(ctx, self.program, world, self.sampler.shared)
-            self.far = FarTerrain(ctx, self.lod_program, world, self.texture, atlas, self.sampler,
+            self.far = FarTerrain(ctx, self.lod_program, world, self.texture, tiles, self.sampler,
                                   *LOD_QUALITIES[LOD_QUALITY_NAMES[0]])
             self.shadows = Shadows(ctx, self.texture)
             self.palette = Palette(ctx, fixed)
@@ -1926,7 +1925,7 @@ class Renderer:
             return
         with self.ctx:
             self.far = FarTerrain(self.ctx, self.lod_program, self.world, self.texture,
-                                  far.atlas_data, self.sampler, spacing, size, levels)
+                                  far.tiles, self.sampler, spacing, size, levels)
             self.far.version = far.version + 1  # the shadow maps are drawn again
             for res in far.data_maps + far.color_maps + [far.tile_avg, far.vbo, far.ibo, far.vao]:
                 res.release()
