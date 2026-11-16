@@ -565,7 +565,48 @@ def _plant_tiles(rng, tiles, alpha, tint):
 
 
 def build_atlas(seed=7):
-    """Return the texture atlas as a (256, 256, 4) uint8 RGBA array.
+    """The generated tiles as a (256, 256, 4) uint8 atlas of 16x16 tiles (see tiles_to_atlas)."""
+    return tiles_to_atlas(build_tiles(seed))
+
+
+def tiles_to_atlas(tiles):
+    """Tiles of any size, brought down to 16x16 and laid out in a 16x16 grid: a (256, 256, 4)
+    uint8 atlas, the layout of the icons Pyxel draws."""
+    small = tiles if tiles.shape[1] == TILE else np.stack([resize_tile(t, TILE) for t in tiles])
+    grid = small.reshape(ATLAS_TILES, ATLAS_TILES, TILE, TILE, 4)
+    return grid.transpose(0, 2, 1, 3, 4).reshape(TILE * ATLAS_TILES, TILE * ATLAS_TILES, 4)
+
+
+def resize_tile(tile, n):
+    """A (s, s, 4) tile made (n, n, 4). Bigger: each texel repeated (nearest). Smaller: each texel
+    is a block of texels, its alpha the most common kind among them (see-through, tinted by the
+    biome or plain; ties go to the more opaque) and its color their average, over the texels of
+    that kind."""
+    s = tile.shape[0]
+    if s == n:
+        return tile.copy()
+    if n > s or s % n:
+        idx = (np.arange(n) * s) // n  # nearest texel
+        return tile[idx][:, idx].copy()
+    k = s // n
+    blocks_ = tile.reshape(n, k, n, k, 4).transpose(0, 2, 1, 3, 4).reshape(n, n, k * k, 4)
+    alpha = blocks_[..., 3]
+    kinds = np.array([0, TINT_ALPHA, 255])
+    counts = np.stack([(alpha == a).sum(-1) for a in kinds], -1)  # (n, n, 3)
+    # Prefer the more opaque kind on ties: argmax over reversed counts
+    pick = 2 - np.argmax(counts[..., ::-1], axis=-1)
+    out_a = kinds[pick]
+    same = alpha == out_a[..., None]
+    rgb = blocks_[..., :3].astype(np.float64)
+    out_rgb = (rgb * same[..., None]).sum(2) / np.maximum(same.sum(-1, keepdims=True), 1)
+    out = np.empty((n, n, 4), np.uint8)
+    out[..., :3] = np.clip(np.rint(out_rgb), 0, 255)
+    out[..., 3] = out_a
+    return out
+
+
+def build_tiles(seed=7):
+    """Return the generated tiles as a (256, 16, 16, 4) uint8 RGBA array, one per tile number.
 
     Alpha 0 = see-through, TINT_ALPHA = colored by the biome (the texture itself is grey there)."""
     rng = np.random.default_rng(seed)
@@ -1039,25 +1080,21 @@ def build_atlas(seed=7):
     cage = np.full((TILE, TILE, 3), (44, 50, 58), dtype=float) * (1 + rng.uniform(-0.1, 0.1, (TILE, TILE, 1)))
     tiles[T_SPAWNER], alpha[T_SPAWNER] = cage, (xs % 5 == 0) | (ys % 5 == 0) | (ring > 6.5)  # the bars
 
-    atlas = np.zeros((TILE * ATLAS_TILES, TILE * ATLAS_TILES, 4))
+    out = np.zeros((ATLAS_TILES * ATLAS_TILES, TILE, TILE, 4))
     for t, img in tiles.items():
-        ty, tx = divmod(t, ATLAS_TILES)
-        cell = (slice(ty * TILE, (ty + 1) * TILE), slice(tx * TILE, (tx + 1) * TILE))
         a = np.where(alpha.get(t, full), 255.0, 0.0)
         a[(a > 0) & tint.get(t, ~full)] = TINT_ALPHA
-        atlas[cell + (slice(0, 3),)] = img
-        atlas[cell + (3,)] = a
-    return np.clip(atlas, 0, 255).astype(np.uint8)
+        out[t, ..., :3] = img
+        out[t, ..., 3] = a
+    return np.clip(out, 0, 255).astype(np.uint8)
 
 
-def block_colors(atlas):
+def block_colors(tiles):
     """Average color (0-1) of each block's top face, for the distant terrain. Tinted texels count as
-    white: the distant terrain multiplies them by the biome color itself."""
+    white: the distant terrain multiplies them by the biome color itself. tiles: (256, N, N, 4)."""
     colors = np.zeros((NUM_BLOCKS, 3))
     for block in range(1, NUM_BLOCKS):
-        t = BLOCK_TILES[block][2]
-        ty, tx = divmod(int(t), ATLAS_TILES)
-        cell = atlas[ty * TILE:(ty + 1) * TILE, tx * TILE:(tx + 1) * TILE].astype(float)
+        cell = tiles[int(BLOCK_TILES[block][2])].astype(float)
         seen = cell[..., 3] > 0
         rgb = cell[..., :3][seen] / 255
         if (cell[..., 3][seen] == TINT_ALPHA).all():

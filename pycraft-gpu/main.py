@@ -13,7 +13,7 @@ import pyxel
 
 from autoscale import AutoScale
 from blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, GROWS_ON, PLACEABLE, PLANT, SOLID, T_WATER,
-                    TILE, TINT_ALPHA, UNBREAKABLE, WATER, build_atlas, turned)
+                    TILE, TINT_ALPHA, UNBREAKABLE, WATER, build_tiles, tiles_to_atlas, turned)
 from player import Player
 from renderer import FIXED_COLORS, LOD_QUALITY_NAMES, Renderer, oklab_to_srgb, srgb_to_oklab
 from terrain import SEA_LEVEL
@@ -221,8 +221,8 @@ class App:
         self.headless = headless
         self.ui = Ui()
 
-        atlas = build_atlas()
-        icon_colors, icons = icon_palette(atlas)
+        tiles = build_tiles()
+        icon_colors, icons = icon_palette(tiles_to_atlas(tiles))
         bank = np.frombuffer(pyxel.images[0].data_ptr(), dtype=np.uint8, count=256 * 256).reshape(256, 256)
         bank[:icons.shape[0], :icons.shape[1]] = icons
         pyxel.images[1].cls(0)
@@ -249,7 +249,7 @@ class App:
         # The title screen looks around from above the spawn, or where the saved game left off
         self.title_spot = self.save_data["player"][:3].tolist() if self.save_data else self.spawn
         # Palette: Pyxel's 16 colors (HUD), 48 for the icons, and 192 that adapt to the 3D view
-        self.renderer = Renderer(ctx, self.world, atlas, BASE_WIDTH, BASE_HEIGHT,
+        self.renderer = Renderer(ctx, self.world, tiles, BASE_WIDTH, BASE_HEIGHT,
                                  list(pyxel.colors)[:16] + icon_colors)
         self.palette_version = None
         self.use_palette()
