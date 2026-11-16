@@ -5,7 +5,11 @@ cd "$(dirname "$0")/pycraft-gpu" || exit 1
 if [ ! -d .venv ]; then
     echo "First launch: creating the virtual environment..."
     python3 -m venv .venv || { echo "python3 not found — install Xcode Command Line Tools."; read -r; exit 1; }
+fi
+# (Re)install the dependencies on first launch and whenever requirements.txt changes
+if [ requirements.txt -nt .venv/.requirements-installed ]; then
     .venv/bin/pip install -r requirements.txt || { echo "Dependency install failed."; read -r; exit 1; }
+    touch .venv/.requirements-installed
 fi
 
 exec .venv/bin/python main.py
