@@ -15,10 +15,14 @@ import pyxel
 import items
 import packs
 import redstone
+import screens
+from furnace import ALL_FURNACES, Furnaces
+from inventory import EMPTY, Inventory
+from survival import BreakProgress, Health
 from autoscale import AutoScale
 from blocks import (DOWN, EAST, FACING_VECTORS, LEVER, NORTH, OPAQUE, OPPOSITE, PISTON, REDSTONE_TORCH,
                     REDSTONE_WIRE, REPEATER, SOUTH, STICKY_PISTON, STONE_BUTTON, STONE_PRESSURE_PLATE, UP, WEST)
-from blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, GROWS_ON, PLACEABLE, PLANT, SOLID, T_REDSTONE_DUST, T_WATER,
+from blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, CRAFTING_TABLE, DEFAULT_HOTBAR, GROWS_ON, PLACEABLE, PLANT, SOLID, T_REDSTONE_DUST, T_WATER,
                     TILE, TINT_ALPHA, UNBREAKABLE, WATER, build_tiles, tiles_to_atlas, turned)
 from player import Player
 from sim import Simulation
@@ -77,8 +81,9 @@ SFX_CHANNEL = 3
 
 HELP = [  # (keys, what they do), in two columns
     [("WASD", "Move"), ("SPACE", "Jump, swim, fly up"), ("SHIFT", "Fly down"), ("CTRL", "Sprint, fly fast"),
-     ("F", "Fly on/off"), ("E", "All the blocks"), ("T", "Chat, commands")],
-    [("Left click", "Break"), ("Right click", "Place"), ("1-9, wheel", "Choose a block"), ("TAB", "Free the mouse"),
+     ("F", "Fly (Creative)"), ("E", "Inventory"), ("T", "Chat, commands")],
+    [("Left click", "Break"), ("Right click", "Place, use"), ("1-9, wheel", "Choose a block"),
+     ("TAB", "Free the mouse"),
      ("F3", "Info"), ("H", "Hide this help"), ("ESC", "Menu")],
 ]
 
@@ -112,6 +117,49 @@ def block_category(block):
 
 CATEGORIES = [(tab, [b for b in PLACEABLE if tab == "All" or block_category(b) == tab])
               for tab in ("All", "Nature", "Building", "Colors", "Plants", "Redstone", "Special")]
+
+
+SURVIVAL, CREATIVE = 0, 1
+MODE_NAMES = {SURVIVAL: "Survival", CREATIVE: "Creative"}
+HURT_FLASH = 0.2  # seconds the screen flashes red when the player is hurt
+HEART = [".##.##.", "#######", "#######", ".#####.", "..###..", "...#..."]  # 7 x 6 UI pixels
+
+
+def convert_old_save(data):
+    """(mode, inventory) from a save's data. A save from before Survival (no "inventory") is a Creative game
+    whose hotbar of 9 block numbers becomes 9 stacks of one."""
+    if "inventory" in data:
+        return int(data["mode"]), Inventory.from_array(data["inventory"])
+    inv = Inventory()
+    for i, block in enumerate(np.asarray(data.get("hotbar", DEFAULT_HOTBAR)).tolist()[:9]):
+        if block:
+            inv.slots[i] = (int(block), 1, 0)
+    return CREATIVE, inv
+
+
+def creative_inventory():
+    inv = Inventory()
+    inv.slots[:9] = [(b, 1, 0) if b else EMPTY for b in list(DEFAULT_HOTBAR)[:9]]
+    return inv
+
+
+def parse_gamemode(text):
+    """SURVIVAL or CREATIVE from /gamemode's argument (a name, its first letter or its number), else None."""
+    return {"survival": SURVIVAL, "s": SURVIVAL, "0": SURVIVAL,
+            "creative": CREATIVE, "c": CREATIVE, "1": CREATIVE}.get(text.strip().lower())
+
+
+def harvest(inv, slot, block, rng, contents=()):
+    """Survival: the player broke block with the stack in inv.slots[slot]. Its drops (and contents, a broken
+    furnace's) go into the inventory, and the tool wears. Returns (items lost for want of room, the name of the
+    tool if it broke, else None)."""
+    tool = inv.slots[slot][0]
+    lost = sum(inv.add(item, n) for item, n in items.drops(block, tool, rng))
+    lost += sum(inv.add(item, n, damage) for item, n, damage in contents)
+    broke = None
+    if tool in items.TOOLS and items.hardness(block) > 0 and inv.damage_tool(slot):
+        broke = items.name(tool)
+    return lost, broke
 
 
 def right_click(block, first_press):
@@ -438,7 +486,14 @@ class App:
         self.settings_parent = "title"  # the menu the settings screen goes back to
         self.menu_index = 0
         self.warp_to_button = False
-        self.hotbar = list(DEFAULT_HOTBAR)
+        self.mode = CREATIVE
+        self.new_mode = SURVIVAL  # the mode chosen for the next new world
+        self.inv = creative_inventory()  # its slots 0 to 8 are the hotbar
+        self.health = Health()
+        self.breaking = BreakProgress()
+        self.open_screen = None  # the Survival screen shown (inventory, crafting table, furnace), in "screen"
+        self.hurt_time = -1.0  # play time the player was last hurt (the screen flashes red)
+        self.rng = random.Random()
         self.selected = 0
         self.selected_time = 0.0  # play time when the chosen block last changed (its name shows a while)
         self.inventory_tab = 0
@@ -671,17 +726,24 @@ class App:
         return {
             "player": np.array(p.pos + [p.yaw, p.pitch, float(p.flying)]),
             "time_of_day": self.time_of_day,
-            "hotbar": np.array(self.hotbar),
             "selected": self.selected,
             "ticks": self.sim.pending(),  # the machines' updates still to come
+            "mode": self.mode,
+            "inventory": self.inv.to_array(),
+            "health": self.health.hp,
+            "air": self.health.air,
+            "spawn": np.array(self.spawn, dtype=float),
+            "furnaces": self.furnaces.to_array(),
         }
 
-    def new_simulation(self, pending=None):
-        """The clock of the world's machines (sim.py), for the current world."""
+    def new_simulation(self, pending=None, furnaces=None):
+        """The clock of the world's machines (sim.py), for the current world, and its furnaces."""
         self.changes = []  # blocks the machines changed this frame: meshed together, once per section
         self.sim = Simulation(self.world, lambda x, y, z: self.changes.append((x, y, z)))
         redstone.install(self.sim)
         self.sim.every_tick.append(self.feel_plates)
+        self.furnaces = Furnaces() if furnaces is None else furnaces
+        self.sim.every_tick.append(self.furnaces.tick)
         if pending is not None:
             self.sim.load_pending(pending)
 
@@ -707,7 +769,10 @@ class App:
                 self.renderer.set_world(self.world)
                 self.spawn = self.world.find_spawn()
             self.player = Player(*self.spawn)
-            self.hotbar, self.selected, self.time_of_day = list(DEFAULT_HOTBAR), 0, 0.05
+            self.selected, self.time_of_day = 0, 0.05
+            self.mode = self.new_mode
+            self.inv = Inventory() if self.mode == SURVIVAL else creative_inventory()
+            self.health.reset()
             self.new_simulation()
             self.save()
         elif self.save_data is not None:
@@ -716,11 +781,22 @@ class App:
             self.player = Player(x, y, z)
             self.player.yaw, self.player.pitch, self.player.flying = yaw, pitch, bool(flying)
             self.time_of_day = float(data["time_of_day"])
-            self.hotbar = [int(b) for b in data["hotbar"]]
+            self.mode, self.inv = convert_old_save(data)
             self.selected = int(data["selected"])
-            self.new_simulation(data.get("ticks"))
+            self.health.reset()
+            if "health" in data:  # (an old save: full health)
+                self.health.hp = int(data["health"])
+                self.health.air = float(data["air"])
+            if "spawn" in data:
+                self.spawn = tuple(float(v) for v in np.asarray(data["spawn"]).tolist())
+            furnaces = Furnaces.from_array(data["furnaces"]) if "furnaces" in data else None
+            self.new_simulation(data.get("ticks"), furnaces)
         self.save_data = None
+        self.player.can_fly = self.mode == CREATIVE
+        self.breaking.reset()
+        self.open_screen = None
         self.play_time = self.last_save = self.selected_time = 0.0
+        self.hurt_time = -1.0
         self.show_help = True
         self.set_state("loading")  # until the blocks around the player are ready
 
@@ -742,7 +818,7 @@ class App:
 
     def on_title(self):
         """True on the title screen and on the settings screen opened from it."""
-        return self.state == "title" or (self.state == "settings" and self.settings_parent == "title")
+        return self.state in ("title", "newmode") or (self.state == "settings" and self.settings_parent == "title")
 
     def camera(self):
         """(eye, forward) of the view: the player's, or a slow look around on the title screen."""
@@ -763,10 +839,15 @@ class App:
             items = []
             if not self.world_is_fresh:
                 items.append(("Continue", lambda: self.start_game(new_world=False)))
-            items.append(("New world", self.new_world_clicked))
+            items.append(("New world", lambda: self.set_state("newmode")))
             items.append(("Settings", self.open_settings))
             items.append(("Quit", pyxel.quit))
             return items
+        if self.state == "newmode":
+            return [("Survival", lambda: self.choose_mode(SURVIVAL)), ("Creative", lambda: self.choose_mode(CREATIVE)),
+                    ("Back", lambda: self.set_state("title"))]
+        if self.state == "dead":
+            return [("Respawn", self.respawn)]
         if self.state == "paused":
             return [
                 ("Resume", lambda: self.set_state("playing")),
@@ -804,6 +885,26 @@ class App:
             self.texture_pack_row(),
         ]
 
+    def choose_mode(self, mode):
+        self.new_mode = mode
+        self.new_world_clicked()
+
+    def respawn(self):
+        """Back to the spawn with full health; the inventory is kept (nothing is dropped on the ground)."""
+        self.player = Player(*self.spawn)
+        self.player.can_fly = self.mode == CREATIVE
+        self.health.reset()
+        self.breaking.reset()
+        self.set_state("playing")
+
+    def set_mode(self, mode):
+        self.mode = mode
+        self.player.can_fly = mode == CREATIVE
+        if mode == SURVIVAL:
+            self.player.flying = False
+        self.breaking.reset()
+        self.notify(f"Game mode: {MODE_NAMES[mode]}")
+
     def new_world_clicked(self):
         if self.world_is_fresh:
             self.start_game(new_world=True)
@@ -837,15 +938,19 @@ class App:
         elif self.state == "loading":
             if self.renderer.progress(self.player.eye(), LOADING_RADIUS) >= 1:
                 self.set_state("playing")
-        elif self.state in ("title", "paused", "settings"):
+        elif self.state in ("title", "paused", "settings", "newmode", "dead"):
             if self.state == "paused" and pyxel.btnp(pyxel.KEY_ESCAPE):
                 self.set_state("playing")
+            elif self.state == "newmode" and pyxel.btnp(pyxel.KEY_ESCAPE):
+                self.set_state("title")
             elif self.state == "settings" and pyxel.btnp(pyxel.KEY_ESCAPE):
                 self.close_settings()
             else:
                 self.update_menu()
         elif self.state == "inventory":
             self.update_inventory()
+        elif self.state == "screen":
+            self.update_screen()
         elif self.state == "chat":
             self.update_chat()
         else:
@@ -960,7 +1065,7 @@ class App:
 
     def hotbar_rects(self):
         """(x, y, w, h) of each slot of the hotbar, at the bottom of the screen."""
-        n = len(self.hotbar)
+        n = 9
         x0 = (self.ui.width - HOTBAR_SLOT * n) // 2
         y0 = self.ui.height - HOTBAR_SLOT - 4
         return [(x0 + i * HOTBAR_SLOT, y0, HOTBAR_SLOT, HOTBAR_SLOT) for i in range(n)]
@@ -995,7 +1100,7 @@ class App:
                     self.sfx(SND_CLICK)
             for block, x, y in self.inventory_slots():
                 if ui.mouse_in(x, y, INVENTORY_SLOT, INVENTORY_SLOT):
-                    self.hotbar[self.selected] = block
+                    self.inv.slots[self.selected] = (block, 1, 0)
                     self.selected_time = self.play_time
                     self.sfx(SND_CLICK)
         if tab != self.inventory_tab:
@@ -1007,13 +1112,49 @@ class App:
             self.sfx(SND_CLICK)
         self.inventory_page = new_page
 
+    def open(self, screen):
+        self.open_screen = screen
+        self.breaking.reset()
+        self.set_state("screen")
+
+    def close_screen(self):
+        self.open_screen.close()
+        if self.open_screen.message:
+            self.notify(self.open_screen.message)
+        self.open_screen = None
+        self.set_state("playing")
+
+    def update_screen(self):
+        """A Survival screen is open: the world goes on (a furnace cooks while you watch it), the player stands."""
+        dt = self.dt
+        self.play_time += dt
+        self.time_of_day = (self.time_of_day + dt / DAY_SECONDS) % 1.0
+        self.sim.update(dt)
+        self.hurt(self.health.update(dt, self.player.head_in_water(self.world), self.mode == CREATIVE))
+        if self.health.dead:
+            self.close_screen()
+            self.set_state("dead")
+            return
+        if pyxel.btnp(pyxel.KEY_E) or pyxel.btnp(pyxel.KEY_ESCAPE):
+            self.close_screen()
+            return
+        ui = self.ui
+        for key, button in ((pyxel.MOUSE_BUTTON_LEFT, "left"), (pyxel.MOUSE_BUTTON_RIGHT, "right")):
+            if pyxel.btnp(key):
+                self.open_screen.click(ui.mouse_x, ui.mouse_y, ui.width, ui.height, button, pyxel.btn(pyxel.KEY_SHIFT))
+
+    def hurt(self, damage):
+        if damage:
+            self.sfx(SND_JUMP)  # (a stand-in for a hurt sound)
+            self.hurt_time = self.play_time
+
     def update_hotbar_keys(self, wheel=True):
         before = self.selected
-        for i in range(len(self.hotbar)):
+        for i in range(9):
             if pyxel.btnp(pyxel.KEY_1 + i):
                 self.selected = i
         if wheel and pyxel.mouse_wheel:
-            self.selected = (self.selected - pyxel.mouse_wheel) % len(self.hotbar)
+            self.selected = (self.selected - pyxel.mouse_wheel) % 9
         if self.selected != before:
             self.selected_time = self.play_time
 
@@ -1037,7 +1178,10 @@ class App:
             self.set_state("paused")
             return
         if pyxel.btnp(pyxel.KEY_E):
-            self.set_state("inventory")
+            if self.mode == SURVIVAL:
+                self.open(screens.Screen(self.inv, "inventory"))
+            else:
+                self.set_state("inventory")
             return
         if pyxel.btnp(pyxel.KEY_TAB):
             if self.mouse_captured:
@@ -1054,11 +1198,24 @@ class App:
             return
 
         self.update_look()
+        creative = self.mode == CREATIVE
+        self.player.can_fly = creative
         events = self.player.update(self.world, dt)
         for event, sound in (("jump", SND_JUMP), ("step", SND_STEP), ("splash", SND_SPLASH)):
             if event in events:
                 self.sfx(sound)
+        taken = self.health.update(dt, self.player.head_in_water(self.world), creative)
+        if self.player.landed:
+            taken += self.health.fall_damage(*self.player.landed, creative)
+        self.hurt(taken)
+        if self.health.dead:
+            self.breaking.reset()
+            self.set_state("dead")
+            return
+        before = self.selected
         self.update_hotbar_keys()
+        if self.selected != before:
+            self.breaking.reset()
 
         # Break and place blocks (hold the button to repeat)
         self.target = self.world.raycast(self.player.eye(), self.player.forward(), REACH)
@@ -1067,21 +1224,29 @@ class App:
                 self.capture_mouse()
             return
         hold, repeat = self.frames(0.25), self.frames(0.13)
-        if self.target and pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT, hold=hold, repeat=repeat):
-            x, y, z = self.target[0]
-            if UNBREAKABLE[self.world.get(x, y, z)]:
-                self.notify("Bedrock can't be broken")
-            else:
-                broken, state = self.world.get(x, y, z), self.world.get_state(x, y, z)
-                self.sim.set_block(x, y, z, 0)
-                if broken in redstone.SOURCES:  # what it powered goes dark
-                    redstone.spread(self.sim, (x, y, z))
-                    support = redstone.support_of(broken, state, (x, y, z))
-                    if support is not None:
-                        redstone.spread(self.sim, support)
-                if PLANT[self.world.get(x, y + 1, z)]:  # the plant on it goes too
-                    self.sim.set_block(x, y + 1, z, 0)
-                self.sfx(SND_BREAK)
+        first_right = pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT)
+        aimed = self.world.get(*self.target[0]) if self.target else 0
+        if creative:
+            breaking = self.target and pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT, hold=hold, repeat=repeat)
+            if breaking:
+                if UNBREAKABLE[aimed]:
+                    self.notify("Bedrock can't be broken")
+                else:
+                    self.break_block(*self.target[0])
+        else:  # Survival: hold the button until the block gives way
+            breaking = self.target and pyxel.btn(pyxel.MOUSE_BUTTON_LEFT)
+            if not breaking:
+                self.breaking.reset()
+            elif self.breaking.update(self.target[0], aimed, self.inv.slots[self.selected][0], dt, False):
+                self.break_block(*self.target[0])
+        if breaking:
+            return
+        if self.target and (aimed == CRAFTING_TABLE or aimed in ALL_FURNACES):
+            if first_right:  # a table or a furnace opens its screen (holding the button places nothing on it)
+                if aimed == CRAFTING_TABLE:
+                    self.open(screens.Screen(self.inv, "table"))
+                else:
+                    self.open(screens.Screen(self.inv, "furnace", furnace=self.furnaces.get(self.target[0])))
         elif self.target and pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT, hold=hold, repeat=repeat) and right_click(
                 self.world.get(*self.target[0]), pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT)) == "act":
             x, y, z = self.target[0]
@@ -1093,7 +1258,10 @@ class App:
                 self.world.get(*self.target[0]), pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT)) == "place":
             # Aiming at a plant puts the block in its place, like on the ground under it
             x, y, z = self.target[0] if PLANT[self.world.get(*self.target[0])] else self.target[1]
-            block = turned(self.hotbar[self.selected], self.player.forward())  # a front faces the player
+            item = self.inv.slots[self.selected][0]
+            if not items.is_block(item):
+                return  # an empty hand, or an item that isn't a block (a stick, a tool...): nothing to place
+            block = turned(item, self.player.forward())  # a front faces the player
             here = self.world.get(x, y, z)
             free = self.world.inside(x, y, z) and (here in (0, WATER) or PLANT[here])
             if free and PLANT[block] and (here == WATER or not GROWS_ON[block, self.world.get(x, y - 1, z)]):
@@ -1106,6 +1274,32 @@ class App:
                 else:
                     self.sim.set_block(x, y, z, *placed)
                     self.sfx(SND_PLACE)
+                    if not creative:
+                        self.inv.remove_from(self.selected, 1)
+
+    def break_block(self, x, y, z):
+        """Take the block away: the redstone it powered goes dark and the plant on it goes too. In Survival
+        its drops go into the inventory and the tool wears; a furnace's contents come out in either mode."""
+        broken, state = self.world.get(x, y, z), self.world.get_state(x, y, z)
+        contents = self.furnaces.remove((x, y, z)) if broken in ALL_FURNACES else []
+        if self.mode == SURVIVAL:
+            lost, broke = harvest(self.inv, self.selected, broken, self.rng, contents)
+            if broke:
+                self.notify(f"{broke} broke")
+                self.sfx(SND_BREAK)
+            elif lost:
+                self.notify("Inventory full")
+        elif sum(self.inv.add(*stack) for stack in contents):
+            self.notify("Inventory full")
+        self.sim.set_block(x, y, z, 0)
+        if broken in redstone.SOURCES:  # what it powered goes dark
+            redstone.spread(self.sim, (x, y, z))
+            support = redstone.support_of(broken, state, (x, y, z))
+            if support is not None:
+                redstone.spread(self.sim, support)
+        if PLANT[self.world.get(x, y + 1, z)]:  # the plant on it goes too
+            self.sim.set_block(x, y + 1, z, 0)
+        self.sfx(SND_BREAK)
 
     def update_look(self):
         keys_yaw = pyxel.btn(pyxel.KEY_LEFT) - pyxel.btn(pyxel.KEY_RIGHT)
@@ -1182,8 +1376,14 @@ class App:
                 return
             self.time_of_day = (t / 24000 if t > 1 else t) % 1.0
             self.notify(f"Time set to {self.time_of_day * 24 % 24:.0f}:00")
+        elif cmd == "gamemode":
+            mode = parse_gamemode(parts[1]) if len(parts) == 2 else None
+            if mode is None:
+                self.notify("Usage: /gamemode survival|creative")
+                return
+            self.set_mode(mode)
         else:
-            self.notify(f"Unknown command: {parts[0]}  (/tp x y z, /time set ...)")
+            self.notify(f"Unknown command: {parts[0]}  (/tp x y z, /time set ..., /gamemode ...)")
 
     def draw_chat(self):
         ui = self.ui
@@ -1219,8 +1419,14 @@ class App:
         elif self.state == "loading":
             done = self.renderer.progress(self.player.eye(), LOADING_RADIUS)
             self.draw_message_box(f"Generating terrain... {done * 100:.0f}%", done)
+        elif self.state == "newmode":
+            self.draw_title()
         elif self.state == "paused":
             ui.center_text(self.menu_top() - 26, "Game paused", TEXT, shadow=True, size=2)
+            self.draw_menu()
+        elif self.state == "dead":
+            ui.shade(0, 0, ui.width, ui.height, 0.35, col=8)
+            ui.center_text(self.menu_top() - 26, "You died!", TEXT, shadow=True, size=2)
             self.draw_menu()
         elif self.state == "settings":
             self.draw_settings()
@@ -1228,6 +1434,8 @@ class App:
             self.draw_hud()
             if self.state == "inventory":
                 self.draw_inventory()
+            elif self.state == "screen":
+                self.open_screen.draw(ui, self.draw_icon, ui.mouse_x, ui.mouse_y, ui.width, ui.height)
             elif self.state == "chat":
                 self.draw_chat()
         if not self.mouse_captured and self.state != "loading":
@@ -1259,7 +1467,8 @@ class App:
             fog = (env["horizon"], HAZE, FOG_START * end, end)
         self.renderer.set_environment(**env, fog_color=fog[0], fog_density=fog[1], fog_start=fog[2], fog_end=fog[3])
         self.renderer.underwater = underwater
-        self.renderer.dim = DIM if self.state in ("loading", "paused", "settings", "inventory") else 1.0
+        dimmed = ("loading", "paused", "settings", "inventory", "screen", "dead")
+        self.renderer.dim = DIM if self.state in dimmed else 1.0
         self.renderer.render(self.screen, eye, forward, target)
         self.use_palette()
 
@@ -1300,6 +1509,8 @@ class App:
 
     def draw_hud(self):
         ui = self.ui
+        if self.state == "screen":
+            return  # (the screen has the hotbar in it)
         self.draw_hotbar()
         if self.state == "inventory":
             return  # (the rest would show through the inventory's see-through panel)
@@ -1311,12 +1522,21 @@ class App:
         ui.hline(cx - 4, cx + 4, cy, WHITE)
         ui.vline(cx, cy - 4, cy + 4, WHITE)
 
+        if self.breaking.fraction > 0:  # how far the block is from breaking, under the crosshair
+            ui.rect(cx - 15, cy + 8, 30, 3, BLACK)
+            ui.rect(cx - 14, cy + 9, max(1, round(28 * self.breaking.fraction)), 1, WHITE)
+
         y0 = self.hotbar_rects()[0][1]
+        if self.mode == SURVIVAL:
+            self.draw_health(y0)
+            y0 -= 9  # the names and notices go above the hearts
         if self.state == "playing":  # (the chat line would cover them)
             if self.play_time - self.selected_time < NAME_SECONDS:
-                ui.center_text(y0 - 13, BLOCK_NAMES[self.hotbar[self.selected]], TEXT, shadow=True)
+                ui.center_text(y0 - 13, items.name(self.inv.slots[self.selected][0]), TEXT, shadow=True)
             if self.message and self.play_time - self.message_time < 2.5:
                 ui.toast(y0 - 29, self.message)
+        if self.play_time - self.hurt_time < HURT_FLASH:
+            ui.shade(0, 0, ui.width, ui.height, 0.3, col=8)
 
         y = 2
         if self.show_debug:
@@ -1326,15 +1546,36 @@ class App:
         if not self.mouse_captured and self.state == "playing":
             ui.toast(cy + 10, "Click to capture the mouse")
 
+    def draw_health(self, y0):
+        """10 hearts above the left half of the hotbar, and the air left (10 bubbles) above its right half."""
+        ui = self.ui
+        rects = self.hotbar_rects()
+        x0, y = rects[0][0], y0 - 9
+        hp = self.health.hp
+        for i in range(10):
+            for row, line in enumerate(HEART):
+                for col, c in enumerate(line):
+                    if c == "#":
+                        full = hp >= 2 * i + 2 or (hp == 2 * i + 1 and col < 4)
+                        ui.rect(x0 + i * 8 + col, y + row, 1, 1, 8 if full else 1)
+        air = self.health.air
+        if air < Health.MAX_AIR or self.player.head_in_water(self.world):
+            right = rects[-1][0] + rects[-1][2]
+            for i in range(math.ceil(air / (Health.MAX_AIR / 10))):
+                bx = right - (i + 1) * 7
+                ui.rect(bx + 1, y, 3, 5, LIGHT_BLUE)
+                ui.rect(bx, y + 1, 5, 3, LIGHT_BLUE)
+                ui.rect(bx + 1, y + 1, 1, 1, WHITE)
+
     def draw_hotbar(self):
         ui = self.ui
         rects = self.hotbar_rects()
         x0, y0, s, _ = rects[0]
         ui.shade(x0 - 2, y0 - 2, s * len(rects) + 4, s + 4, 0.7)
         ui.rectb(x0 - 2, y0 - 2, s * len(rects) + 4, s + 4, BLACK)
-        for i, (block, (x, y, w, h)) in enumerate(zip(self.hotbar, rects)):
+        for i, (stack, (x, y, w, h)) in enumerate(zip(self.inv.slots[:9], rects)):
             ui.rectb(x + 1, y + 1, w - 2, h - 2, NAVY)
-            self.draw_icon(x + 3, y + 3, block)
+            screens.draw_stack(ui, self.draw_icon, x + 3, y + 3, stack if self.mode == SURVIVAL else stack[:1] + (1, 0))
             ui.text(x + 2, y + 2, str(i + 1), TEXT_HOT if i == self.selected else GREY, shadow=True)
         x, y, w, h = rects[self.selected]  # the chosen slot: a thick white frame
         ui.rectb(x - 1, y - 1, w + 2, h + 2, BLACK)
@@ -1398,7 +1639,7 @@ class App:
             ui.rectb(x, y, tw, th, WHITE if active else LIGHT_BLUE if ui.mouse_in(x, y, tw, th) else BLACK)
             ui.text(x + 5, y + 4, name, TEXT_HOT if active else TEXT, shadow=True)
         hovered = None
-        chosen = self.hotbar[self.selected]
+        chosen = self.inv.slots[self.selected][0]
         for block, x, y in self.inventory_slots():
             over = ui.mouse_in(x, y, size, size)
             if over:
