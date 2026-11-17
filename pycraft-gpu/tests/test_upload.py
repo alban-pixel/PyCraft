@@ -1,0 +1,42 @@
+import numpy as np
+import pytest
+
+import blocks as B
+from blocks import TINT_ALPHA, build_tiles
+from renderer import make_tile_textures, split_tiles
+
+
+def test_split_tiles():
+    tiles = np.zeros((256, 4, 4, 4), np.uint8)
+    glass, leaves = B.T_GLASS, B.T_LEAVES
+    for t in (glass, leaves):
+        tiles[t, ..., :3] = 0
+        tiles[t, 0, :] = (100, 50, 20, 255)
+        tiles[t, 1, :] = (60, 70, 80, TINT_ALPHA)
+        tiles[t, 2:, :] = (0, 0, 0, 0)  # holes
+    rgba, mask = split_tiles(tiles)
+    assert set(np.unique(rgba[glass, ..., 3])) == {0, 255}
+    assert (rgba[glass, 1, :, 3] == 255).all() and (rgba[glass, 2:, :, 3] == 0).all()
+    assert (mask[glass, 1] == 255).all() and (mask[glass, 0] == 0).all() and (mask[glass, 2:] == 0).all()
+    assert (rgba[glass, 2:, :, :3] == (80, 60, 50)).all()  # a glass hole: the average seen color
+    assert (rgba[leaves, 2:, :, :3] == 0).all()  # a leaf hole keeps its color (it is drawn)
+
+
+@pytest.fixture(scope="module")
+def ctx():
+    moderngl = pytest.importorskip("moderngl")
+    try:
+        ctx = moderngl.create_standalone_context()
+    except Exception as e:  # no graphics card driver here
+        pytest.skip(f"no OpenGL context: {e}")
+    yield ctx
+    ctx.release()
+
+
+def test_upload_headless(ctx):
+    atlas, tint = make_tile_textures(ctx, build_tiles())
+    assert atlas.size == (16, 16, 256) and atlas.layers == 256 and atlas.components == 4
+    assert tint.size == (16, 16, 256) and tint.layers == 256 and tint.components == 1
+    big = np.stack([B.resize_tile(t, 64) for t in build_tiles()])
+    atlas, _ = make_tile_textures(ctx, big)
+    assert atlas.size == (64, 64, 256)

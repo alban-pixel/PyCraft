@@ -77,7 +77,7 @@ ADAPT_EVERY = 2  # frames between two adjustments of the palette
 MIX_PENALTY = 0.35  # how much dithering between two distant colors is avoided (it looks noisy)
 
 # Texture units
-ATLAS_UNIT = 0
+ATLAS_UNIT = 0  # the tiles' colors (a texture array, a layer per tile)
 COLORS_UNIT = 1
 READY_UNIT = 2
 CLOUDS_UNIT = 3
@@ -87,6 +87,7 @@ TILE_AVG_UNIT = 9
 BLOCK_TILES_UNIT = 10
 COARSE_UNIT = 11
 FINE_UNIT = 12
+TINT_UNIT = 13  # which texels of the tiles take the biome color (a texture array too)
 
 # --- Shader code shared by several programs ---------------------------------------------------
 
@@ -231,7 +232,7 @@ uniform mat4 vp;      // view and projection, with the camera at (0, 0, 0)
 uniform vec3 origin;  // corner of this column, relative to the camera
 uniform int mode;
 in vec3 in_pos;       // relative to the corner of the column
-in uvec4 in_info;     // atlas tile, corner of the face (0-3), face direction (0-5, plants 6-7), kind (builder.KIND)
+in uvec4 in_info;     // tile (layer of the texture array), corner of the face (0-3), face direction (0-5, plants 6-7), kind (builder.KIND)
 in vec4 in_tint;      // biome color for grass, leaves and water; ambient occlusion
 out vec2 v_uv;
 out vec3 v_pos;
@@ -241,13 +242,11 @@ flat out int v_face;
 flat out int v_kind;
 flat out int v_tile;
 const vec2 CORNERS[4] = vec2[](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0));
-const float INSET = 0.5 / 16.0;  // half a texel, so neighbor tiles never bleed in
 void main() {
     vec3 pos = origin + in_pos;
     gl_Position = vp * vec4(pos, 1.0);
     if (mode == 2) gl_Position.z = max(gl_Position.z, -1.0);  // nearer the light than the map: flattened onto it
-    vec2 tile = vec2(float(in_info.x %% %(atlas)du), float(in_info.x / %(atlas)du));
-    v_uv = (tile + INSET + CORNERS[in_info.y] * (1.0 - 2.0 * INSET)) / %(atlas)d.0;
+    v_uv = CORNERS[in_info.y];  // in the tile: each tile is its own layer, so nothing bleeds in
     v_face = int(in_info.z);
     v_kind = int(in_info.w);
     v_tile = int(in_info.x);
@@ -325,7 +324,8 @@ bool drawn_as_blocks(ivec2 cell) { return cell_hash(cell, 0) >= block_fade_at(ce
 
 BLOCK_FRAGMENT_SHADER = """
 #version 330
-uniform sampler2D atlas;
+uniform sampler2DArray atlas;      // the tiles, mipmapped: no shimmer far off
+uniform sampler2DArray tint_mask;  // 1 where a texel takes the biome color (mipmapped too: a share)
 uniform int mode;
 in vec2 v_uv;
 in vec3 v_pos;
@@ -337,16 +337,19 @@ flat in int v_tile;
 out vec4 out_color;
 """ + LIGHT + CLOUDS + SHADOWS + WAVES + BLOCK_SHADING + CELLS + """
 void main() {
-    vec4 tex = texture(atlas, v_uv);
+    vec3 uvw = vec3(v_uv, float(v_tile));
+    vec4 tex = texture(atlas, uvw);
+    float tinted = texture(tint_mask, uvw).r;
+    // The cut-out from the full-size texture: the mipmaps' averaged alpha would thin out plants far off
+    float alpha = textureLod(atlas, uvw, 0.0).a;
     bool plant = v_kind == 4;
-    if (tex.a < 0.5 && (v_kind == 1 || plant || (v_kind == 3 && mode == 2))) discard;  // see-through texel
+    if (alpha < 0.5 && (v_kind == 1 || plant || (v_kind == 3 && mode == 2))) discard;  // see-through texel
     if (mode == 2) return;  // shadow map: only the depth counts
     int face = plant ? 2 : v_face;  // plants (crossed quads, faces 6-7) are lit like the top of a block
     vec3 n = NORMALS[face];
     if (!drawn_as_blocks(cell_of(v_pos.xz - n.xz * 0.01))) discard;  // the distant terrain shows here
-    vec3 albedo = tex.rgb;
-    if (tex.a > 0.5 && tex.a < 0.9) albedo *= v_tint;  // texel colored by the biome
-    if (v_kind == 3 && tex.a < 0.5) albedo *= v_tint * 0.4;  // a hole in leaves: the shaded leaves inside
+    vec3 albedo = tex.rgb * mix(vec3(1.0), v_tint, tinted);  // texels colored by the biome
+    if (v_kind == 3 && alpha < 0.5) albedo *= v_tint * 0.4;  // a hole in leaves: the shaded leaves inside
     if (v_kind != 1) albedo = far_albedo(albedo, v_tile, v_tint, length(v_pos));
     // A plant's shadow is tested a block toward the light, so it doesn't shadow itself
     float direct = direct_light(plant ? v_pos + light_dir : v_pos, n);
@@ -570,7 +573,8 @@ uniform float cam_y;
 uniform float spacing;
 uniform vec2 cam_frac;       // the camera's x and z, modulo 256: where a block starts
 uniform float cam_x;         // the camera's x (the badlands' layers shift at x = 0)
-uniform sampler2D atlas;
+uniform sampler2DArray atlas;
+uniform sampler2DArray tint_mask;
 uniform usampler2D data;     // the level's grid: heights and blocks (see the vertex shader)
 uniform ivec2 grid_origin;
 uniform int grid_size;
@@ -603,6 +607,11 @@ void main() {
     if (mode == 1) return;  // shadow map: only the depth counts
     // Which block this point of the column is, like the generator stacks them
     vec3 w = vec3(v_pos.x + cam_frac.x, v_pos.y + cam_y, v_pos.z + cam_frac.y);
+    // Where on the face's texture, unwrapped (the texture repeats on every block): its rate of
+    // change picks the mipmap level, worked out here while every pixel of the quad still runs
+    vec2 g = v_face == 2 ? w.xz : v_face == 0 ? vec2(w.z, -w.y) : v_face == 1 ? vec2(-w.z, -w.y)
+           : v_face == 4 ? vec2(-w.x, -w.y) : vec2(w.x, -w.y);
+    vec2 g_dx = dFdx(g), g_dy = dFdy(g);
     float ground = v_tops.x;
     int block;
     if (water_pass == 1) block = WATER;
@@ -619,9 +628,7 @@ void main() {
     }
     // The texture repeats on every block, as on the blocks near the camera — unless the column
     // carries its own color: the blocks the player changed, averaged into the tint
-    vec3 f = fract(w);
-    vec2 uv = v_face == 2 ? f.xz : v_face == 0 ? vec2(f.z, 1.0 - f.y) : v_face == 1 ? vec2(1.0 - f.z, 1.0 - f.y)
-            : v_face == 4 ? vec2(1.0 - f.x, 1.0 - f.y) : vec2(f.x, 1.0 - f.y);
+    vec2 uv = fract(g);
     float dist = length(v_pos);
     vec3 albedo;
     if (block == 255) {
@@ -633,11 +640,10 @@ void main() {
         vec3 tint = block == GRASS || block == WATER ? v_tint
                   : (block == LEAVES || block == JUNGLE_LEAVES || block == ACACIA_LEAVES) ? v_tint * vec3(0.68, 0.78, 0.66)
                   : vec3(1.0);
-        ivec2 texel = ivec2(tile %% %(atlas)d, tile / %(atlas)d) * 16 + min(ivec2(uv * 16.0), 15);
-        vec4 tex = texelFetch(atlas, texel, 0);
-        albedo = tex.rgb;
-        if (tex.a > 0.5 && tex.a < 0.9) albedo *= tint;  // texel colored by the biome
-        if (leaves && tex.a < 0.5) albedo *= tint * 0.4;  // a hole in leaves: the shaded leaves inside
+        vec3 uvw = vec3(uv, float(tile));
+        vec4 tex = textureGrad(atlas, uvw, g_dx, g_dy);
+        albedo = tex.rgb * mix(vec3(1.0), tint, textureGrad(tint_mask, uvw, g_dx, g_dy).r);  // biome colors
+        if (leaves && textureLod(atlas, uvw, 0.0).a < 0.5) albedo *= tint * 0.4;  // a hole in leaves: the shaded leaves inside
         albedo = far_albedo(albedo, tile, tint, dist);
         // A crown of leaves is opaque from afar: its inner air folds into the color — the more
         // open the crown, the darker — and the bottom of a crown stays darker than its top
@@ -955,6 +961,41 @@ def tile_averages(tiles):
             out[t, 1, :3] = c[tinted].mean(axis=0)
         out[t, 0, 3] = tinted.sum() / max(seen.sum(), 1)
     return out
+
+def split_tiles(tiles):
+    """The tiles (256, N, N, 4), alpha 0 / TINT_ALPHA / 255, as the graphics card takes them: their
+    colors with alpha 0 or 255, and a mask (256, N, N) of the texels the biome colors (255). The
+    holes of every tile but leaves (whose holes are drawn) take the average color of the tile, so
+    the mipmaps don't darken the edges of flowers and glass."""
+    alpha = tiles[..., 3]
+    rgba = tiles.copy()
+    rgba[..., 3] = np.where(alpha > 0, 255, 0)
+    mask = np.where(alpha == TINT_ALPHA, 255, 0).astype(np.uint8)
+    for t in range(len(tiles)):
+        hole = alpha[t] == 0
+        if t in LEAF_TILES or not hole.any() or hole.all():
+            continue
+        rgba[t][hole, :3] = np.rint(tiles[t][~hole][:, :3].astype(np.float64).mean(axis=0))
+    return rgba, mask
+
+
+def make_tile_textures(ctx, tiles):
+    """Two texture arrays, a layer per tile, with mipmaps: the colors (unit ATLAS_UNIT) and the
+    biome color mask (TINT_UNIT). Sharp up close (nearest texel), smooth far off (the mipmaps,
+    blended between levels, and anisotropic filtering for the ground seen at a grazing angle)."""
+    n = tiles.shape[1]
+    rgba, mask = split_tiles(tiles)
+    textures = (ctx.texture_array((n, n, len(tiles)), 4, np.ascontiguousarray(rgba).tobytes()),
+                ctx.texture_array((n, n, len(tiles)), 1, np.ascontiguousarray(mask).tobytes()))
+    for tex in textures:
+        tex.build_mipmaps()
+        tex.filter = (moderngl.NEAREST_MIPMAP_LINEAR, moderngl.NEAREST)
+        try:
+            tex.anisotropy = 8.0
+        except (moderngl.Error, AttributeError):
+            pass
+    return textures
+
 
 # Triangles of a face, split along one diagonal or the other: along the brighter corners, so
 # ambient occlusion shades the face evenly
@@ -1293,8 +1334,9 @@ class FarTerrain:
     follows the camera once its new cells have landed: until then the level is drawn where it
     was, so the textures never show cells that are not sampled yet."""
 
-    def __init__(self, ctx, program, world, atlas_texture, tiles, sampler, spacing=2, size=128, levels=7):
-        self.ctx, self.program, self.atlas = ctx, program, atlas_texture
+    def __init__(self, ctx, program, world, atlas_texture, tint_texture, tiles, sampler, spacing=2, size=128,
+                 levels=7):
+        self.ctx, self.program, self.atlas, self.tint = ctx, program, atlas_texture, tint_texture
         self.tiles = tiles  # kept to rebuild the tile averages if the quality changes
         self.spacing, self.size, self.n_levels = spacing, size, levels
         self.sampler = sampler  # lod.SamplerProcess: it makes the texels
@@ -1531,13 +1573,14 @@ class FarTerrain:
             chunks.ready_texture.use(READY_UNIT)
         set_uniforms(p, {"data": DATA_UNIT, "coarse_data": COARSE_UNIT, "fine_data": FINE_UNIT,
                          "colors": COLORS_UNIT, "tile_avg": TILE_AVG_UNIT,
-                         "atlas": ATLAS_UNIT, "grid_size": self.size})
+                         "atlas": ATLAS_UNIT, "tint_mask": TINT_UNIT, "grid_size": self.size})
         planes = frustum_planes(vp)
         p["clip_planes"].write(planes[[0, 1, 4]].astype("f4").tobytes())  # left right near
         p["tile_width"] = self.tile_width
         p["block_reach"] = self.block_reach
         p["lee"] = (float(vp[2][0]), float(vp[2][2])) if shadow else (0.0, 0.0)  # (depth grows away from the light)
         self.atlas.use(ATLAS_UNIT)
+        self.tint.use(TINT_UNIT)
         self.tile_avg.use(TILE_AVG_UNIT)
         rects = {}
         for level in range(first, last + 1):
@@ -1636,8 +1679,8 @@ class Shadows:
     light moved a little (its direction is rounded), the camera went far from the map's center, or
     the meshes or the distant terrain changed."""
 
-    def __init__(self, ctx, atlas):
-        self.ctx, self.atlas = ctx, atlas
+    def __init__(self, ctx, atlas, tint):
+        self.ctx, self.atlas, self.tint = ctx, atlas, tint
         self.textures, self.fbos = [], []
         for _ in range(3):
             tex = ctx.depth_texture((SHADOW_SIZE, SHADOW_SIZE))
@@ -1688,6 +1731,7 @@ class Shadows:
         ctx.polygon_offset = (2.0, 4.0)  # a little farther from the light: surfaces don't shadow themselves
         if i == 0:
             self.atlas.use(ATLAS_UNIT)  # leaves let light through their holes
+            self.tint.use(TINT_UNIT)  # (read by the blocks' shader, which also draws the shadows)
             block_program["mode"] = 2
             block_program["vp"].write(matrix_bytes(vp))
             chunks.render_shadow(cam)
@@ -1857,9 +1901,7 @@ class Renderer:
                 vertex_shader=OUTLINE_VERTEX_SHADER, fragment_shader=OUTLINE_FRAGMENT_SHADER)
             self.post_program = ctx.program(vertex_shader=FULLSCREEN_VERTEX_SHADER,
                                             fragment_shader=POST_FRAGMENT_SHADER)
-            atlas = B.tiles_to_atlas(tiles)
-            self.texture = ctx.texture((atlas.shape[1], atlas.shape[0]), 4, atlas.tobytes())
-            self.texture.filter = (moderngl.NEAREST, moderngl.NEAREST)
+            self.texture, self.tint_texture = make_tile_textures(ctx, tiles)
             # The atlas tile of each face (x) of each block (y), for the distant terrain's shader
             self.block_tiles = ctx.texture((6, len(BLOCK_TILES)), 1, np.asarray(BLOCK_TILES, "u2").tobytes(),
                                            dtype="u2")
@@ -1876,9 +1918,9 @@ class Renderer:
             self.outline_vao = ctx.vertex_array(self.outline_program, [(self.outline_vbo, "3f", "in_pos")])
             self.sampler = SamplerProcess()  # makes the distant terrain's texels, in its own process
             self.chunks = Chunks(ctx, self.program, world, self.sampler.shared)
-            self.far = FarTerrain(ctx, self.lod_program, world, self.texture, tiles, self.sampler,
+            self.far = FarTerrain(ctx, self.lod_program, world, self.texture, self.tint_texture, tiles, self.sampler,
                                   *LOD_QUALITIES[LOD_QUALITY_NAMES[0]])
-            self.shadows = Shadows(ctx, self.texture)
+            self.shadows = Shadows(ctx, self.texture, self.tint_texture)
             self.palette = Palette(ctx, fixed)
             self.palette.apply()
             try:  # measures how long the graphics card takes to draw a frame
@@ -1886,7 +1928,7 @@ class Renderer:
             except moderngl.Error:
                 self.timer = None
             for p in (self.program, self.lod_program, self.cloud_program):
-                set_uniforms(p, {"atlas": ATLAS_UNIT, "clouds": CLOUDS_UNIT, "tile_avg": TILE_AVG_UNIT,
+                set_uniforms(p, {"atlas": ATLAS_UNIT, "tint_mask": TINT_UNIT, "clouds": CLOUDS_UNIT, "tile_avg": TILE_AVG_UNIT,
                                  "shadow_near": SHADOW_UNITS[0],
                                  "shadow_mid": SHADOW_UNITS[1], "shadow_far": SHADOW_UNITS[2]})
         self.world = world
@@ -1924,7 +1966,7 @@ class Renderer:
         if (spacing, size, levels) == (far.spacing, far.size, far.n_levels):
             return
         with self.ctx:
-            self.far = FarTerrain(self.ctx, self.lod_program, self.world, self.texture,
+            self.far = FarTerrain(self.ctx, self.lod_program, self.world, self.texture, self.tint_texture,
                                   far.tiles, self.sampler, spacing, size, levels)
             self.far.version = far.version + 1  # the shadow maps are drawn again
             for res in far.data_maps + far.color_maps + [far.tile_avg, far.vbo, far.ibo, far.vao]:
@@ -2085,6 +2127,7 @@ class Renderer:
         near_draw, far_draw = depth_half(near_vp, False), depth_half(far_vp, True)
         ctx.enable(moderngl.DEPTH_TEST)
         self.texture.use(ATLAS_UNIT)
+        self.tint_texture.use(TINT_UNIT)
         self.far.tile_avg.use(TILE_AVG_UNIT)
         self.program["vp"].write(matrix_bytes(near_draw))
         self.program["mode"] = 0
@@ -2096,6 +2139,7 @@ class Renderer:
 
         # The blocks' water, see-through, over all of that; then the clouds nearby
         self.texture.use(ATLAS_UNIT)
+        self.tint_texture.use(TINT_UNIT)
         self.far.tile_avg.use(TILE_AVG_UNIT)
         ctx.enable(moderngl.BLEND)
         ctx.blend_func = moderngl.SRC_ALPHA, moderngl.ONE_MINUS_SRC_ALPHA

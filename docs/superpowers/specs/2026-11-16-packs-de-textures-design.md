@@ -173,7 +173,22 @@ C'est un dictionnaire dans `packs.py` : `T_xxx → (nom_1.8, nom_1.13+)`. Exempl
   Filtre : `NEAREST` en agrandissement (pixels nets de près) et
   `NEAREST_MIPMAP_LINEAR` en réduction (pas de fourmillement de loin). Je mets
   l'anisotrope si moderngl le propose (×4 ou ×8), pour les sols en angle rasant.
-- **Mipmaps faits sur le CPU**, pas par `build_mipmaps` : une moyenne qui pondère
+- **Revu à l'implémentation :** les mipmaps sont faits par le GPU (`build_mipmaps`),
+  car `TextureArray.write` de moderngl ne sait pas écrire un niveau précis. Pour
+  que ça marche :
+  - la teinte de biome quitte l'alpha et passe dans un second tableau de textures,
+    un masque R8 mipmappé lui aussi. Le shader multiplie par
+    `mix(1, teinte, masque)`, ce qui donne une teinte juste à chaque niveau ;
+  - avant l'envoi, les trous des tuiles qui ne sont pas des feuilles prennent la
+    couleur moyenne de leur tuile, pour éviter les halos ;
+  - la découpe (alpha < 0,5) lit toujours le niveau 0, pour que les plantes ne
+    s'effacent pas de loin ;
+  - le filtrage anisotrope ×8 est activé ;
+  - le terrain lointain lit avec `textureGrad`, à partir des dérivées d'une
+    coordonnée de texture continue.
+
+  Le paragraphe suivant décrit le plan d'origine.
+- *(Plan d'origine)* **Mipmaps faits sur le CPU**, pas par `build_mipmaps` : une moyenne qui pondère
   par l'alpha, pour éviter les halos noirs autour des trous des plantes et du
   verre. Pour les feuilles, les trous comptent comme les autres texels (leur RVB
   est déjà la moyenne de la feuille), puisqu'ils sont dessinés. Les
