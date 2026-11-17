@@ -35,7 +35,7 @@ def settle(app, frames=20000):
 if __name__ == "__main__":
     import random
     random.seed(7)
-    from pycraft.app import App
+    from pycraft.app import App, parse_settings
     from pycraft.world import World
     log = open(os.path.join(OUT, "bench%s.txt" % TAG), "w")
 
@@ -47,6 +47,10 @@ if __name__ == "__main__":
         app = App(headless=True)
         app.save_path = os.path.join(OUT, "world_bench%s_%d.npz" % (TAG, os.getpid()))
         app.settings_path = os.path.join(OUT, "settings_bench%s_%d.json" % (TAG, os.getpid()))
+        # The game's own settings, not the player's: the same pictures on every computer
+        app.settings = parse_settings({})
+        if app.renderer.far.tiles is not app.default_tiles:
+            app.apply_pack(None)
         w, h = map(int, os.environ.get("RES", "2560x1440").split("x"))
         s = app.settings
         s["resolution"], s["fancy"] = (w, h), os.environ.get("FANCY", "0") == "1"
