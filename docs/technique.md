@@ -235,6 +235,32 @@ couvert dans la seconde, à toutes les qualités.
   délai (`Simulation.after`). Pistons : jusqu'à 12 blocs, tête `PISTON_HEAD` ; TNT : 80 ticks,
   rayon 4, en chaîne.
 
+## Objets et survie
+
+- **Objets** (`items.py`) : un entier. 0 à 255 : le bloc du même numéro ; 256 et plus : bâton,
+  lingots, gemmes, outils... Une case vaut `(objet, nombre, usure)`, `(0, 0, 0)` si vide ; 64 par
+  pile, un outil par case. Les blocs tournés ou allumés donnent l'objet de leur bloc de base
+  (`base_item`).
+- **Casse** : temps de Minecraft, `1 / (vitesse / dureté / (30 ou 100) × 20)` secondes, 30 si le
+  bloc est récoltable avec cet outil. `survival.BreakProgress` cumule une fraction, pas un temps :
+  changer d'outil en cours de route continue à la nouvelle vitesse. Drops dans `items.drops`, avec
+  un `random.Random` pour les tirages.
+- **Inventaire** (`inventory.py`) : 36 cases (0-8 la barre) et des fonctions de clic pures sur des
+  listes de cases, réutilisées par les écrans (`screens.py`) pour la grille, le four et le curseur.
+  `screens.Screen` réunit inventaire, grille et four dans une seule liste pour les Maj+clic.
+- **Recettes** (`recipes.py`) : avec forme (motif placé n'importe où, symétrie gauche-droite) ou
+  sans forme ; la première qui correspond gagne. Cuisson et combustibles à part.
+- **Four** (`furnace.py`) : le contenu vit dans `Furnaces`, par position, pas dans l'octet d'état ;
+  `tick` tourne dans `sim.every_tick` et passe le bloc de `FURNACE*` à `FURNACE_ON*` (même
+  orientation).
+- **Vie** (`survival.Health`) : 20 PV, chute `ceil(hauteur − 3)` (mesurée par `Player.fall_distance`),
+  300 ticks d'air puis 2 PV/s, +1 PV toutes les 4 s.
+- **Icônes d'objets** : générées par `items.build_item_tiles`, ou lues dans `textures/items/` (1.8)
+  et `textures/item/` (1.13) du pack. Elles vont dans la banque d'images Pyxel 2 et partagent les 48
+  couleurs d'icônes avec les blocs.
+- **Sauvegarde** : clés `mode`, `inventory` (36 × 3), `health`, `air`, `spawn`, `furnaces` (n × 12) ;
+  une sauvegarde sans `inventory` passe en Créatif avec sa `hotbar`.
+
 ## De la frame au pixel Pyxel
 
 1. La scène est rendue en **pleine couleur** (HDR-ish, éclairage par face :

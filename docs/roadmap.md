@@ -3,7 +3,10 @@
 > Plan établi le 16 novembre 2026, sur la branche `gpu-renderer-dev`. **Chantier 1
 > (packs de textures) fait le 16 novembre 2026** : voir
 > [`superpowers/specs/2026-11-16-packs-de-textures-design.md`](superpowers/specs/2026-11-16-packs-de-textures-design.md).
-> Les autres ne sont pas commencés. État actuel du moteur : [`technique.md`](technique.md) et
+> **Chantier 4 (redstone) fait le 16 novembre 2026**, avec le socle. **Chantier 2 (survie) fait le
+> 17 novembre 2026**, sans la faim, reportée au chantier 5 avec les animaux : voir
+> [`superpowers/specs/2026-11-16-survie-design.md`](superpowers/specs/2026-11-16-survie-design.md).
+> Restent les liquides (3), les mobs et la lumière (5) et le reste (6). État actuel du moteur : [`technique.md`](technique.md) et
 > [`pycraft-gpu/README.md`](../pycraft-gpu/README.md).
 
 ## Objectif
@@ -62,10 +65,10 @@ d'être codé.
 | # | Chantier | Contenu |
 |---|---|---|
 | 1 | **Packs de textures** | Lecture d'un pack au format Minecraft (dossier ou zip) déposé par le joueur, table de correspondance tuile → fichier, textures générées gardées comme pack par défaut, choix du pack dans les réglages. Fournit aussi les icônes d'objets. |
-| 2 | **Survie** | Inventaire avec piles, temps de casse, drops, outils et durabilité, craft, four, vie, faim, dégâts de chute, mort et réapparition. L'interface est refaite ici, avec les nouveaux écrans. |
+| 2 | **Survie** — *fait, sans la faim* | Inventaire avec piles, temps de casse, drops, outils et durabilité, craft, four, vie, faim, dégâts de chute, mort et réapparition. L'interface est refaite ici, avec les nouveaux écrans. |
 | 3 | **Liquides** | Eau et lave qui coulent, sources et niveaux, interaction eau/lave. |
 | 4 | **Redstone** — *fait* | Poudre, torche, levier, bouton, plaque de pression, répéteur, lampe, pistons, TNT. |
-| 5 | **Mobs et lumière** | Lumière de bloc (grottes sombres, torches qui éclairent), animaux, monstres qui apparaissent dans le noir, combat. |
+| 5 | **Mobs et lumière** | Lumière de bloc (grottes sombres, torches qui éclairent), animaux, monstres qui apparaissent dans le noir, combat. Avec la faim et la nourriture (reportées de la survie), et les objets au sol. |
 | 6 | **Le reste** | Agriculture, portes, escaliers, dalles, lits, coffres. |
 
 **Pourquoi cet ordre.** Les packs sont le chantier le plus court, règlent les
