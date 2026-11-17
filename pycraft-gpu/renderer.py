@@ -1789,6 +1789,13 @@ class Palette:
                                               fragment_shader=ACCUMULATE_FRAGMENT_SHADER)
         self.accumulate_vao = ctx.vertex_array(self.accumulate_program, [])
 
+    def set_fixed(self, colors):
+        """New colors (0xRRGGBB) for the block icons, palette entries 16 to FIXED_COLORS - 1 (a new
+        texture pack): taken at the next apply()."""
+        rgb = np.array([[(c >> 16) & 255, (c >> 8) & 255, c & 255] for c in colors], np.float64) / 255
+        self.lab[16:FIXED_COLORS] = srgb_to_oklab(rgb)
+        self.pending = True
+
     def apply(self):
         """Upload the palette if it changed, and work out again the dithering pairs."""
         if not self.pending:
@@ -1965,12 +1972,33 @@ class Renderer:
         far = self.far
         if (spacing, size, levels) == (far.spacing, far.size, far.n_levels):
             return
+        self._rebuild_far(far.tiles, spacing, size, levels)
+
+    def _rebuild_far(self, tiles, spacing=None, size=None, levels=None):
+        """Make the distant terrain again: at another resolution, or from other tiles (their
+        averages and flat colors, which go to the sampler too). The resolution stays if not given."""
+        far = self.far
+        spacing = far.spacing if spacing is None else spacing
+        size = far.size if size is None else size
+        levels = far.n_levels if levels is None else levels
         with self.ctx:
             self.far = FarTerrain(self.ctx, self.lod_program, self.world, self.texture, self.tint_texture,
-                                  far.tiles, self.sampler, spacing, size, levels)
+                                  tiles, self.sampler, spacing, size, levels)
             self.far.version = far.version + 1  # the shadow maps are drawn again
             for res in far.data_maps + far.color_maps + [far.tile_avg, far.vbo, far.ibo, far.vao]:
                 res.release()
+
+    def set_tiles(self, tiles):
+        """Draw with other tiles (256, N, N, 4) (a texture pack): new textures for the blocks, the
+        distant terrain and the shadows. The meshes stay: they only hold tile numbers."""
+        old = (self.texture, self.tint_texture)
+        with self.ctx:
+            self.texture, self.tint_texture = make_tile_textures(self.ctx, tiles)
+            self.shadows.atlas, self.shadows.tint = self.texture, self.tint_texture
+        self._rebuild_far(tiles)
+        with self.ctx:
+            for tex in old:
+                tex.release()
 
     def make_framebuffers(self):
         ctx = self.ctx
