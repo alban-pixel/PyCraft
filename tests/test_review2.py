@@ -2,7 +2,7 @@
 from pycraft import redstone
 from pycraft.blocks import AIR, DIRT, EAST, LEVER, PISTON, REDSTONE_LAMP, REDSTONE_LAMP_OFF, REDSTONE_WIRE, STONE, UP
 from pycraft.app import right_click
-from pycraft.renderer import affected_sections
+from pycraft.render import affected_sections
 from tests.test_redstone import Bench, Y
 
 

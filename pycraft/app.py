@@ -25,7 +25,7 @@ from pycraft.blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBA
 from pycraft.controls import ACTIONS, LABELS, Controls
 from pycraft.player import Player
 from pycraft.sim import Simulation
-from pycraft.renderer import FIXED_COLORS, LOD_QUALITY_NAMES, Renderer, oklab_to_srgb, srgb_to_oklab
+from pycraft.render import FIXED_COLORS, LOD_QUALITY_NAMES, Renderer, oklab_to_srgb, srgb_to_oklab
 from pycraft.terrain import SEA_LEVEL
 from pycraft.ui import (AMBER, ASH, BLACK, COAL, CREAM, GOLD, IRON, PALETTE, RUST, TEXT, TEXT_DIM, TEXT_HOT, WHITE, Ui,
                         text_width)

@@ -9,7 +9,7 @@ from pycraft import blocks as B
 from pycraft.blocks import TINT_ALPHA, build_tiles, tiles_to_atlas
 from pycraft.app import icon_palette, load_tiles
 from pycraft.packs import find_packs, load_pack
-from pycraft.renderer import split_tiles
+from pycraft.render import split_tiles
 from tests.packfactory import make_pack, png, solid
 
 

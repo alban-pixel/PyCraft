@@ -3,7 +3,7 @@ import pytest
 
 from pycraft import blocks as B
 from pycraft.blocks import TINT_ALPHA, build_tiles
-from pycraft.renderer import make_tile_textures, split_tiles
+from pycraft.render import make_tile_textures, split_tiles
 
 
 def test_split_tiles():
@@ -44,7 +44,7 @@ def test_upload_headless(ctx):
 
 
 def test_palette_set_fixed(ctx):
-    from pycraft.renderer import FIXED_COLORS, Palette
+    from pycraft.render import FIXED_COLORS, Palette
     palette = Palette(ctx, np.zeros((FIXED_COLORS, 3)))  # (0-255 RGB, as the Renderer gives it)
     palette.apply()
     version = palette.version

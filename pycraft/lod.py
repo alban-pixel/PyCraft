@@ -1,6 +1,6 @@
 """The distant terrain's sampler: what every cell of every level of detail looks like.
 
-The distant terrain (renderer.FarTerrain) is drawn from textures that hold, for each cell of each
+The distant terrain (render.far.FarTerrain) is drawn from textures that hold, for each cell of each
 of its levels, the height of the ground, its top blocks, a color, and how much of the cell trees
 and water cover. This module makes those texels, from the terrain generator and from the blocks
 the player changed.

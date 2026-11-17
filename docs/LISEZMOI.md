@@ -35,7 +35,7 @@ pycraft/          le jeu (python -m pycraft)
   world.py        monde : sections à la demande, état des blocs, sauvegarde
   builder.py      processus workers : génération + maillage des chunks
   lod.py          processus d'échantillonnage du terrain lointain
-  renderer.py     OpenGL : blocs, terrain lointain, ombres, ciel, palette Pyxel
+  render/         OpenGL : blocs, terrain lointain, ombres, ciel, palette Pyxel, shaders
   blocks.py       types de blocs, textures générées
   shapes.py       formes des blocs qui ne sont pas des cubes
   packs.py        packs de textures au format Minecraft
