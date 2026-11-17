@@ -23,6 +23,8 @@ world.py    sections 16×16×16 créées à la demande, accès blocs, sauvegarde
 builder.py  processus workers : génération + recherche des faces visibles
 lod.py      processus d'échantillonnage du terrain lointain (branche `claude`)
 renderer.py OpenGL : maillages de blocs, clipmap lointain, ombres, ciel, palette
+controls.py actions du jeu et touche de chacune (modifiables dans les réglages)
+ui.py       HUD et menus : panneaux, boutons, onglets, curseurs, thème de 16 couleurs
 main.py     application Pyxel : écrans, entrées, casser/poser, jour/nuit, son
 ```
 
