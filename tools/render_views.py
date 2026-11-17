@@ -1,6 +1,6 @@
 """Pictures of chosen views of a world, without a window, with debug versions of the shaders.
 Used by holes.py; also useful alone. Env: TAG, RES (1280x720), RD (64), LOD (medium), FANCY (0),
-WORLD_SEED, VIEWS (a json file of views, see make_views.py), VARIANT (base | nofar | noblocks |
+WORLD_SEED, VIEWS (a json file of views, see make_views.py; a path from the repository's root), VARIANT (base | nofar | noblocks |
 tag: each level of the distant terrain in its own color), PATCH (deep: every column side goes down
 to the bottom of the world), MASK (1: the sky in magenta, no clouds, and a mask of the sky saved).
 Writes tools/out/<view><TAG>.png (and mask_<view><TAG>.npy), and tools/out/log<TAG>.txt."""
@@ -104,7 +104,7 @@ if __name__ == "__main__":
     random.seed(7)
     from pycraft import renderer as R
     patch_shaders(R)
-    from pycraft.app import App
+    from pycraft.app import App, parse_settings
     from pycraft.world import World
 
     log = open(os.path.join(OUT, "log%s.txt" % TAG), "w")
@@ -117,6 +117,10 @@ if __name__ == "__main__":
         app = App(headless=True)
         app.save_path = os.path.join(OUT, "world%s_%d.npz" % (TAG, os.getpid()))  # never the real save
         app.settings_path = os.path.join(OUT, "settings%s_%d.json" % (TAG, os.getpid()))
+        # The game's own settings, not the player's: the same pictures on every computer
+        app.settings = parse_settings({})
+        if app.renderer.far.tiles is not app.default_tiles:
+            app.apply_pack(None)
         w, h = map(int, os.environ.get("RES", "1280x720").split("x"))
         s = app.settings
         s["resolution"], s["fancy"] = (w, h), os.environ.get("FANCY", "0") == "1"
@@ -146,7 +150,7 @@ if __name__ == "__main__":
             r.far.render = lambda *a, **k: None
         if "noblocks" in VARIANT:
             r.chunks.render = lambda *a, **k: None
-        views = json.load(open(os.environ["VIEWS"])) if os.environ.get("VIEWS") else [
+        views = json.load(open(os.path.join(ROOT, os.environ["VIEWS"]))) if os.environ.get("VIEWS") else [
             {"name": "spawn60", "rel": [0, 60, 0], "yaw": 20.0, "pitch": -12.0}]
         p = app.player
         p.flying = True
