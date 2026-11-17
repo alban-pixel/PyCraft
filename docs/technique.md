@@ -214,6 +214,27 @@ couvert dans la seconde, à toutes les qualités.
   blocs ne changent pas, ils ne contiennent que des numéros de tuile. Les icônes sont réduites
   à 16 px et leurs 48 couleurs de palette recalculées (`Palette.set_fixed`).
 
+## État, formes et redstone
+
+- **État par bloc** : à côté du numéro de bloc (un octet), un octet d'état par bloc
+  (`World.states`), seulement dans les sections qui en ont un non nul. Orientation codée
+  `0 = haut, 1 = bas, 2 = est, 3 = ouest, 4 = sud, 5 = nord` (`blocks.FACING_VECTORS`), donc
+  un bloc d'avant les états regarde vers le haut. Sauvegarde v3 (`state_keys`, `states`,
+  `ticks`) ; une v2 se charge sans état.
+- **Formes** (`shapes.py`) : des boîtes en 1/16, décrites vers le haut puis tournées (6
+  orientations, et 4 sens autour de la verticale), éventuellement inclinées (levier, torche
+  murale). Chaque face prend le morceau de tuile qui correspond à sa position, comme les modèles
+  de Minecraft. Le vertex porte ses UV (`in_uv`, en 1/16). Une face au bord de la case est
+  cachée par un voisin opaque. Visée et contour suivent la boîte de sélection.
+- **Horloge** (`sim.py`) : 20 ticks par seconde, mises à jour planifiées et voisins prévenus à
+  chaque changement ; au plus 4096 blocs regardés par tick. Les mises à jour en attente sont
+  sauvegardées.
+- **Redstone** (`redstone.py`) : puissance forte (vers le bloc porteur d'un levier, au-dessus
+  d'une torche, devant un répéteur) et faible (poudre). La poudre est recalculée par réseau
+  (parcours en largeur puis propagation du plus fort). Torche, répéteur et lampe attendent leur
+  délai (`Simulation.after`). Pistons : jusqu'à 12 blocs, tête `PISTON_HEAD` ; TNT : 80 ticks,
+  rayon 4, en chaîne.
+
 ## De la frame au pixel Pyxel
 
 1. La scène est rendue en **pleine couleur** (HDR-ish, éclairage par face :
