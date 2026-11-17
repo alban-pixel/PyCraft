@@ -8,8 +8,8 @@
 > n'a pas été implémentée — le projet a pivoté vers un **rendu GPU**
 > (`moderngl` + Pyxel pour la fenêtre et le HUD) dans `pycraft-gpu/`, branches
 > `SWE-2` puis `m1-pro`. Ce document reste la trace de l'idéation initiale ;
-> l'architecture réelle est dans [`pycraft-gpu/README.md`](../../pycraft-gpu/README.md)
-> et [`docs/technique.md`](../technique.md).
+> l'architecture réelle est dans [`pycraft-gpu/README.md`](../../../README.md)
+> et [`docs/technique.md`](../../technique.md).
 
 ## Problem Statement
 

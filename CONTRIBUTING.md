@@ -40,4 +40,4 @@ the menus. Say in the pull request what you checked, and what you could not.
   them, never copied here (see `docs/roadmap.md`).
 - Designs and plans of a roadmap item go in `docs/superpowers/specs/` and
   `docs/superpowers/plans/`; how the engine works goes in `docs/technique.md`; what a player sees
-  goes in `pycraft-gpu/README.md`.
+  goes in `README.md`.

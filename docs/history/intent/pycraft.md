@@ -6,8 +6,8 @@
 > **Suite (4 novembre 2026) :** l'objectif et le public restent valables, mais
 > la contrainte « rendu avec les primitives 2D de Pyxel » a été levée — le jeu
 > est rendu par le GPU (`moderngl`) dans `pycraft-gpu/` (branches `SWE-2`,
-> `m1-pro`). Voir [`pycraft-gpu/README.md`](../../pycraft-gpu/README.md) et
-> [`docs/technique.md`](../technique.md).
+> `m1-pro`). Voir [`pycraft-gpu/README.md`](../../../README.md) et
+> [`docs/technique.md`](../../technique.md).
 
 ## Énoncé
 

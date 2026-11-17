@@ -4,7 +4,7 @@
 > (packs de textures) fait le 16 novembre 2026** : voir
 > [`superpowers/specs/2026-11-16-packs-de-textures-design.md`](superpowers/specs/2026-11-16-packs-de-textures-design.md).
 > Les autres ne sont pas commencés. État actuel du moteur : [`technique.md`](technique.md) et
-> [`pycraft-gpu/README.md`](../pycraft-gpu/README.md).
+> [`README.md`](../README.md).
 
 ## Objectif
 
