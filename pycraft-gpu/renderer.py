@@ -32,6 +32,7 @@ from blocks import ALL_LEAVES, ATLAS_TILES, BLOCK_TILES, TILE, TINT_ALPHA
 import blocks as B
 import terrain as T
 from builder import IN_FLIGHT, WORKERS, Builders, mesh_section
+from shapes import selection_box
 from lod import SamplerProcess, oklab_to_srgb, srgb_to_oklab
 from terrain import CHUNK, SEA_LEVEL, WORLD_HEIGHT
 
@@ -2184,8 +2185,10 @@ class Renderer:
         self.render_clouds(near_draw, near_radius, near_pass=True)
 
         if target:
-            corners = np.array([(x, y, z) for x in (0, 1) for y in (0, 1) for z in (0, 1)], dtype=np.float64)
-            corners = (corners - 0.5) * 1.004 + 0.5 + np.array(target) - np.array(cam)
+            lo, hi = selection_box(self.world.get(*target), self.world.get_state(*target))  # (a lever: its box)
+            corners = np.array([(x, y, z) for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])])
+            mid = (np.array(lo) + np.array(hi)) / 2
+            corners = (corners - mid) * 1.004 + mid + np.array(target) - np.array(cam)
             lines = corners[np.array(CUBE_EDGES).ravel()]
             self.outline_vbo.write(lines.astype("f4").tobytes())
             self.outline_program["vp"].write(matrix_bytes(near_draw))

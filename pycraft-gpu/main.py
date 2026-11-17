@@ -14,7 +14,7 @@ import pyxel
 
 import packs
 from autoscale import AutoScale
-from blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, GROWS_ON, PLACEABLE, PLANT, SOLID, T_WATER,
+from blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, GROWS_ON, PLACEABLE, PLANT, SOLID, T_REDSTONE_DUST, T_WATER,
                     TILE, TINT_ALPHA, UNBREAKABLE, WATER, build_tiles, tiles_to_atlas, turned)
 from player import Player
 from renderer import FIXED_COLORS, LOD_QUALITY_NAMES, Renderer, oklab_to_srgb, srgb_to_oklab
@@ -57,6 +57,7 @@ NIGHT_ZENITH, NIGHT_HORIZON = (0.01, 0.01, 0.06), (0.06, 0.08, 0.18)
 SUNSET = (1.0, 0.55, 0.3)
 UNDERWATER_FOG = (0.08, 0.2, 0.5)
 ICON_GREEN, ICON_BLUE = (0.5, 0.72, 0.33), (0.25, 0.45, 0.95)  # grass/leaves and water in the inventory
+ICON_RED = (0.9, 0.12, 0.08)  # redstone dust in the inventory
 # Light (RGB): direct light from the sun or the moon, and the light of the whole sky
 NOON_LIGHT, SUNSET_LIGHT, MOON_LIGHT = (0.56, 0.54, 0.48), (0.6, 0.36, 0.2), (0.1, 0.12, 0.17)
 DAY_SKY_LIGHT, NIGHT_SKY_LIGHT, SUNSET_SKY_LIGHT = (0.52, 0.56, 0.63), (0.17, 0.19, 0.28), (0.58, 0.46, 0.44)
@@ -136,6 +137,8 @@ def icon_palette(atlas):
     tint = np.broadcast_to(np.array(ICON_GREEN), rgb.shape).copy()
     ty, tx = divmod(T_WATER, ATLAS_TILES)
     tint[ty * TILE:(ty + 1) * TILE, tx * TILE:(tx + 1) * TILE] = ICON_BLUE
+    ty, tx = divmod(T_REDSTONE_DUST, ATLAS_TILES)
+    tint[ty * TILE:(ty + 1) * TILE, tx * TILE:(tx + 1) * TILE] = ICON_RED
     rgb = np.where((atlas[..., 3] == TINT_ALPHA)[..., None], rgb * tint, rgb)
     seen = atlas[..., 3] >= 128
     lab = srgb_to_oklab(rgb.reshape(-1, 3)).reshape(rgb.shape)

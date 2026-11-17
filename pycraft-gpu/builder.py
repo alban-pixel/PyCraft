@@ -14,7 +14,8 @@ import traceback
 import numpy as np
 
 from blocks import (ACACIA_LEAVES, ALL_LEAVES, BLOCK_TILES, CUTOUT, FERN, GLOWING, GRASS, JUNGLE_LEAVES, LEAVES,
-                    NUM_BLOCKS, OPAQUE, PLANT, PLANTS, SELF_CULL, TALL_GRASS, WATER)
+                    NUM_BLOCKS, OPAQUE, PLANT, PLANTS, SELF_CULL, SHAPED, TALL_GRASS, THIN, WATER)
+from shapes import model_quads, wire_tint
 from terrain import CHUNK
 from world import World
 
@@ -51,6 +52,7 @@ KIND[list(ALL_LEAVES)] = 3
 KIND[WATER] = 2
 KIND[list(PLANTS)] = 4
 KIND[GLOWING] = 5
+KIND[list(THIN)] = 1  # small redstone parts: see-through around their pixels (their boxes may say otherwise)
 TINT = np.zeros(NUM_BLOCKS, np.uint8)  # 1 grass, 2 leaves, 3 water: which biome color a block takes
 TINT[[GRASS, TALL_GRASS, FERN]] = 1
 TINT[[LEAVES, JUNGLE_LEAVES, ACACIA_LEAVES]] = 2
@@ -145,10 +147,11 @@ def mesh_section(world, col, cx, cy, cz):
                 (sx, tx), (sy, ty), (sz, tz) = _BORDER[dx], _BORDER[dy], _BORDER[dz]
                 padded[tx, ty, tz] = n if isinstance(n, int) else n[sx, sy, sz]
     core = padded[1:-1, 1:-1, 1:-1]
+    shaped = SHAPED[core]
     water_above = padded[1:-1, 2:, 1:-1] == WATER
     occludes = OCCLUDES[padded].ravel()
     tints = [None, col.grass, col.foliage, col.water_tint]
-    cube = (core != 0) & ~PLANT[core]
+    cube = (core != 0) & ~PLANT[core] & ~shaped
     parts = []
     for face, ((dx, dy, dz), _) in enumerate(FACES):
         neighbor = padded[1 + dx:1 + dx + CHUNK, 1 + dy:1 + dy + CHUNK, 1 + dz:1 + dz + CHUNK]
@@ -176,7 +179,48 @@ def mesh_section(world, col, cx, cy, cz):
         for face in PLANT_FACES:
             parts.append(_quads(corner + FACE_CORNERS[face][None], blocks, BLOCK_TILES[blocks, 0], face, tints, i, k,
                                 255))
+    if shaped.any():
+        parts.append(_shaped_vertices(world, padded, cx, cy, cz, np.nonzero(shaped)))
     return np.concatenate(parts) if parts else None
+
+
+def _padded_states(world, cx, cy, cz):
+    """The states of a section with its one-block border (zeros where no block has a state)."""
+    out = np.zeros((P, P, P), dtype=np.uint8)
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                st = world.state_section(cx + dx, cy + dy, cz + dz)
+                if st is not None:
+                    (sx, tx), (sy, ty), (sz, tz) = _BORDER[dx], _BORDER[dy], _BORDER[dz]
+                    out[tx, ty, tz] = st[sx, sy, sz]
+    return out
+
+
+def _shaped_vertices(world, padded, cx, cy, cz, where):
+    """Vertices of the blocks drawn from boxes (shapes.py): redstone parts and pistons. Few per
+    section, so one at a time. A face on the side of its cell is hidden by an opaque neighbor."""
+    states = _padded_states(world, cx, cy, cz)
+    quads = []
+    for i, j, k in zip(*where):
+        block, state = int(padded[i + 1, j + 1, k + 1]), int(states[i + 1, j + 1, k + 1])
+
+        def around(dx, dy, dz, i=i, j=j, k=k):
+            return int(padded[i + 1 + dx, j + 1 + dy, k + 1 + dz]), int(states[i + 1 + dx, j + 1 + dy, k + 1 + dz])
+        for q in model_quads(block, state, around):
+            if q.boundary:
+                (dx, dy, dz), _ = FACES[q.face]
+                if OPAQUE[padded[i + 1 + dx, j + 1 + dy, k + 1 + dz]]:
+                    continue
+            quads.append((i, j, k, block, state, q))
+    v = np.empty((len(quads), 4), VERTEX)
+    for n, (i, j, k, block, state, q) in enumerate(quads):
+        v[n]["pos"] = q.corners + (i, j + cy * CHUNK, k)
+        v[n]["info"] = (q.tile, 0, q.face, KIND[block] if q.kind is None else q.kind)
+        v[n]["tint"] = (*wire_tint(state), 255) if q.tint else (255, 255, 255, 255)
+        v[n]["uv"] = 0
+        v[n]["uv"][:, :2] = q.uv
+    return v.reshape(-1)
 
 
 def wanted_sections(world, cx, cz):
