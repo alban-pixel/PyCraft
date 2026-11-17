@@ -27,11 +27,30 @@ class Simulation:
         self.handlers = {}  # block -> fn(sim, x, y, z, block, state)
         self.every_tick = []  # fn(sim): run once a tick (the pressure plates under the player)
         self.time = 0.0
+        self.timers = {}  # (x, y, z) -> tick it is due: see after()
+        self.occupied = set()  # blocks someone stands in (the player): pressure plates feel them
+        self.memory = {}  # what handlers keep between ticks (a torch's recent flips...)
 
     def schedule(self, pos, delay):
         """Look at the block at pos again in delay ticks (at least 1)."""
         heapq.heappush(self.scheduled, (self.now + max(1, int(delay)), self.order, tuple(pos)))
         self.order += 1
+
+    def after(self, pos, delay):
+        """For a block that should change in delay ticks if nothing changes meanwhile: False until
+        then (it is woken up when due), True once the delay has passed. cancel() starts over."""
+        due = self.timers.get(pos)
+        if due is None:
+            self.timers[pos] = self.now + delay
+            self.schedule(pos, delay)
+            return delay <= 0
+        if self.now >= due:
+            del self.timers[pos]
+            return True
+        return False
+
+    def cancel(self, pos):
+        self.timers.pop(pos, None)
 
     def _queue(self, pos):
         if pos not in self.queued:
