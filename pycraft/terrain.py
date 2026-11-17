@@ -3,12 +3,12 @@ lakes and 18 biomes. Everything is a function of (x, z) computed on NumPy arrays
 builds the blocks near the player and the distant scenery (at any spacing)."""
 import numpy as np
 
-from blocks import (ACACIA_LEAVES, ACACIA_LOG, AIR, ALLIUM, BEDROCK, BIRCH_LEAVES, BIRCH_LOG, BLUE_ORCHID, CACTUS,
-                    CLAY, COAL_ORE, CORNFLOWER, DANDELION, DEAD_BUSH, DEEPSLATE, DIAMOND_ORE, DIRT, FERN, GOLD_ORE,
-                    GRASS, GRAVEL, GROWS_ON, ICE, IRON_ORE, JUNGLE_LEAVES, JUNGLE_LOG, LEAVES, LOG, MOSS, MUD,
-                    ORANGE_TERRACOTTA, OXEYE_DAISY, PODZOL, POPPY, RED_SAND, SAND, SANDSTONE, SNOW, SPRUCE_LEAVES,
-                    SPRUCE_LOG, STONE, TALL_GRASS, TERRACOTTA, WATER, WHITE_TERRACOTTA)
-from noise import Noise, smoothstep
+from pycraft.blocks import (ACACIA_LEAVES, ACACIA_LOG, AIR, ALLIUM, BEDROCK, BIRCH_LEAVES, BIRCH_LOG, BLUE_ORCHID, CACTUS,
+                            CLAY, COAL_ORE, CORNFLOWER, DANDELION, DEAD_BUSH, DEEPSLATE, DIAMOND_ORE, DIRT, FERN, GOLD_ORE,
+                            GRASS, GRAVEL, GROWS_ON, ICE, IRON_ORE, JUNGLE_LEAVES, JUNGLE_LOG, LEAVES, LOG, MOSS, MUD,
+                            ORANGE_TERRACOTTA, OXEYE_DAISY, PODZOL, POPPY, RED_SAND, SAND, SANDSTONE, SNOW, SPRUCE_LEAVES,
+                            SPRUCE_LOG, STONE, TALL_GRASS, TERRACOTTA, WATER, WHITE_TERRACOTTA)
+from pycraft.noise import Noise, smoothstep
 
 CHUNK = 16  # columns and sections are 16 blocks wide
 WORLD_HEIGHT = 4096

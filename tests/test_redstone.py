@@ -1,9 +1,9 @@
 """Small circuits built block by block, run tick by tick."""
-import redstone
-from blocks import (AIR, EAST, LEVER, NORTH, REDSTONE_BLOCK, REDSTONE_LAMP, REDSTONE_LAMP_OFF, REDSTONE_TORCH,
-                    REDSTONE_WIRE, REPEATER, SOUTH, STONE, STONE_BUTTON, STONE_PRESSURE_PLATE, UP, WEST)
-from sim import MAX_UPDATES, Simulation
-from world import World
+from pycraft import redstone
+from pycraft.blocks import (AIR, EAST, LEVER, NORTH, REDSTONE_BLOCK, REDSTONE_LAMP, REDSTONE_LAMP_OFF, REDSTONE_TORCH,
+                            REDSTONE_WIRE, REPEATER, SOUTH, STONE, STONE_BUTTON, STONE_PRESSURE_PLATE, UP, WEST)
+from pycraft.sim import MAX_UPDATES, Simulation
+from pycraft.world import World
 
 Y = 3000
 

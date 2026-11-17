@@ -15,11 +15,11 @@ Each block reacts in its handler, called by the simulation (sim.py) when somethi
 changed or when the time it asked for has come."""
 from collections import deque
 
-import blocks as B
-from blocks import (AIR, DOWN, FACING_VECTORS, LEVER, OPAQUE, OPPOSITE, PISTON, PISTON_HEAD, REDSTONE_BLOCK,
-                    REDSTONE_LAMP, REDSTONE_LAMP_OFF, REDSTONE_TORCH, REDSTONE_WIRE, REPEATER, STICKY_PISTON,
-                    STONE_BUTTON, STONE_PRESSURE_PLATE, UP)
-from shapes import wire_links
+from pycraft import blocks as B
+from pycraft.blocks import (AIR, DOWN, FACING_VECTORS, LEVER, OPAQUE, OPPOSITE, PISTON, PISTON_HEAD, REDSTONE_BLOCK,
+                            REDSTONE_LAMP, REDSTONE_LAMP_OFF, REDSTONE_TORCH, REDSTONE_WIRE, REPEATER, STICKY_PISTON,
+                            STONE_BUTTON, STONE_PRESSURE_PLATE, UP)
+from pycraft.shapes import wire_links
 
 MAX = 15
 LAMP_OFF_DELAY = 2

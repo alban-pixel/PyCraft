@@ -1,7 +1,7 @@
 """First-person player: walking, jumping, swimming, flying and collisions with blocks."""
 import math
 
-from blocks import WATER
+from pycraft.blocks import WATER
 
 HALF_WIDTH = 0.3
 HEIGHT = 1.8

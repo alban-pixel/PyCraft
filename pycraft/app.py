@@ -1,4 +1,6 @@
-"""PyCraft GPU: a Minecraft-like game. OpenGL draws the 3D world, Pyxel shows it and runs everything else."""
+"""PyCraft: a Minecraft-like game. OpenGL draws the 3D world, Pyxel shows it and runs everything else.
+
+Run it with `python -m pycraft`."""
 import ctypes
 import importlib.util
 import json
@@ -12,22 +14,22 @@ import moderngl
 import numpy as np
 import pyxel
 
-import packs
-import redstone
-from autoscale import AutoScale
-from blocks import (DOWN, EAST, FACING_VECTORS, LEVER, NORTH, OPAQUE, OPPOSITE, PISTON, REDSTONE_TORCH,
-                    REDSTONE_WIRE, REPEATER, SOUTH, STICKY_PISTON, STONE_BUTTON, STONE_PRESSURE_PLATE, UP, WEST)
-from blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, FACING, GROWS_ON, PLACEABLE, PLANT, SOLID,
-                    T_REDSTONE_DUST, T_WATER,
-                    TILE, TINT_ALPHA, UNBREAKABLE, WATER, build_tiles, tiles_to_atlas, turned)
-from controls import ACTIONS, LABELS, Controls
-from player import Player
-from sim import Simulation
-from renderer import FIXED_COLORS, LOD_QUALITY_NAMES, Renderer, oklab_to_srgb, srgb_to_oklab
-from terrain import SEA_LEVEL
-from ui import (AMBER, ASH, BLACK, COAL, CREAM, GOLD, IRON, PALETTE, RUST, TEXT, TEXT_DIM, TEXT_HOT, WHITE, Ui,
-                text_width)
-from world import World
+from pycraft import packs
+from pycraft import redstone
+from pycraft.autoscale import AutoScale
+from pycraft.blocks import (DOWN, EAST, FACING_VECTORS, LEVER, NORTH, OPAQUE, OPPOSITE, PISTON, REDSTONE_TORCH,
+                            REDSTONE_WIRE, REPEATER, SOUTH, STICKY_PISTON, STONE_BUTTON, STONE_PRESSURE_PLATE, UP, WEST)
+from pycraft.blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, FACING, GROWS_ON, PLACEABLE, PLANT,
+                            SOLID, T_REDSTONE_DUST, T_WATER, TILE, TINT_ALPHA, UNBREAKABLE, WATER, build_tiles,
+                            tiles_to_atlas, turned)
+from pycraft.controls import ACTIONS, LABELS, Controls
+from pycraft.player import Player
+from pycraft.sim import Simulation
+from pycraft.renderer import FIXED_COLORS, LOD_QUALITY_NAMES, Renderer, oklab_to_srgb, srgb_to_oklab
+from pycraft.terrain import SEA_LEVEL
+from pycraft.ui import (AMBER, ASH, BLACK, COAL, CREAM, GOLD, IRON, PALETTE, RUST, TEXT, TEXT_DIM, TEXT_HOT, WHITE, Ui,
+                        text_width)
+from pycraft.world import World
 
 BASE_WIDTH, BASE_HEIGHT = 320, 180  # the menus and the mouse speed are designed for this size
 RESOLUTIONS = [(320, 180), (384, 216), (480, 270), (640, 360), (800, 450), (960, 540), (1280, 720), (1600, 900),
@@ -1650,5 +1652,9 @@ class App:
         self.ui.blt(x, y, 0, u, v, TILE, TILE, 0)
 
 
-if __name__ == "__main__":
+def main():
     App().run()
+
+
+if __name__ == "__main__":
+    main()

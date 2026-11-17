@@ -3,9 +3,9 @@ import os
 import numpy as np
 import pytest
 
-import blocks
-import renderer
-from blocks import TINT_ALPHA, build_tiles, resize_tile, tiles_to_atlas
+from pycraft import blocks
+from pycraft import renderer
+from pycraft.blocks import TINT_ALPHA, build_tiles, resize_tile, tiles_to_atlas
 
 REFERENCE = os.path.join(os.path.dirname(__file__), "data", "default_reference.npz")
 

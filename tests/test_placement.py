@@ -1,7 +1,7 @@
-from blocks import (AIR, DOWN, EAST, GLASS, LEVER, NORTH, PISTON, REDSTONE_TORCH, REDSTONE_WIRE, REPEATER, SOUTH,
-                    STONE, STONE_BUTTON, UP, WEST)
-from main import block_category, placement
-from world import World
+from pycraft.blocks import (AIR, DOWN, EAST, GLASS, LEVER, NORTH, PISTON, REDSTONE_TORCH, REDSTONE_WIRE, REPEATER, SOUTH,
+                            STONE, STONE_BUTTON, UP, WEST)
+from pycraft.app import block_category, placement
+from pycraft.world import World
 
 Y = 3000
 

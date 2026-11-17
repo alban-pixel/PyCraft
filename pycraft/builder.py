@@ -13,11 +13,11 @@ import traceback
 
 import numpy as np
 
-from blocks import (ACACIA_LEAVES, ALL_LEAVES, BLOCK_TILES, CUTOUT, FERN, GLOWING, GRASS, JUNGLE_LEAVES, LEAVES,
-                    NUM_BLOCKS, OPAQUE, PLANT, PLANTS, SELF_CULL, SHAPED, TALL_GRASS, THIN, WATER)
-from shapes import model_quads, wire_tint
-from terrain import CHUNK
-from world import World
+from pycraft.blocks import (ACACIA_LEAVES, ALL_LEAVES, BLOCK_TILES, CUTOUT, FERN, GLOWING, GRASS, JUNGLE_LEAVES, LEAVES,
+                            NUM_BLOCKS, OPAQUE, PLANT, PLANTS, SELF_CULL, SHAPED, TALL_GRASS, THIN, WATER)
+from pycraft.shapes import model_quads, wire_tint
+from pycraft.terrain import CHUNK
+from pycraft.world import World
 
 WATER_SURFACE = 0.875  # water blocks are a bit lower than a full block
 
@@ -247,7 +247,7 @@ def _help_sampler(world, shared, helpers):
     rec = None
     try:
         if call[0] == current.value and world is not None and world.seed == seed:
-            import lod  # (not at the top: lod imports this module)
+            from pycraft import lod  # (not at the top: lod imports this module)
             key = (id(world), spacing)
             if key not in helpers:
                 helpers.clear()

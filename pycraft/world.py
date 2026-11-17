@@ -5,10 +5,10 @@ import math
 
 import numpy as np
 
-from blocks import AIR, ALL_LEAVES, FLAT, ICE, PLANT, SHAPED, SOLID, STONE, TARGETABLE, WATER
-from shapes import selection_box
-from terrain import (BIRCH_FOREST, BIOME_NAMES, CHUNK, FOREST, PLAINS, SAVANNA, SEA_LEVEL, TAIGA, WORLD_HEIGHT,
-                     TerrainGenerator)
+from pycraft.blocks import AIR, ALL_LEAVES, FLAT, ICE, PLANT, SHAPED, SOLID, STONE, TARGETABLE, WATER
+from pycraft.shapes import selection_box
+from pycraft.terrain import (BIRCH_FOREST, BIOME_NAMES, CHUNK, FOREST, PLAINS, SAVANNA, SEA_LEVEL, TAIGA, WORLD_HEIGHT,
+                             TerrainGenerator)
 
 SAVE_VERSION = 3  # 3: block states; a save of version 2 (no states) still loads
 

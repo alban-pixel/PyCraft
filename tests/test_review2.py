@@ -1,8 +1,8 @@
 """Findings of the final review of the redstone branch."""
-import redstone
-from blocks import AIR, DIRT, EAST, LEVER, PISTON, REDSTONE_LAMP, REDSTONE_LAMP_OFF, REDSTONE_WIRE, STONE, UP
-from main import right_click
-from renderer import affected_sections
+from pycraft import redstone
+from pycraft.blocks import AIR, DIRT, EAST, LEVER, PISTON, REDSTONE_LAMP, REDSTONE_LAMP_OFF, REDSTONE_WIRE, STONE, UP
+from pycraft.app import right_click
+from pycraft.renderer import affected_sections
 from tests.test_redstone import Bench, Y
 
 

@@ -1,11 +1,11 @@
 import numpy as np
 
-import blocks as B
-from blocks import (AIR, DOWN, EAST, LEVER, NORTH, PISTON, PISTON_HEAD, REDSTONE_TORCH, REDSTONE_WIRE, REPEATER,
-                    SHAPED, STONE, UP)
-from builder import mesh_section
-from shapes import model_quads, selection_box
-from world import World
+from pycraft import blocks as B
+from pycraft.blocks import (AIR, DOWN, EAST, LEVER, NORTH, PISTON, PISTON_HEAD, REDSTONE_TORCH, REDSTONE_WIRE, REPEATER,
+                            SHAPED, STONE, UP)
+from pycraft.builder import mesh_section
+from pycraft.shapes import model_quads, selection_box
+from pycraft.world import World
 
 Y = 3000
 NOTHING = lambda dx, dy, dz: (AIR, 0)  # noqa: E731
@@ -107,6 +107,6 @@ def test_shaped_ignored_by_edited_tops():
 
 
 def test_every_facing_turns_up_the_right_way():
-    from shapes import _TURN
+    from pycraft.shapes import _TURN
     for f, v in enumerate(B.FACING_VECTORS):
         assert tuple(_TURN[f] @ (0, 1, 0)) == v

@@ -1,4 +1,4 @@
-from main import DEFAULT_SETTINGS, RANGES, SETTING_TABS, parse_settings
+from pycraft.app import DEFAULT_SETTINGS, RANGES, SETTING_TABS, parse_settings
 
 
 def test_every_setting_is_on_one_tab():

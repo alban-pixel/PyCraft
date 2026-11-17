@@ -28,13 +28,13 @@ import time
 import moderngl
 import numpy as np
 
-from blocks import ALL_LEAVES, ATLAS_TILES, BLOCK_TILES, TILE, TINT_ALPHA
-import blocks as B
-import terrain as T
-from builder import IN_FLIGHT, WORKERS, Builders, mesh_section
-from shapes import selection_box
-from lod import SamplerProcess, oklab_to_srgb, srgb_to_oklab
-from terrain import CHUNK, SEA_LEVEL, WORLD_HEIGHT
+from pycraft.blocks import ALL_LEAVES, ATLAS_TILES, BLOCK_TILES, TILE, TINT_ALPHA
+from pycraft import blocks as B
+from pycraft import terrain as T
+from pycraft.builder import IN_FLIGHT, WORKERS, Builders, mesh_section
+from pycraft.shapes import selection_box
+from pycraft.lod import SamplerProcess, oklab_to_srgb, srgb_to_oklab
+from pycraft.terrain import CHUNK, SEA_LEVEL, WORLD_HEIGHT
 
 LOD_QUALITIES = {  # name -> (width of a column on the finest level in blocks, grid points per side, levels)
     "low": (2, 128, 7),  # what the distant terrain always was
