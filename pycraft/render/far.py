@@ -6,7 +6,7 @@ import math
 import moderngl
 import numpy as np
 
-from pycraft import tiles
+from pycraft.tiles import block_colors
 from pycraft.blocks import ATLAS_TILES
 from pycraft.render.constants import (ATLAS_UNIT, COARSE_UNIT, COLORS_UNIT, COLUMN_FACES, DATA_UNIT,
                                       FAR_LIMIT, FINE_UNIT, LOD_BAND, LOD_MARGIN, LOD_STEP_MAX, LOD_STEP_MIN,
@@ -70,7 +70,7 @@ class FarTerrain:
         self.waters = [np.zeros((n, n), dtype="f4") for _ in range(levels)]
         self.version = 0  # counts the changes (the shadow maps of the terrain are drawn again)
         self.view_distance = FAR_LIMIT  # beyond it the fog hides everything: no level drawn there
-        self.block_colors = tiles.block_colors(tiles)  # flat colors for plants and player's blocks
+        self.block_colors = block_colors(tiles)  # flat colors for plants and player's blocks
         self.set_world(world)
 
     def set_world(self, world):

@@ -67,6 +67,7 @@ class FakePyxel:
 
 
 if __name__ == "__main__":
+    crashed = []
     import pyxel as real_pyxel
     from PIL import Image
     log = open(os.path.join(OUT, f"play{TAG}.txt"), "w")
@@ -257,8 +258,9 @@ if __name__ == "__main__":
         say("done")
     except BaseException:
         say(traceback.format_exc())
+        crashed.append(True)
     finally:
         for child in multiprocessing.active_children():
             child.terminate()
         log.close()
-        os._exit(0)
+        os._exit(1 if crashed else 0)
