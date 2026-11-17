@@ -16,9 +16,9 @@ changed or when the time it asked for has come."""
 from collections import deque
 
 import blocks as B
-from blocks import (AIR, DOWN, FACING_VECTORS, LEVER, OPAQUE, OPPOSITE, REDSTONE_BLOCK, REDSTONE_LAMP,
-                    REDSTONE_LAMP_OFF, REDSTONE_TORCH, REDSTONE_WIRE, REPEATER, STONE_BUTTON, STONE_PRESSURE_PLATE,
-                    UP)
+from blocks import (AIR, DOWN, FACING_VECTORS, LEVER, OPAQUE, OPPOSITE, PISTON, PISTON_HEAD, REDSTONE_BLOCK,
+                    REDSTONE_LAMP, REDSTONE_LAMP_OFF, REDSTONE_TORCH, REDSTONE_WIRE, REPEATER, STICKY_PISTON,
+                    STONE_BUTTON, STONE_PRESSURE_PLATE, UP)
 from shapes import wire_links
 
 MAX = 15
@@ -313,11 +313,154 @@ def _lamp(sim, x, y, z, block, state):
         sim.set_block(x, y, z, REDSTONE_LAMP_OFF)
 
 
+# --- Pistons ---------------------------------------------------------------------------------------
+
+PUSH_LIMIT = 12
+IMMOVABLE = {B.BEDROCK, B.OBSIDIAN, PISTON_HEAD}
+PISTONS = (PISTON, STICKY_PISTON)
+
+
+def _crushed(block):
+    """Blocks a piston breaks instead of pushing: plants, and the small redstone parts."""
+    return B.PLANT[block] or B.FLAT[block] or block == B.WATER
+
+
+def _immovable(block, state):
+    return block in IMMOVABLE or (block in PISTONS and state & 8)
+
+
+def push(sim, x, y, z, facing, sticky):
+    """Push the line of blocks in front of a piston one block further, and put its head in front.
+    False (and nothing moved) when it can't: more than PUSH_LIMIT blocks, or one that doesn't move."""
+    world = sim.world
+    pos = (x, y, z)
+    line = []
+    for i in range(1, PUSH_LIMIT + 2):
+        p = step(pos, facing, i)
+        if not world.inside(*p):
+            return False
+        block, state = world.get(*p), world.get_state(*p)
+        if block == AIR or _crushed(block):
+            break
+        if _immovable(block, state) or len(line) == PUSH_LIMIT:
+            return False
+        line.append((p, block, state))
+    for p, block, state in reversed(line):  # the farthest first, into the free cell after it
+        sim.set_block(*step(p, facing), block, state)
+    head = step(pos, facing)
+    sim.set_block(*head, PISTON_HEAD, facing | (8 if sticky else 0))
+    sim.set_block(x, y, z, world.get(x, y, z), world.get_state(x, y, z) | 8)
+    return True
+
+
+def retract(sim, x, y, z, facing, sticky):
+    """Take the head back in (a sticky piston pulls the block in front of its head)."""
+    world = sim.world
+    head = step((x, y, z), facing)
+    block = world.get(x, y, z)
+    sim.set_block(x, y, z, block, world.get_state(x, y, z) & ~8)
+    if world.get(*head) == PISTON_HEAD:
+        sim.set_block(*head, AIR)
+    if sticky:
+        front = step(head, facing)
+        b, st = world.get(*front), world.get_state(*front)
+        if b != AIR and not _crushed(b) and not _immovable(b, st):
+            sim.set_block(*front, AIR)
+            sim.set_block(*head, b, st)
+
+
+def piston_power(world, pos, facing):
+    """Power reaching a piston, except through its front."""
+    best = 0
+    for d in range(6):
+        if d == facing:
+            continue
+        n = step(pos, d)
+        block = world.get(*n)
+        if block in SOURCES:
+            best = max(best, source_power(world, n, OPPOSITE[d]))
+        elif OPAQUE[block]:
+            best = max(best, block_power(world, n))
+    return best
+
+
+def _piston(sim, x, y, z, block, state):
+    facing = facing_of(state)
+    sticky = block == STICKY_PISTON
+    powered = piston_power(sim.world, (x, y, z), facing) > 0
+    extended = bool(state & 8)
+    if extended and sim.world.get(*step((x, y, z), facing)) != PISTON_HEAD:
+        sim.set_block(x, y, z, block, state & ~8)  # its head was broken
+        return
+    if powered and not extended:
+        push(sim, x, y, z, facing, sticky)
+    elif not powered and extended:
+        retract(sim, x, y, z, facing, sticky)
+
+
+def _head(sim, x, y, z, block, state):
+    facing = facing_of(state)
+    base = step((x, y, z), OPPOSITE[facing])
+    b, st = sim.world.get(*base), sim.world.get_state(*base)
+    if b not in PISTONS or not st & 8 or facing_of(st) != facing:
+        sim.set_block(x, y, z, AIR)  # no piston behind it any more
+
+
+# --- TNT ----------------------------------------------------------------------------------------------
+
+TNT_FUSE = 80  # ticks
+BLAST_RADIUS = 4
+BLAST_PROOF = {B.BEDROCK, B.OBSIDIAN, B.WATER, AIR}
+
+
+def _lit(sim, pos, fuse):
+    lit = sim.memory.setdefault("lit_tnt", set())
+    if pos not in lit:
+        lit.add(pos)
+        sim.cancel(pos)
+        sim.after(pos, fuse)
+
+
+def _tnt(sim, x, y, z, block, state):
+    pos = (x, y, z)
+    lit = sim.memory.setdefault("lit_tnt", set())
+    if pos not in lit:
+        if power_at(sim.world, pos) > 0:
+            _lit(sim, pos, TNT_FUSE)
+        return
+    if sim.after(pos, TNT_FUSE):
+        lit.discard(pos)
+        explode(sim, x, y, z)
+
+
+def explode(sim, x, y, z, radius=BLAST_RADIUS):
+    """Blow away the blocks within radius (not bedrock, obsidian or water); TNT caught in it is
+    lit, with a short fuse."""
+    world = sim.world
+    sim.set_block(x, y, z, AIR)
+    r2 = radius * radius + 0.5
+    for dx in range(-radius, radius + 1):
+        for dy in range(-radius, radius + 1):
+            for dz in range(-radius, radius + 1):
+                if dx * dx + dy * dy + dz * dz > r2:
+                    continue
+                p = (x + dx, y + dy, z + dz)
+                block = world.get(*p)
+                if block in BLAST_PROOF or B.UNBREAKABLE[block]:
+                    continue
+                if block == B.TNT:
+                    _lit(sim, p, 10 + (dx * 7 + dy * 13 + dz * 5) % 21)  # 10 to 30 ticks, never all at once
+                    continue
+                sim.set_block(*p, AIR)
+    sim.events.append(("explode", (x, y, z)))
+
+
 def install(sim):
     """Give the simulation the redstone blocks' handlers."""
     sim.handlers.update({
         REDSTONE_WIRE: _wire, LEVER: _lever, STONE_BUTTON: _button, STONE_PRESSURE_PLATE: _plate,
         REDSTONE_TORCH: _torch, REPEATER: _repeater, REDSTONE_LAMP: _lamp, REDSTONE_LAMP_OFF: _lamp,
+        PISTON: _piston, STICKY_PISTON: _piston, PISTON_HEAD: _head, B.TNT: _tnt,
     })
 
 
