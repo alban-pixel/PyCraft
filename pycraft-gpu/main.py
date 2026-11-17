@@ -14,12 +14,15 @@ import pyxel
 
 import packs
 from autoscale import AutoScale
-from blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, GROWS_ON, PLACEABLE, PLANT, SOLID, T_WATER,
+from blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, FACING, GROWS_ON, PLACEABLE, PLANT, SOLID,
+                    T_WATER,
                     TILE, TINT_ALPHA, UNBREAKABLE, WATER, build_tiles, tiles_to_atlas, turned)
+from controls import ACTIONS, LABELS, Controls
 from player import Player
 from renderer import FIXED_COLORS, LOD_QUALITY_NAMES, Renderer, oklab_to_srgb, srgb_to_oklab
 from terrain import SEA_LEVEL
-from ui import BLACK, BLUE, GREY, LIGHT_BLUE, NAVY, TEXT, TEXT_DIM, TEXT_HOT, WHITE, Ui, text_width
+from ui import (AMBER, ASH, BLACK, COAL, CREAM, GOLD, IRON, PALETTE, RUST, TEXT, TEXT_DIM, TEXT_HOT, WHITE, Ui,
+                text_width)
 from world import World
 
 BASE_WIDTH, BASE_HEIGHT = 320, 180  # the menus and the mouse speed are designed for this size
@@ -28,9 +31,31 @@ RESOLUTIONS = [(320, 180), (384, 216), (480, 270), (640, 360), (800, 450), (960,
 FRAME_RATES = [30, 60, 75, 120, 144, 165, 240]
 RENDER_DISTANCES = [32, 64, 128, 256, 512]  # how far the world is seen, in chunks of 16 blocks
 RENDER_SCALES = ["auto", 1.0, 0.75, 0.5]  # share of the resolution the 3D view is drawn at ("auto": follows the FPS)
+AUTOSAVES = [0, 1, 2, 5, 10]  # minutes between two automatic saves (0: only when leaving through the menu)
+DAY_LENGTHS = [10, 20, 40, 60]  # minutes a full day and night last
+CROSSHAIRS = ["cross", "dot", "none"]
+RANGES = {  # the settings on a scale: (lowest, highest, step)
+    "fov": (50, 110, 5),  # field of view, degrees from the top of the screen to the bottom
+    "sensitivity": (10, 300, 10),  # mouse speed, percent
+    "look_speed": (30, 240, 10),  # looking around with the arrow keys, degrees per second
+    "music_volume": (0, 100, 10),
+    "sound_volume": (0, 100, 10),
+}
 DEFAULT_SETTINGS = {"resolution": (1280, 720), "fps": 60, "render_distance": 256, "lod_quality": "low",
-                    "fancy": True, "music": True, "ui_scale": "auto", "render_scale": "auto",
+                    "fancy": True, "ui_scale": "auto", "render_scale": "auto", "fov": 70,
+                    "sensitivity": 100, "invert_y": False, "look_speed": 120,
+                    "music_volume": 50, "sound_volume": 100,
+                    "autosave": 2, "day_length": 20, "show_help": True, "crosshair": "cross", "keys": {},
                     "texture_pack": None}  # texture_pack: path of the pack, None for the game's own textures
+SETTING_TABS = {  # the tabs of the settings screen and the settings each one holds
+    "Video": ["resolution", "ui_scale", "fps", "fov", "render_scale", "render_distance", "lod_quality", "fancy",
+              "texture_pack"],
+    "Controls": ["sensitivity", "invert_y", "look_speed"],
+    "Keys": ["keys"],
+    "Sound": ["music_volume", "sound_volume"],
+    "Game": ["autosave", "day_length", "show_help", "crosshair"],
+}
+TAB_NAMES = list(SETTING_TABS)
 SAVE_FILE = "world2.npz"  # "world.npz" holds a world of the older, smaller version: left alone
 LOADING_RADIUS = 2  # chunks around the player that must be ready before playing
 HAZE = 1 / 4500  # share of light lost per block of distance: far mountains fade into the sky
@@ -43,12 +68,13 @@ INVENTORY_HEADER, INVENTORY_FOOTER = 19, 16  # room above the slots (the tabs) a
 INVENTORY_BELOW = 32  # UI pixels kept free at the bottom of the screen: the hotbar
 HOTBAR_SLOT = TILE + 6
 BUTTON_W, BUTTON_H, BUTTON_PITCH = 128, 15, 19  # buttons of the title screen and the pause menu
-SETTINGS_W, ROW_H, ROW_PITCH = 232, 12, 13  # the settings panel and its rows
+SETTINGS_W, SETTINGS_H = 304, 172  # the settings panel
+TAB_H, ROW_H, ROW_PITCH = 13, 12, 13  # its tabs and its rows
+SETTING_ROWS = 9  # rows that fit under the tabs (the keys go in two columns of them)
 NAME_SECONDS = 3.0  # the chosen block's name shows this long above the hotbar
-MOUSE_SENSITIVITY = 0.45  # degrees per pixel at 320x180
-KEY_LOOK_SPEED = 120.0  # degrees per second with the arrow keys
-DAY_SECONDS = 20 * 60  # one full day and night
-AUTOSAVE_SECONDS = 120
+MOUSE_SENSITIVITY = 0.45  # degrees per pixel at 320x180, with the mouse speed setting at 100%
+ZOOM_FOV = 22.0  # field of view while the zoom key is held
+MUSIC_GAIN, SOUND_GAIN = 0.14, 0.125  # the channels' gains at full volume
 HELP_SECONDS = 15
 
 # Sky colors (RGB 0-1)
@@ -68,13 +94,6 @@ DIM = 0.5  # brightness of the world behind the menus
 # Sound numbers; sound effects play on channel 3, music on channels 0-2
 SND_BREAK, SND_PLACE, SND_JUMP, SND_STEP, SND_SPLASH, SND_CLICK = range(6)
 SFX_CHANNEL = 3
-
-HELP = [  # (keys, what they do), in two columns
-    [("WASD", "Move"), ("SPACE", "Jump, swim, fly up"), ("SHIFT", "Fly down"), ("CTRL", "Sprint, fly fast"),
-     ("F", "Fly on/off"), ("E", "All the blocks"), ("T", "Chat, commands")],
-    [("Left click", "Break"), ("Right click", "Place"), ("1-9, wheel", "Choose a block"), ("TAB", "Free the mouse"),
-     ("F3", "Info"), ("H", "Hide this help"), ("ESC", "Menu")],
-]
 
 # The inventory's tabs. Plants and colored blocks are found by their names, the others listed here.
 NATURE = {"Grass", "Dirt", "Stone", "Sand", "Water", "Snow", "Ice", "Gravel", "Red sand", "Podzol", "Cactus",
@@ -101,6 +120,9 @@ def block_category(block):
 
 CATEGORIES = [(tab, [b for b in PLACEABLE if tab == "All" or block_category(b) == tab])
               for tab in ("All", "Nature", "Building", "Colors", "Plants", "Special")]
+# The block the "pick" key puts in the hotbar for each block of the world (a turned furnace: a furnace)
+PICKS = {b: b for b in PLACEABLE}
+PICKS.update({version: block for block, versions in FACING.items() for version in versions})
 
 
 def _kmeans(points, weight, centers, rounds):
@@ -170,20 +192,26 @@ def parse_settings(saved):
     resolution = saved.get("resolution")
     if isinstance(resolution, list) and tuple(resolution) in RESOLUTIONS:
         settings["resolution"] = tuple(resolution)
-    if saved.get("fps") in FRAME_RATES:
-        settings["fps"] = saved["fps"]
-    if saved.get("render_distance") in RENDER_DISTANCES:
-        settings["render_distance"] = saved["render_distance"]
-    if saved.get("lod_quality") in LOD_QUALITY_NAMES:
-        settings["lod_quality"] = saved["lod_quality"]
-    for key in ("fancy", "music"):
-        if isinstance(saved.get(key), bool):
-            settings[key] = saved[key]
     ui_scale = saved.get("ui_scale")
     if ui_scale == "auto" or (type(ui_scale) is int and 1 <= ui_scale <= 8):
         settings["ui_scale"] = ui_scale
-    if saved.get("render_scale") in RENDER_SCALES:
-        settings["render_scale"] = saved["render_scale"]
+    choices = {"fps": FRAME_RATES, "render_distance": RENDER_DISTANCES, "lod_quality": LOD_QUALITY_NAMES,
+               "render_scale": RENDER_SCALES, "autosave": AUTOSAVES, "day_length": DAY_LENGTHS,
+               "crosshair": CROSSHAIRS}
+    for key, allowed in choices.items():
+        if type(saved.get(key)) is not bool and saved.get(key) in allowed:
+            settings[key] = saved[key]
+    for key, (low, high, step) in RANGES.items():
+        value = saved.get(key)
+        if type(value) is int and low <= value <= high and (value - low) % step == 0:
+            settings[key] = value
+    for key in ("fancy", "invert_y", "show_help"):
+        if isinstance(saved.get(key), bool):
+            settings[key] = saved[key]
+    if saved.get("music") is False and "music_volume" not in saved:
+        settings["music_volume"] = 0  # (a file from before the volumes: the music was on or off)
+    if isinstance(saved.get("keys"), dict):
+        settings["keys"] = dict(saved["keys"])
     pack = saved.get("texture_pack")
     if isinstance(pack, str) and os.path.exists(pack):  # (a pack deleted since: the game's own textures)
         settings["texture_pack"] = pack
@@ -309,6 +337,8 @@ class App:
         self.save_path = os.path.join(data_dir, SAVE_FILE)
         self.settings_path = os.path.join(data_dir, "settings.json")
         self.settings = self.load_settings()
+        self.controls = Controls(self.settings["keys"])
+        self.settings["keys"] = self.controls.to_settings()
         self.save_data = None
         self.world = None
         if os.path.exists(self.save_path):
@@ -324,7 +354,9 @@ class App:
         self.player = Player(*self.spawn)
         # The title screen looks around from above the spawn, or where the saved game left off
         self.title_spot = self.save_data["player"][:3].tolist() if self.save_data else self.spawn
-        # Palette: Pyxel's 16 colors (HUD), 48 for the icons, and 192 that adapt to the 3D view
+        # Palette: the interface's 16 colors, 48 for the icons, and 192 that adapt to the 3D view
+        for i, color in enumerate(PALETTE):
+            pyxel.colors[i] = color
         self.renderer = Renderer(ctx, self.world, tiles, BASE_WIDTH, BASE_HEIGHT,
                                  list(pyxel.colors)[:16] + icon_colors)
         self.palette_version = None
@@ -340,7 +372,13 @@ class App:
 
         self.state = "title"
         self.settings_parent = "title"  # the menu the settings screen goes back to
+        self.settings_tab = 0  # the tab of the settings screen that shows
+        self.settings_note = ""  # what the last change did, shown in place of the explanation
+        self.binding = None  # the action that waits for its new key
+        self.dragging = None  # the row of the slider that follows the mouse
         self.menu_index = 0
+        self.view_fov = float(self.settings["fov"])  # the field of view on screen (it glides to the zoom's)
+        self.music_playing = False
         self.warp_to_button = False
         self.hotbar = list(DEFAULT_HOTBAR)
         self.selected = 0
@@ -361,7 +399,7 @@ class App:
         self.dt = 1 / self.settings["fps"]  # seconds since the last frame, measured by run()
         self.fps = 0.0
         self.start_time = self.last_draw = time.perf_counter()
-        self.start_music()
+        self.apply_sound()
 
     def run(self):
         """Like pyxel.run(update, draw), but with the frame rate from the settings."""
@@ -473,53 +511,87 @@ class App:
             pyxel.colors[:] = self.renderer.palette.colors
             self.palette_version = self.renderer.palette.version
 
+    def mouse_on_chosen(self):
+        """True if the mouse is on the chosen line of the settings (a change that moves the panel
+        then puts the cursor back on it)."""
+        x, y, w, h = self.setting_rects()[self.menu_index]
+        return self.ui.mouse_in(x, y, w, h)
+
     def change_resolution(self, step):
-        on_button = self.button_at(self.ui.mouse_x, self.ui.mouse_y, len(self.menu_items())) == self.menu_index
+        on_row = self.mouse_on_chosen()
         i = RESOLUTIONS.index(self.settings["resolution"])
         self.settings["resolution"] = RESOLUTIONS[(i + step) % len(RESOLUTIONS)]
         self.save_settings()
         self.set_resolution(*self.settings["resolution"])
-        self.warp_to_button = on_button  # the button moved: put the cursor back on it next frame
+        self.warp_to_button = on_row  # the row moved: put the cursor back on it next frame
 
     def change_ui_scale(self, step):
         """Auto, then every scale that leaves the menus room at this resolution."""
-        on_button = self.button_at(self.ui.mouse_x, self.ui.mouse_y, len(self.menu_items())) == self.menu_index
+        on_row = self.mouse_on_chosen()
         choices = ["auto"] + list(range(1, Ui.max_scale(pyxel.height) + 1))
         current = self.settings["ui_scale"]
         i = choices.index(current) if current in choices else 0
         self.settings["ui_scale"] = choices[(i + step) % len(choices)]
         self.save_settings()
         self.ui.set_screen_size(pyxel.width, pyxel.height, self.settings["ui_scale"])
-        self.warp_to_button = on_button
+        self.warp_to_button = on_row
 
-    def change_render_scale(self, step):
-        i = RENDER_SCALES.index(self.settings["render_scale"])
-        self.settings["render_scale"] = RENDER_SCALES[(i + step) % len(RENDER_SCALES)]
-        self.save_settings()
-        self.apply_render_scale()
+    def cycle(self, key, choices, step):
+        """The next (or previous) of a setting's values."""
+        i = choices.index(self.settings[key])
+        self.settings[key] = choices[(i + step) % len(choices)]
+        self.apply_setting(key)
 
-    def change_fps(self, step):
-        i = FRAME_RATES.index(self.settings["fps"])
-        self.settings["fps"] = FRAME_RATES[(i + step) % len(FRAME_RATES)]
-        self.save_settings()
-        self.apply_render_scale()  # a new aim: the automatic scale starts again from full size
+    def nudge(self, key, step):
+        """A setting on a scale, one step up or down."""
+        low, high, by = RANGES[key]
+        self.settings[key] = min(max(self.settings[key] + step * by, low), high)
+        self.apply_setting(key)
 
-    def change_render_distance(self, step):
-        i = RENDER_DISTANCES.index(self.settings["render_distance"])
-        self.settings["render_distance"] = RENDER_DISTANCES[(i + step) % len(RENDER_DISTANCES)]
-        self.renderer.render_distance = self.settings["render_distance"]
+    def slide(self, key, fraction):
+        """A setting on a scale, put where the mouse holds its slider."""
+        low, high, by = RANGES[key]
+        value = low + round(min(max(fraction, 0.0), 1.0) * (high - low) / by) * by
+        if value != self.settings[key]:
+            self.settings[key] = value
+            self.apply_setting(key)
+
+    def apply_setting(self, key):
+        """Make a setting that just changed take effect, and save the settings. (The field of view,
+        the mouse and the game's own settings are read where they are used.)"""
+        s = self.settings
+        if key in ("render_scale", "fps"):  # (a new frame rate: the automatic scale starts again)
+            self.apply_render_scale()
+        elif key == "render_distance":
+            self.renderer.render_distance = s[key]
+        elif key == "lod_quality":
+            self.renderer.set_lod_quality(s[key])
+        elif key == "fancy":
+            self.renderer.set_fancy(s[key])
+        elif key in ("music_volume", "sound_volume"):
+            self.apply_sound()
         self.save_settings()
 
-    def change_lod_quality(self, step):
-        i = LOD_QUALITY_NAMES.index(self.settings["lod_quality"])
-        self.settings["lod_quality"] = LOD_QUALITY_NAMES[(i + step) % len(LOD_QUALITY_NAMES)]
-        self.renderer.set_lod_quality(self.settings["lod_quality"])
-        self.save_settings()
-
-    def toggle_graphics(self):
-        self.settings["fancy"] = not self.settings["fancy"]
-        self.renderer.set_fancy(self.settings["fancy"])
-        self.save_settings()
+    def reset_tab(self):
+        """The settings of the tab shown go back to what they were at first."""
+        keys = SETTING_TABS[TAB_NAMES[self.settings_tab]]
+        if keys == ["keys"]:
+            self.controls.reset()
+            self.settings["keys"] = self.controls.to_settings()
+            self.save_settings()
+            return
+        before = dict(self.settings)
+        if "texture_pack" in keys and self.settings["texture_pack"] is not None:
+            self.pack_to_apply, self.pack_message = None, "Loading textures..."  # (applied on the next update)
+        keys = [key for key in keys if key != "texture_pack"]
+        for key in keys:
+            self.settings[key] = DEFAULT_SETTINGS[key]
+        if (self.settings["resolution"], self.settings["ui_scale"]) != (before["resolution"], before["ui_scale"]):
+            self.set_resolution(*self.settings["resolution"])
+            self.warp_to_button = True
+        for key in keys:
+            if self.settings[key] != before[key]:
+                self.apply_setting(key)
 
     def frames(self, seconds):
         """Number of frames lasting about this long at the current frame rate (for pyxel.btnp)."""
@@ -527,11 +599,13 @@ class App:
 
     def open_settings(self):
         self.settings_parent = self.state
+        self.settings_note = ""
         self.packs = self.find_packs()  # (a pack put in the folder while the game runs shows up)
         self.pack_message = ""
         self.set_state("settings")
 
     def close_settings(self):
+        self.binding = self.dragging = None
         self.set_state(self.settings_parent)
         self.menu_index = [label for label, _ in self.menu_items()].index("Settings")
 
@@ -549,20 +623,20 @@ class App:
     def sfx(self, sound):
         pyxel.play(SFX_CHANNEL, sound)
 
-    def start_music(self):
-        if self.settings["music"]:
+    def apply_sound(self):
+        """The volumes of the settings: the music's three channels and the sound effects' one.
+        The music stops at volume 0 and starts again from the top above it."""
+        music = self.settings["music_volume"] / 100
+        for ch in range(3):
+            pyxel.channels[ch].gain = MUSIC_GAIN * music
+        pyxel.channels[SFX_CHANNEL].gain = SOUND_GAIN * self.settings["sound_volume"] / 100
+        if music > 0 and not self.music_playing:
             for ch, mml in enumerate(self.music[:3]):  # the 4th part is empty for this instrumentation
-                pyxel.channels[ch].gain = 0.07  # quieter than the sound effects (default 0.125)
                 pyxel.play(ch, mml, loop=True)
-
-    def toggle_music(self):
-        self.settings["music"] = not self.settings["music"]
-        self.save_settings()
-        if self.settings["music"]:
-            self.start_music()
-        else:
+        elif music == 0 and self.music_playing:
             for ch in range(3):
                 pyxel.stop(ch)
+        self.music_playing = music > 0
 
     # --- Saving --------------------------------------------------------------------------------
 
@@ -602,7 +676,7 @@ class App:
             self.selected = int(data["selected"])
         self.save_data = None
         self.play_time = self.last_save = self.selected_time = 0.0
-        self.show_help = True
+        self.show_help = self.settings["show_help"]
         self.set_state("loading")  # until the blocks around the player are ready
 
     # --- States --------------------------------------------------------------------------------
@@ -635,11 +709,7 @@ class App:
         return self.player.eye(), self.player.forward()
 
     def menu_items(self):
-        """(label, action) pairs for the menu of the current state.
-
-        On the settings screen, every action but "Done" changes a setting and takes a step:
-        1 for the next value, -1 for the previous one.
-        """
+        """(label, action) pairs for the buttons of the title screen or of the pause menu."""
         if self.state == "title":
             items = []
             if not self.world_is_fresh:
@@ -655,34 +725,79 @@ class App:
                 ("Save and go to title", self.save_and_title),
                 ("Save and quit", self.save_and_quit),
             ]
-        if self.state == "settings":
-            rows = [(f"{name}: {value}", change) for name, value, change, _ in self.setting_rows()]
-            return rows + [("Done", lambda step: self.close_settings())]
         return []
 
     def setting_rows(self):
-        """(name, value, change, explanation) of each setting; change takes a step: 1 for the next
-        value, -1 for the previous one."""
+        """The lines of the tab of the settings that shows. Each is (kind, name, value, change,
+        explanation, fraction, slide): a "choice" has a few values and change takes a step (1 for
+        the next, -1 for the previous); a "slider" is on a scale, at `fraction` of it, and slide
+        puts it at another fraction; a "key" is an action and its key, and change is the action."""
         s = self.settings
-        width, height = s["resolution"]
-        ui_size = f"{self.ui.scale}x"
-        render = f"{self.renderer.render_scale:.0%}"
+
+        def choice(name, value, change, explain):
+            return ("choice", name, value, change, explain, None, None)
+
+        def pick(name, value, key, choices, explain):
+            return choice(name, value, lambda step: self.cycle(key, choices, step), explain)
+
+        def slider(name, value, key, explain):
+            low, high, _ = RANGES[key]
+            return ("slider", name, value, lambda step: self.nudge(key, step), explain,
+                    (s[key] - low) / (high - low), lambda fraction: self.slide(key, fraction))
+
+        def volume(key):
+            return f"{s[key]}%" if s[key] else "Off"
+
+        tab = TAB_NAMES[self.settings_tab]
+        if tab == "Video":
+            width, height = s["resolution"]
+            ui_size = f"{self.ui.scale}x"
+            render = f"{self.renderer.render_scale:.0%}"
+            return [
+                choice("Resolution", f"{width} x {height}", self.change_resolution,
+                       "Pixels in the picture: fewer is faster"),
+                choice("Interface size", f"Auto ({ui_size})" if s["ui_scale"] == "auto" else ui_size,
+                       self.change_ui_scale, "Size of the menus, the text and the hotbar"),
+                pick("Frame rate", f"{s['fps']} FPS", "fps", FRAME_RATES, "Frames per second the game aims for"),
+                slider("Field of view", f"{s['fov']}", "fov", "How wide you see, in degrees: wider shows more, smaller"),
+                pick("3D resolution", f"Auto ({render})" if s["render_scale"] == "auto" else render, "render_scale",
+                     RENDER_SCALES, "Auto: the world is drawn smaller when it's slow"),
+                pick("Render distance", f"{s['render_distance']} chunks", "render_distance", RENDER_DISTANCES,
+                     "How far you can see: shorter is faster"),
+                pick("LOD quality", s["lod_quality"].capitalize(), "lod_quality", LOD_QUALITY_NAMES,
+                     "Detail of the faraway terrain"),
+                pick("Graphics", "Fancy" if s["fancy"] else "Fast", "fancy", [False, True],
+                     "Fancy: shadows and smooth edges"),
+                choice(*self.texture_pack_row()),
+            ]
+        if tab == "Controls":
+            return [
+                slider("Mouse speed", f"{s['sensitivity']}%", "sensitivity",
+                       "How far the view turns when the mouse moves"),
+                pick("Invert mouse", "On" if s["invert_y"] else "Off", "invert_y", [False, True],
+                     "On: pushing the mouse forward looks down"),
+                slider("Arrow keys speed", f"{s['look_speed']}", "look_speed",
+                       "Looking around with the arrow keys, in degrees per second"),
+            ]
+        if tab == "Keys":
+            return [("key", LABELS[action], self.controls.name(action), action,
+                     "ENTER or a click, then the new key or mouse button", None, None) for action, _, _ in ACTIONS]
+        if tab == "Sound":
+            return [
+                slider("Music", volume("music_volume"), "music_volume", "Volume of the background music"),
+                slider("Sound effects", volume("sound_volume"), "sound_volume",
+                       "Volume of the steps, the splashes and the blocks"),
+            ]
+        minutes = s["autosave"]
         return [
-            ("Resolution", f"{width} x {height}", self.change_resolution,
-             "Pixels in the picture: fewer is faster"),
-            ("Interface size", f"Auto ({ui_size})" if s["ui_scale"] == "auto" else ui_size, self.change_ui_scale,
-             "Size of the menus, the text and the hotbar"),
-            ("3D resolution", f"Auto ({render})" if s["render_scale"] == "auto" else render, self.change_render_scale,
-             "Auto: the world is drawn smaller when it's slow"),
-            ("Frame rate", f"{s['fps']} FPS", self.change_fps, "Frames per second the game aims for"),
-            ("Render distance", f"{s['render_distance']} chunks", self.change_render_distance,
-             "How far you can see: shorter is faster"),
-            ("LOD quality", s["lod_quality"].capitalize(), self.change_lod_quality,
-             "Detail of the faraway terrain"),
-            ("Graphics", "Fancy" if s["fancy"] else "Fast", lambda step: self.toggle_graphics(),
-             "Fancy: shadows and smooth edges"),
-            ("Music", "On" if s["music"] else "Off", lambda step: self.toggle_music(), "Background music"),
-            self.texture_pack_row(),
+            pick("Autosave", f"Every {minutes} min" if minutes else "Off", "autosave", AUTOSAVES,
+                 "The game is also saved when you leave through the menu"),
+            pick("Day length", f"{s['day_length']} minutes", "day_length", DAY_LENGTHS,
+                 "How long a day and its night last"),
+            pick("Controls help", "At the start" if s["show_help"] else "Hidden", "show_help", [False, True],
+                 "The list of keys shown when a game starts (the help key brings it back)"),
+            pick("Crosshair", s["crosshair"].capitalize(), "crosshair", CROSSHAIRS,
+                 "The mark in the middle of the screen"),
         ]
 
     def new_world_clicked(self):
@@ -718,11 +833,11 @@ class App:
         elif self.state == "loading":
             if self.renderer.progress(self.player.eye(), LOADING_RADIUS) >= 1:
                 self.set_state("playing")
-        elif self.state in ("title", "paused", "settings"):
+        elif self.state == "settings":
+            self.update_settings()
+        elif self.state in ("title", "paused"):
             if self.state == "paused" and pyxel.btnp(pyxel.KEY_ESCAPE):
                 self.set_state("playing")
-            elif self.state == "settings" and pyxel.btnp(pyxel.KEY_ESCAPE):
-                self.close_settings()
             else:
                 self.update_menu()
         elif self.state == "inventory":
@@ -733,13 +848,9 @@ class App:
             self.update_playing()
 
     def update_menu(self):
+        """The buttons of the title screen and of the pause menu: the mouse, or the arrows and Enter."""
         items = self.menu_items()
         ui = self.ui
-        if self.warp_to_button:
-            self.warp_to_button = False
-            if not self.headless:
-                x, y, w, h = self.button_rect(self.menu_index)
-                pyxel.set_mouse_pos(*ui.to_screen(x + w // 2, y + h // 2))
         hovered = self.button_at(ui.mouse_x, ui.mouse_y, len(items))
         if hovered is not None and (ui.mouse_x, ui.mouse_y) != self.last_mouse:
             self.menu_index = hovered
@@ -748,49 +859,118 @@ class App:
             self.menu_index = (self.menu_index + 1) % len(items)
         if pyxel.btnp(pyxel.KEY_UP) or pyxel.btnp(pyxel.KEY_W):
             self.menu_index = (self.menu_index - 1) % len(items)
-        chosen, step = None, 1
+        chosen = None
         if pyxel.btnp(pyxel.KEY_RETURN) or pyxel.btnp(pyxel.KEY_SPACE):
             chosen = self.menu_index
         if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT) and hovered is not None:
             chosen = hovered
-            if self.state == "settings" and hovered < len(items) - 1:
-                x, _, w, _ = self.button_rect(hovered)
-                vx, _ = Ui.value_box(x, w)
-                if vx - 3 <= ui.mouse_x < vx + 8:  # on the "<" of the value: the previous one
-                    step = -1
-        if self.state == "settings":
-            # Right / Left (or a right click) go to the next / previous value of a setting
-            is_setting = self.menu_index < len(items) - 1  # all but "Done"
-            if is_setting and (pyxel.btnp(pyxel.KEY_RIGHT) or pyxel.btnp(pyxel.KEY_D)):
-                chosen = self.menu_index
-            if is_setting and (pyxel.btnp(pyxel.KEY_LEFT) or pyxel.btnp(pyxel.KEY_A)):
-                chosen, step = self.menu_index, -1
-            if pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT) and hovered is not None and hovered < len(items) - 1:
-                chosen, step = hovered, -1
         if chosen is not None:
             self.sfx(SND_CLICK)
-            if self.state == "settings":
-                self.menu_index = chosen
-                items[chosen][1](step)
+            items[chosen][1]()
+
+    def update_settings(self):
+        """The settings screen: tabs, then the lines of the tab shown, then "Defaults" and "Done".
+        The mouse or the keyboard: Up/Down choose a line, Left/Right change it, Tab changes tab."""
+        ui = self.ui
+        if self.binding is not None:  # an action waits for its new key: the next one pressed is it
+            if pyxel.btnp(pyxel.KEY_ESCAPE):
+                self.binding = None
+                return
+            key = Controls.key_pressed()
+            if key is not None:
+                other = self.controls.bind(self.binding, key)
+                self.settings_note = f"{LABELS[other]}: now {self.controls.name(other)}" if other else ""
+                self.binding = None
+                self.settings["keys"] = self.controls.to_settings()
+                self.save_settings()
+                self.sfx(SND_CLICK)
+            return
+        if pyxel.btnp(pyxel.KEY_ESCAPE):
+            self.close_settings()
+            return
+        rows, rects = self.setting_rows(), self.setting_rects()
+        n = len(rows)  # the lines, then "Defaults" (n) and "Done" (n + 1)
+        if self.warp_to_button:
+            self.warp_to_button = False
+            if not self.headless:
+                x, y, w, h = rects[self.menu_index]
+                pyxel.set_mouse_pos(*ui.to_screen(x + w // 2, y + h // 2))
+        mouse = (ui.mouse_x, ui.mouse_y)
+        if self.dragging is not None:  # a slider follows the mouse for as long as its button is down
+            if pyxel.btn(pyxel.MOUSE_BUTTON_LEFT) and self.dragging < n and rows[self.dragging][0] == "slider":
+                x, _, w, _ = rects[self.dragging]
+                sx, sw = Ui.slider_box(x, w)
+                rows[self.dragging][6]((mouse[0] - sx - 2) / max(sw - 5, 1))
             else:
-                items[chosen][1]()
+                self.dragging = None
+            self.last_mouse = mouse
+            return
+        clicked = pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT)
+        back = pyxel.btn(pyxel.KEY_SHIFT)
+        turn = int(pyxel.btnp(pyxel.KEY_PAGEDOWN) or (pyxel.btnp(pyxel.KEY_TAB) and not back)) \
+            - int(pyxel.btnp(pyxel.KEY_PAGEUP) or (pyxel.btnp(pyxel.KEY_TAB) and back))
+        for i, rect in enumerate(self.tab_rects()):
+            if clicked and ui.mouse_in(*rect):
+                turn = i - self.settings_tab
+        if turn:
+            self.settings_tab = (self.settings_tab + turn) % len(TAB_NAMES)
+            self.menu_index, self.settings_note = 0, ""
+            self.sfx(SND_CLICK)
+            return
+        hovered = next((i for i, rect in enumerate(rects) if ui.mouse_in(*rect)), None)
+        index = self.menu_index
+        if hovered is not None and mouse != self.last_mouse:
+            index = hovered
+        self.last_mouse = mouse
+        if pyxel.btnp(pyxel.KEY_DOWN) or pyxel.btnp(pyxel.KEY_S):
+            index = (index + 1) % (n + 2)
+        if pyxel.btnp(pyxel.KEY_UP) or pyxel.btnp(pyxel.KEY_W):
+            index = (index - 1) % (n + 2)
+        step = int(pyxel.btnp(pyxel.KEY_RIGHT) or pyxel.btnp(pyxel.KEY_D)) \
+            - int(pyxel.btnp(pyxel.KEY_LEFT) or pyxel.btnp(pyxel.KEY_A))
+        if step and index >= n:  # between the two buttons
+            index, step = n + (1 if step > 0 else 0), 0
+        elif step and rows[index][0] == "key":  # between the two columns of keys
+            if 0 <= index + step * SETTING_ROWS < n:
+                index += step * SETTING_ROWS
+            step = 0
+        if index != self.menu_index:
+            self.menu_index, self.settings_note = index, ""
+        chosen = index if step else None
+        if pyxel.btnp(pyxel.KEY_RETURN) or pyxel.btnp(pyxel.KEY_SPACE):
+            chosen, step = index, 1
+        if clicked and hovered is not None:
+            chosen, step = hovered, 1
+            if hovered < n and rows[hovered][0] == "choice":
+                x, _, w, _ = rects[hovered]
+                vx, _ = Ui.value_box(x, w)
+                if vx - 3 <= mouse[0] < vx + 8:  # on the "<" of the value: the previous one
+                    step = -1
+            elif hovered < n and rows[hovered][0] == "slider":
+                self.menu_index, self.dragging = hovered, hovered  # (it moves from the next frame on)
+                return
+        if pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT) and hovered is not None and hovered < n \
+                and rows[hovered][0] == "choice":
+            chosen, step = hovered, -1
+        if chosen is None:
+            return
+        self.sfx(SND_CLICK)
+        self.menu_index = chosen
+        if chosen == n:
+            self.reset_tab()
+            self.settings_note = "Back to the defaults"
+        elif chosen == n + 1:
+            self.close_settings()
+        elif rows[chosen][0] == "key":
+            self.binding, self.settings_note = rows[chosen][3], ""
+        else:
+            rows[chosen][3](step)
 
     def menu_top(self):
         """UI y of the first button of the title screen and the pause menu: below the middle."""
         return self.ui.height // 2 + 2
 
-    def settings_panel(self):
-        """(x, y, w, h) of the settings panel: a title, a row per setting, the explanation of the
-        chosen one, and "Done"."""
-        h = 23 + len(self.setting_rows()) * ROW_PITCH + 40
-        return (self.ui.width - SETTINGS_W) // 2, max(1, (self.ui.height - h) // 2), SETTINGS_W, h
-
     def button_rect(self, i):
-        if self.state == "settings":
-            x, y, w, h = self.settings_panel()
-            if i < len(self.setting_rows()):
-                return x + 6, y + 23 + i * ROW_PITCH, w - 12, ROW_H
-            return x + (w - 80) // 2, y + h - 21, 80, BUTTON_H  # "Done"
         return (self.ui.width - BUTTON_W) // 2, self.menu_top() + i * BUTTON_PITCH, BUTTON_W, BUTTON_H
 
     def button_at(self, mx, my, count):
@@ -799,6 +979,31 @@ class App:
             if x <= mx < x + w and y <= my < y + h:
                 return i
         return None
+
+    def settings_panel(self):
+        """(x, y, w, h) of the settings panel: the tabs, the lines of the tab shown, a line that
+        explains the chosen one, and two buttons."""
+        return ((self.ui.width - SETTINGS_W) // 2, max(1, (self.ui.height - SETTINGS_H) // 2), SETTINGS_W,
+                SETTINGS_H)
+
+    def tab_rects(self):
+        x, y, w, _ = self.settings_panel()
+        tw = (w - 8) // len(TAB_NAMES)
+        return [(x + 4 + i * tw, y + 4, tw, TAB_H) for i in range(len(TAB_NAMES))]
+
+    def setting_rects(self):
+        """(x, y, w, h) of each line of the tab shown, then of "Defaults" and of "Done". The keys
+        go in two columns."""
+        x, y, w, h = self.settings_panel()
+        top = y + 4 + TAB_H + 4
+        count = len(self.setting_rows())
+        if TAB_NAMES[self.settings_tab] == "Keys":
+            cw = (w - 12) // 2
+            rects = [(x + 6 + (i // SETTING_ROWS) * (cw + 2), top + (i % SETTING_ROWS) * ROW_PITCH, cw - 2, ROW_H)
+                     for i in range(count)]
+        else:
+            rects = [(x + 6, top + i * ROW_PITCH, w - 12, ROW_H) for i in range(count)]
+        return rects + [(x + 6, y + h - 20, 84, BUTTON_H), (x + w - 90, y + h - 20, 84, BUTTON_H)]
 
     def inventory_layout(self):
         """The inventory shows as many rows of slots as fit above the hotbar, and puts the other
@@ -847,7 +1052,7 @@ class App:
         return [(x0 + i * HOTBAR_SLOT, y0, HOTBAR_SLOT, HOTBAR_SLOT) for i in range(n)]
 
     def update_inventory(self):
-        if pyxel.btnp(pyxel.KEY_E) or pyxel.btnp(pyxel.KEY_ESCAPE):
+        if self.controls.pressed("inventory") or pyxel.btnp(pyxel.KEY_ESCAPE):
             self.set_state("playing")
             return
         ui = self.ui
@@ -900,49 +1105,53 @@ class App:
 
     def update_playing(self):
         dt = self.dt
+        keys = self.controls
         self.play_time += dt
-        self.time_of_day = (self.time_of_day + dt / DAY_SECONDS) % 1.0
+        self.time_of_day = (self.time_of_day + dt / (self.settings["day_length"] * 60)) % 1.0
         if self.play_time - dt < HELP_SECONDS <= self.play_time:
             self.show_help = False  # hide the help once, after the first seconds of play
-        if self.play_time - self.last_save > AUTOSAVE_SECONDS:
+        autosave = self.settings["autosave"] * 60
+        if autosave and self.play_time - self.last_save > autosave:
             self.save()
             self.notify("Game saved")
 
         if pyxel.btnp(pyxel.KEY_ESCAPE):
             self.set_state("paused")
             return
-        if pyxel.btnp(pyxel.KEY_E):
+        if keys.pressed("inventory"):
             self.set_state("inventory")
             return
-        if pyxel.btnp(pyxel.KEY_TAB):
+        if keys.pressed("mouse"):
             if self.mouse_captured:
                 self.mouse_captured = False
             else:
                 self.capture_mouse()
-        if pyxel.btnp(pyxel.KEY_H):
+        if keys.pressed("help"):
             self.show_help = not self.show_help
-        if pyxel.btnp(pyxel.KEY_F3):
+        if keys.pressed("info"):
             self.show_debug = not self.show_debug
-        if pyxel.btnp(pyxel.KEY_T) or pyxel.btnp(pyxel.KEY_SLASH):
+        if keys.pressed("chat") or pyxel.btnp(pyxel.KEY_SLASH):
             self.chat_text = "/" if pyxel.btnp(pyxel.KEY_SLASH) else ""
             self.set_state("chat")
             return
 
         self.update_look()
-        events = self.player.update(self.world, dt)
+        events = self.player.update(self.world, dt, keys)
         for event, sound in (("jump", SND_JUMP), ("step", SND_STEP), ("splash", SND_SPLASH)):
             if event in events:
                 self.sfx(sound)
         self.update_hotbar_keys()
 
-        # Break and place blocks (hold the button to repeat)
+        # Break, place and pick blocks (hold the key to repeat)
         self.target = self.world.raycast(self.player.eye(), self.player.forward(), REACH)
         if not self.mouse_captured:
             if pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT):
                 self.capture_mouse()
             return
         hold, repeat = self.frames(0.25), self.frames(0.13)
-        if self.target and pyxel.btnp(pyxel.MOUSE_BUTTON_LEFT, hold=hold, repeat=repeat):
+        if self.target and keys.pressed("pick"):
+            self.pick_block(self.world.get(*self.target[0]))
+        elif self.target and keys.pressed("break", hold=hold, repeat=repeat):
             x, y, z = self.target[0]
             if UNBREAKABLE[self.world.get(x, y, z)]:
                 self.notify("Bedrock can't be broken")
@@ -953,7 +1162,7 @@ class App:
                     self.world.set(x, y + 1, z, 0)
                     self.renderer.block_changed(x, y + 1, z)
                 self.sfx(SND_BREAK)
-        elif self.target and pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT, hold=hold, repeat=repeat):
+        elif self.target and keys.pressed("place", hold=hold, repeat=repeat):
             # Aiming at a plant puts the block in its place, like on the ground under it
             x, y, z = self.target[0] if PLANT[self.world.get(*self.target[0])] else self.target[1]
             block = turned(self.hotbar[self.selected], self.player.forward())  # a front faces the player
@@ -967,17 +1176,36 @@ class App:
                 self.renderer.block_changed(x, y, z)
                 self.sfx(SND_PLACE)
 
+    def pick_block(self, block):
+        """The block looked at becomes the chosen one: its hotbar slot if it has one, else it
+        takes the chosen slot's place."""
+        block = PICKS.get(int(block))
+        if block is None:
+            return
+        if block in self.hotbar:
+            self.selected = self.hotbar.index(block)
+        else:
+            self.hotbar[self.selected] = block
+        self.selected_time = self.play_time
+        self.sfx(SND_CLICK)
+
+    def zooming(self):
+        return self.state == "playing" and self.mouse_captured and self.controls.held("zoom")
+
     def update_look(self):
+        s = self.settings
         keys_yaw = pyxel.btn(pyxel.KEY_LEFT) - pyxel.btn(pyxel.KEY_RIGHT)
         keys_pitch = pyxel.btn(pyxel.KEY_UP) - pyxel.btn(pyxel.KEY_DOWN)
-        self.player.look(keys_yaw * KEY_LOOK_SPEED * self.dt, keys_pitch * KEY_LOOK_SPEED * self.dt)
+        zoom = self.view_fov / s["fov"]  # zoomed in, the view turns as much slower as it is narrower
+        self.player.look(keys_yaw * s["look_speed"] * zoom * self.dt, keys_pitch * s["look_speed"] * zoom * self.dt)
         if not self.mouse_captured:
             return
         w, h = pyxel.width, pyxel.height
         mx, my = pyxel.mouse_x, pyxel.mouse_y
         dx, dy = mx - self.last_mouse[0], my - self.last_mouse[1]
-        sensitivity = MOUSE_SENSITIVITY * BASE_WIDTH / w  # same turn for the same hand movement at any resolution
-        self.player.look(-dx * sensitivity, -dy * sensitivity)
+        # (the same turn for the same hand movement at any resolution)
+        sensitivity = MOUSE_SENSITIVITY * s["sensitivity"] / 100 * BASE_WIDTH / w * zoom
+        self.player.look(-dx * sensitivity, (dy if s["invert_y"] else -dy) * sensitivity)
         # Only move the cursor back to the center when it gets near the edge: re-centering every
         # frame would throw away slow movements smaller than one Pyxel pixel.
         if not self.headless and (abs(mx - w / 2) > w / 4 or abs(my - h / 2) > h / 4):
@@ -991,7 +1219,7 @@ class App:
     def update_chat(self):
         """The command line is open: the world and the clock go on, the player stands still."""
         self.play_time += self.dt
-        self.time_of_day = (self.time_of_day + self.dt / DAY_SECONDS) % 1.0
+        self.time_of_day = (self.time_of_day + self.dt / (self.settings["day_length"] * 60)) % 1.0
         if pyxel.btnp(pyxel.KEY_ESCAPE):
             self.set_state("playing")
             return
@@ -1047,12 +1275,12 @@ class App:
 
     def draw_chat(self):
         ui = self.ui
-        y = self.hotbar_rects()[0][1] - 18
+        y = self.hotbar_rects()[0][1] - 19
         ui.text(4, y - 9, "ENTER run   ESC cancel   /tp x y z   /time set day|noon|night", TEXT_DIM, shadow=True)
-        ui.shade(2, y - 1, ui.width - 4, 12, 0.75)
-        ui.rectb(2, y - 1, ui.width - 4, 12, BLUE)
+        ui.glass(2, y - 1, ui.width - 4, 12, 0.85)
+        ui.rect(2, y - 1, 2, 12, AMBER)
         cursor = "_" if self.play_time % 1.0 < 0.6 else ""
-        ui.text(6, y + 2, "> " + self.chat_text + cursor, TEXT)
+        ui.text(8, y + 2, "> " + self.chat_text + cursor, TEXT)
 
     def notify(self, text):
         self.message, self.message_time = text, self.play_time
@@ -1066,7 +1294,7 @@ class App:
         ui = self.ui
 
         if self.state == "generating":
-            pyxel.cls(0)
+            pyxel.cls(BLACK)
             self.draw_message_box("Finding a place to start...")
             return
 
@@ -1093,15 +1321,20 @@ class App:
     def draw_message_box(self, text, progress=None):
         """A small panel in the middle of the screen with a line of text (and a progress bar)."""
         ui = self.ui
-        w, h = max(text_width(text) + 24, 160), 22 if progress is None else 36
+        w, h = max(text_width(text) + 28, 170), 24 if progress is None else 40
         x, y = (ui.width - w) // 2, (ui.height - h) // 2
         ui.panel(x, y, w, h)
-        ui.center_text(y + 8, text, TEXT, shadow=True)
+        ui.center_text(y + 9, text, TEXT, shadow=True)
         if progress is not None:
-            ui.bar(x + 10, y + 20, w - 20, 8, progress)
+            ui.bar(x + 10, y + 22, w - 20, 9, progress)
 
     def draw_world(self):
         eye, forward = self.camera()
+        # The field of view of the settings; it glides to the zoom's while that key is held
+        fov = ZOOM_FOV if self.zooming() else float(self.settings["fov"])
+        glide = min(1.0, self.dt * 14) if self.state == "playing" and self.dt > 0 else 1.0
+        self.view_fov += (fov - self.view_fov) * glide
+        self.renderer.fov = self.view_fov
         if self.on_title():
             env, day = environment(0.12)
             target = None
@@ -1126,12 +1359,12 @@ class App:
         logo = 5 * h // BASE_HEIGHT  # the logo grows with the interface
         y = h * 48 // BASE_HEIGHT - 3 - 3 * (logo - 1)  # top of the scaled 28x6 logo
         x = cx - 14 * logo
-        shadow = logo * 3 // 5
-        pyxel.pal(7, 0)
-        ui.blt(x + shadow, y + shadow, 1, 0, 0, 28, 6, 0, scale=logo)
+        depth = max(1, logo // 4)  # the letters stand out of the screen: gold on top, amber then rust below
+        for dx, dy, col in ((2 * depth, 3 * depth, BLACK), (0, 2 * depth, RUST), (0, depth, AMBER), (0, 0, GOLD)):
+            pyxel.pal(7, col)
+            ui.blt(x + dx, y + dy, 1, 0, 0, 28, 6, 0, scale=logo)
         pyxel.pal()
-        ui.blt(x, y, 1, 0, 0, 28, 6, 0, scale=logo)
-        ui.center_text(h // 2 - 22, "A Minecraft-like game made with Pyxel", TEXT, shadow=True)
+        ui.center_text(h // 2 - 22, "A Minecraft-like game made with Pyxel", CREAM, shadow=True)
         self.draw_menu()
         ui.text(3, h - 9, f"Seed {self.world.seed}", TEXT_DIM, shadow=True)
         hint = "Mouse or arrows to choose, ENTER to pick"
@@ -1145,35 +1378,62 @@ class App:
     def draw_settings(self):
         ui = self.ui
         x, y, w, h = self.settings_panel()
-        ui.panel(x, y, w, h, "Settings")
-        rows = self.setting_rows()
-        for i, (name, value, _, _) in enumerate(rows):
-            ui.setting_row(*self.button_rect(i), name, value, hot=i == self.menu_index)
-        explain = rows[self.menu_index][3] if self.menu_index < len(rows) else "Back to the menu"
-        ui.center_text(y + 27 + len(rows) * ROW_PITCH, explain, TEXT_DIM, cx=x + w // 2)
-        ui.button(*self.button_rect(len(rows)), "Done", hot=self.menu_index == len(rows))
+        ui.panel(x, y, w, h)
+        ui.hline(x + 2, x + w - 3, y + 4 + TAB_H, IRON)  # the tabs stand on this line
+        for i, (name, rect) in enumerate(zip(TAB_NAMES, self.tab_rects())):
+            ui.tab(*rect, name, active=i == self.settings_tab, hot=ui.mouse_in(*rect))
+        rows, rects = self.setting_rows(), self.setting_rects()
+        n = len(rows)
+        for i, (row, rect) in enumerate(zip(rows, rects)):
+            kind, name, value = row[:3]
+            hot = i == self.menu_index
+            if kind == "slider":
+                ui.slider_row(*rect, name, value, row[5], hot=hot or self.dragging == i)
+            elif kind == "key":
+                ui.key_row(*rect, name, value, hot=hot, listening=self.binding == row[3])
+            else:
+                ui.setting_row(*rect, name, value, hot=hot)
+        # One line under the settings: what the last change did, or what the chosen line is for
+        if self.binding is not None:
+            note, col = "Press the new key or mouse button (ESC: keep the old one)", TEXT_HOT
+        elif self.settings_note:
+            note, col = self.settings_note, TEXT_HOT
+        elif self.menu_index < n:
+            note, col = rows[self.menu_index][4], TEXT_DIM
+        elif self.menu_index == n:
+            note, col = "This tab's settings as they were at first", TEXT_DIM
+        else:
+            note, col = "Back to the menu", TEXT_DIM
+        ui.center_text(y + h - 30, note, col, cx=x + w // 2)
+        ui.button(*rects[n], "Defaults", hot=self.menu_index == n)
+        ui.button(*rects[n + 1], "Done", hot=self.menu_index == n + 1)
         if y + h + 12 <= ui.height:
-            ui.center_text(y + h + 5, "Click or LEFT/RIGHT to change, ESC to go back", TEXT_DIM, shadow=True)
+            ui.center_text(y + h + 5, "TAB: next tab   LEFT/RIGHT or a click: change   ESC: back", TEXT_DIM,
+                           shadow=True)
 
     def draw_hud(self):
         ui = self.ui
         self.draw_hotbar()
         if self.state == "inventory":
-            return  # (the rest would show through the inventory's see-through panel)
+            return  # (the rest would show through the inventory)
         cx, cy = ui.width // 2, ui.height // 2
-        # Crosshair, outlined so it shows on bright blocks and on the sky too
-        ui.shade(cx - 5, cy - 1, 11, 3, 0.5)
-        ui.shade(cx - 1, cy - 5, 3, 4, 0.5)
-        ui.shade(cx - 1, cy + 2, 3, 4, 0.5)
-        ui.hline(cx - 4, cx + 4, cy, WHITE)
-        ui.vline(cx, cy - 4, cy + 4, WHITE)
+        # The crosshair, with a dark rim so it shows on bright blocks and on the sky too
+        if self.settings["crosshair"] == "cross":
+            ui.shade(cx - 5, cy - 1, 11, 3, 0.5)
+            ui.shade(cx - 1, cy - 5, 3, 4, 0.5)
+            ui.shade(cx - 1, cy + 2, 3, 4, 0.5)
+            ui.hline(cx - 4, cx + 4, cy, WHITE)
+            ui.vline(cx, cy - 4, cy + 4, WHITE)
+        elif self.settings["crosshair"] == "dot":
+            ui.shade(cx - 2, cy - 2, 4, 4, 0.5)
+            ui.rect(cx - 1, cy - 1, 2, 2, WHITE)
 
         y0 = self.hotbar_rects()[0][1]
         if self.state == "playing":  # (the chat line would cover them)
             if self.play_time - self.selected_time < NAME_SECONDS:
-                ui.center_text(y0 - 13, BLOCK_NAMES[self.hotbar[self.selected]], TEXT, shadow=True)
+                ui.center_text(y0 - 14, BLOCK_NAMES[self.hotbar[self.selected]], TEXT, shadow=True)
             if self.message and self.play_time - self.message_time < 2.5:
-                ui.toast(y0 - 29, self.message)
+                ui.toast(y0 - 30, self.message)
 
         y = 2
         if self.show_debug:
@@ -1186,25 +1446,25 @@ class App:
     def draw_hotbar(self):
         ui = self.ui
         rects = self.hotbar_rects()
-        x0, y0, s, _ = rects[0]
-        ui.shade(x0 - 2, y0 - 2, s * len(rects) + 4, s + 4, 0.7)
-        ui.rectb(x0 - 2, y0 - 2, s * len(rects) + 4, s + 4, BLACK)
+        x0, y0, size, _ = rects[0]
+        ui.rect(x0 - 3, y0 - 3, size * len(rects) + 6, size + 6, BLACK)
+        ui.rect(x0 - 2, y0 - 2, size * len(rects) + 4, size + 4, COAL)
+        ui.rectb(x0 - 2, y0 - 2, size * len(rects) + 4, size + 4, IRON)
         for i, (block, (x, y, w, h)) in enumerate(zip(self.hotbar, rects)):
-            ui.rectb(x + 1, y + 1, w - 2, h - 2, NAVY)
+            ui.slot(x, y, w)
             self.draw_icon(x + 3, y + 3, block)
-            ui.text(x + 2, y + 2, str(i + 1), TEXT_HOT if i == self.selected else GREY, shadow=True)
-        x, y, w, h = rects[self.selected]  # the chosen slot: a thick white frame
-        ui.rectb(x - 1, y - 1, w + 2, h + 2, BLACK)
-        ui.rectb(x, y, w, h, WHITE)
-        ui.rectb(x + 1, y + 1, w - 2, h - 2, WHITE)
+            ui.text(x + 2, y + 2, str(i + 1), TEXT_HOT if i == self.selected else ASH, shadow=True)
+        x, y, w, h = rects[self.selected]  # the chosen slot: a thick amber frame
+        ui.rectb(x - 1, y - 1, w + 2, h + 2, GOLD)
+        ui.rectb(x, y, w, h, AMBER)
 
     def draw_text_panel(self, y, lines):
         """(text, color) lines on a see-through panel at the left of the screen. Returns its bottom."""
         ui = self.ui
-        w, h = max(text_width(s) for s, _ in lines) + 9, len(lines) * 8 + 5
-        ui.shade(2, y, w, h, 0.65)
+        w, h = max(text_width(s) for s, _ in lines) + 10, len(lines) * 8 + 5
+        ui.glass(2, y, w, h)
         for i, (s, col) in enumerate(lines):
-            ui.text(6, y + 3 + i * 8, s, col, shadow=True)
+            ui.text(7, y + 3 + i * 8, s, col, shadow=True)
         return y + h
 
     def draw_debug(self, y):
@@ -1227,19 +1487,34 @@ class App:
                  f"Time {hours:02d}:00  Seed {self.world.seed}" + ("  FLY" if self.player.flying else "")]
         return self.draw_text_panel(y, [(line, TEXT) for line in lines])
 
+    def help_lines(self):
+        """The controls, with the keys they have now: (keys, what they do), in two columns."""
+        key = self.controls.name
+        move = [key(action) for action in ("forward", "left", "back", "right")]
+        return [
+            [("".join(move) if all(len(k) == 1 for k in move) else " ".join(move), "Move"),
+             (key("jump"), "Jump, swim, fly up"), (key("down"), "Fly down"), (key("sprint"), "Sprint, fly fast"),
+             (key("fly"), "Fly on/off"), (key("zoom"), "Zoom"), (key("inventory"), "All the blocks"),
+             (key("chat"), "Chat, commands")],
+            [(key("break"), "Break"), (key("place"), "Place"), (key("pick"), "Pick the block"),
+             ("1-9, WHEEL", "Choose a block"), (key("mouse"), "Free the mouse"), (key("info"), "Info"),
+             (key("help"), "Hide this help"), ("ESC", "Menu, settings")],
+        ]
+
     def draw_help(self, y):
-        """The controls in two columns: the keys in blue, what they do in white."""
+        """The controls in two columns: the keys in amber, what they do in white."""
         ui = self.ui
+        lines = self.help_lines()
         columns = [(column, max(text_width(k) for k, _ in column) + 6, max(text_width(a) for _, a in column))
-                   for column in HELP]
-        w = sum(kw + aw for _, kw, aw in columns) + 12 * (len(columns) - 1) + 9
-        h = max(len(column) for column in HELP) * 8 + 15
-        ui.shade(2, y, w, h, 0.65)
-        ui.text(6, y + 3, "Controls", TEXT_HOT, shadow=True)
-        x = 6
+                   for column in lines]
+        w = sum(kw + aw for _, kw, aw in columns) + 12 * (len(columns) - 1) + 10
+        h = max(len(column) for column in lines) * 8 + 15
+        ui.glass(2, y, w, h)
+        ui.text(7, y + 3, "Controls", TEXT_HOT, shadow=True)
+        x = 7
         for column, kw, aw in columns:
             for i, (keys, action) in enumerate(column):
-                ui.text(x, y + 13 + i * 8, keys, LIGHT_BLUE, shadow=True)
+                ui.text(x, y + 13 + i * 8, keys, AMBER, shadow=True)
                 ui.text(x + kw, y + 13 + i * 8, action, TEXT, shadow=True)
             x += kw + aw + 12
 
@@ -1249,22 +1524,16 @@ class App:
         x0, top, rows, pages, page = self.inventory_layout()
         w = INVENTORY_COLUMNS * size + 10
         ui.panel(x0 - 5, top - INVENTORY_HEADER, w, INVENTORY_HEADER + rows * size + INVENTORY_FOOTER)
+        ui.hline(x0 - 3, x0 + w - 8, top - 3, IRON)  # the tabs stand on this line
         for i, ((name, _), (x, y, tw, th)) in enumerate(zip(CATEGORIES, self.inventory_tabs())):
-            active = i == self.inventory_tab
-            ui.rect(x, y, tw, th, BLUE if active else NAVY)
-            ui.rectb(x, y, tw, th, WHITE if active else LIGHT_BLUE if ui.mouse_in(x, y, tw, th) else BLACK)
-            ui.text(x + 5, y + 4, name, TEXT_HOT if active else TEXT, shadow=True)
+            ui.tab(x, y, tw, th, name, active=i == self.inventory_tab, hot=ui.mouse_in(x, y, tw, th))
         hovered = None
         chosen = self.hotbar[self.selected]
         for block, x, y in self.inventory_slots():
             over = ui.mouse_in(x, y, size, size)
             if over:
                 hovered = block
-                ui.rect(x + 1, y + 1, size - 2, size - 2, BLUE)
-            else:
-                ui.shade(x + 1, y + 1, size - 2, size - 2, 0.5)
-            # The block in the chosen hotbar slot is framed in yellow
-            ui.rectb(x + 1, y + 1, size - 2, size - 2, WHITE if over else TEXT_HOT if block == chosen else NAVY)
+            ui.slot(x, y, size, hot=over, chosen=block == chosen)  # (the chosen slot's block: framed in amber)
             self.draw_icon(x + 3, y + 3, block)
         bottom = top + rows * size
         if pages > 1:  # the page buttons, dimmed on the first and the last page

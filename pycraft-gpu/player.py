@@ -1,8 +1,6 @@
 """First-person player: walking, jumping, swimming, flying and collisions with blocks."""
 import math
 
-import pyxel
-
 from blocks import WATER
 
 HALF_WIDTH = 0.3
@@ -12,7 +10,7 @@ WALK_SPEED = 4.3
 SPRINT_SPEED = 6.5
 SWIM_SPEED = 2.6
 FLY_SPEED = 11.0
-FAST_FLY_SPEED = 42.0  # flying with Ctrl held: the mountains are big
+FAST_FLY_SPEED = 42.0  # flying with the sprint key held: the mountains are big
 GRAVITY = 28.0
 WATER_GRAVITY = 8.0
 JUMP_SPEED = 8.4  # about 1.25 blocks high
@@ -55,10 +53,11 @@ class Player:
         return (x < px + HALF_WIDTH and x + 1 > px - HALF_WIDTH and y < py + HEIGHT and y + 1 > py
                 and z < pz + HALF_WIDTH and z + 1 > pz - HALF_WIDTH)
 
-    def update(self, world, dt):
-        """Move the player for one frame. Returns the set of sound events: "jump", "step", "splash"."""
+    def update(self, world, dt, keys):
+        """Move the player for one frame, with the keys held (controls.Controls). Returns the set
+        of sound events: "jump", "step", "splash"."""
         events = set()
-        if pyxel.btnp(pyxel.KEY_F):
+        if keys.pressed("fly"):
             self.flying = not self.flying
             self.vel_y = 0.0
 
@@ -72,31 +71,31 @@ class Player:
         yaw = math.radians(self.yaw)
         fx, fz = math.sin(yaw), math.cos(yaw)
         rx, rz = -fz, fx
-        move_f = pyxel.btn(pyxel.KEY_W) - pyxel.btn(pyxel.KEY_S)
-        move_r = pyxel.btn(pyxel.KEY_D) - pyxel.btn(pyxel.KEY_A)
+        move_f = keys.held("forward") - keys.held("back")
+        move_r = keys.held("right") - keys.held("left")
         dx, dz = fx * move_f + rx * move_r, fz * move_f + rz * move_r
         length = math.hypot(dx, dz)
-        fly_speed = FAST_FLY_SPEED if pyxel.btn(pyxel.KEY_LCTRL) else FLY_SPEED
+        fly_speed = FAST_FLY_SPEED if keys.held("sprint") else FLY_SPEED
         if length:
             if self.flying:
                 speed = fly_speed
             elif self.in_water:
                 speed = SWIM_SPEED
-            elif pyxel.btn(pyxel.KEY_LCTRL):
+            elif keys.held("sprint"):
                 speed = SPRINT_SPEED
             else:
                 speed = WALK_SPEED
             dx, dz = dx / length * speed * dt, dz / length * speed * dt
 
         if self.flying:
-            self.vel_y = (pyxel.btn(pyxel.KEY_SPACE) - pyxel.btn(pyxel.KEY_LSHIFT)) * fly_speed
+            self.vel_y = (keys.held("jump") - keys.held("down")) * fly_speed
         elif self.in_water:
-            if pyxel.btn(pyxel.KEY_SPACE):
+            if keys.held("jump"):
                 # Swimming against a wall climbs out of the water onto the bank
                 self.vel_y = JUMP_SPEED * 0.75 if self.against_wall else SWIM_UP_SPEED
             self.vel_y = max(self.vel_y - WATER_GRAVITY * dt, -MAX_SINK_SPEED)
         else:
-            if self.on_ground and pyxel.btn(pyxel.KEY_SPACE):
+            if self.on_ground and keys.held("jump"):
                 self.vel_y = JUMP_SPEED
                 events.add("jump")
             self.vel_y = max(self.vel_y - GRAVITY * dt, -MAX_FALL_SPEED)

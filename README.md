@@ -57,7 +57,8 @@ pycraft-gpu/     # LE JEU : moteur GPU (moderngl) + frontend Pyxel
   blocks.py      #   types de blocs, textures (atlas généré)
   world.py       #   monde : sections à la demande, sauvegarde
   player.py      #   déplacement, collisions, nage, vol
-  ui.py          #   HUD et menus
+  ui.py          #   HUD et menus (thème, boutons, onglets, curseurs)
+  controls.py    #   actions du jeu et leurs touches, modifiables
   noise.py       #   bruit de Perlin vectorisé
 main.py          # ANCIEN prototype NSI-Game (vaisseau Pyxel 2D), conservé
 requirements.txt # dépendances du prototype racine

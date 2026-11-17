@@ -56,35 +56,46 @@ a real graphics card driver.
 - Plants: tall grass, ferns, dead bushes, six kinds of flowers and oak saplings, which also grow wild
   in the world
 - Walking, sprinting, jumping, swimming and flying (and flying fast)
-- An 8-minute day and night cycle, with a sun, a moon and sunsets
+- A day and night cycle, with a sun, a moon and sunsets (20 minutes long, or 10, 40 or 60)
 - A title screen, a pause menu and a block inventory with tabs: Nature, Building, Colors, Plants
   and Special
-- Settings: resolution, interface size, 3D resolution, frame rate, render distance, LOD quality,
-  graphics and music
+- Settings on five tabs, among them the resolution, the field of view, the mouse speed, the
+  volumes, and a key of your choice for every action
 - Automatic scaling: the menus and the HUD keep the same size at every resolution, and the 3D view
   is drawn at a lower resolution while the game can't keep up with the frame rate
-- Saving: the game saves when you leave through the menu, and every 2 minutes
+- Saving: the game saves when you leave through the menu, and every 2 minutes (or 1, 5, 10, or never)
 - Sound effects and generated background music
 
 ## Controls
 
+These are the keys the game starts with. Every one in the first table can be changed in
+**Settings → Keys**, to another key or to a mouse button.
+
+| Key | Action |
+|---|---|
+| W A S D | Move |
+| Space | Jump, swim up (against a wall: climb out of water), fly up |
+| Left Shift | Fly down |
+| Left Ctrl | Sprint; while flying: fly fast (42 blocks per second) |
+| F | Toggle flying |
+| C | Zoom, for as long as it is held |
+| Left click | Break block (hold to repeat) |
+| Right click | Place block (hold to repeat) |
+| Middle click | Pick the block you look at: its hotbar slot becomes the chosen one, or it takes the chosen slot's place |
+| E | All blocks: click one to put it in the selected slot (click a hotbar slot to select it). Tab / Shift+Tab or a click change the tab. If a tab's blocks don't all fit on the screen, they go on pages: mouse wheel, Left/Right, Page Up/Down or the arrows under the slots turn them |
+| T | Chat: `/tp x y z`, `/time set day\|noon\|sunset\|night\|midnight` |
+| Tab | Release / capture the mouse |
+| F3 | FPS, the size the 3D view is drawn at and the graphics card's time, position, altitude, biome, chunks, the levels of the distant terrain on screen and seed |
+| H | Show / hide the controls, with the keys they have now |
+
+These stay as they are:
+
 | Key | Action |
 |---|---|
 | Mouse / arrow keys | Look around |
-| WASD | Move |
-| Space | Jump, swim up (against a wall: climb out of water), fly up |
-| Left Ctrl | Sprint; while flying: fly fast (42 blocks per second) |
-| Left Shift | Fly down |
-| F | Toggle flying |
-| Left click | Break block (hold to repeat) |
-| Right click | Place block |
 | 1-9 / mouse wheel | Choose a hotbar slot |
-| E | All blocks: click one to put it in the selected slot (click a hotbar slot to select it). Tab / Shift+Tab or a click change the tab. If a tab's blocks don't all fit on the screen, they go on pages: mouse wheel, Left/Right, Page Up/Down or the arrows under the slots turn them |
-| Esc | Pause menu (settings, save and quit) |
-| Tab | Release / capture the mouse |
-| F3 | FPS, the size the 3D view is drawn at and the graphics card's time, position, altitude, biome, chunks, the levels of the distant terrain on screen and seed |
-| H | Show / hide the controls |
-| T or / | Chat: `/tp x y z`, `/time set day\|noon\|sunset\|night\|midnight` |
+| / | Chat, starting a command |
+| Esc | Pause menu (settings, save and quit); in a menu: back |
 
 The save file, `world2.npz`, is in Pyxel's user data folder
 (`pyxel.user_data_dir("PyCraft", "PyCraft GPU")`). Only the blocks you changed are saved: the rest
@@ -93,22 +104,40 @@ automatic save. A `world.npz` from the earlier, smaller version of the game is l
 
 ## Settings
 
-Open **Settings** from the title screen or the pause menu. Click a setting (or press Right) for its
-next value; right-click it, click its `<` (or press Left) for the previous one. The line under the
-settings explains the one selected. Changes apply right away and are saved in `settings.json`, next
+Open **Settings** from the title screen or the pause menu. They are on five tabs: click a tab, or
+press Tab (Shift+Tab for the one before). Then:
+
+- a setting with a few values: click it (or press Right) for the next one; right-click it, click
+  its `<` (or press Left) for the previous one;
+- a setting on a scale: drag its slider, or press Left and Right;
+- a key: click it (or press Enter), then press the key or mouse button the action should have. If
+  another action had it, the two swap. Esc keeps the old key.
+
+The line under the settings explains the one selected. **Defaults** puts the settings of the tab
+shown back as they were at first. Changes apply right away and are saved in `settings.json`, next
 to the save file.
 
-| Setting | Values |
-|---|---|
-| Resolution | 320x180, 384x216, 480x270, 640x360, 800x450, 960x540, 1280x720 (default), 1600x900, 1920x1080, 2560x1440 |
-| Interface size | Auto (default), or 1x up to the largest that leaves the menus room (the screen's height / 180) |
-| 3D resolution | Auto (default), 100%, 75%, 50% of the resolution, in width and in height |
-| Frame rate | 30, 60 (default), 75, 120, 144, 165, 240 FPS |
-| Render distance | 32, 64, 128, 256 (default), 512 chunks of 16 blocks; the distant terrain goes on beyond |
-| LOD quality | low (default), medium, high, ultra: the detail of the distant terrain — grid width from 127 to 511 columns, 6 to 8 levels, finest column 1 or 2 blocks |
-| Graphics | fancy (default): shadows and anti-aliasing; fast: without them, for slower graphics cards |
-| Music | on / off |
-| Texture pack | Default (the game's own textures), then every texture pack found (see below) |
+| Tab | Setting | Values |
+|---|---|---|
+| Video | Resolution | 320x180, 384x216, 480x270, 640x360, 800x450, 960x540, 1280x720 (default), 1600x900, 1920x1080, 2560x1440 |
+| | Interface size | Auto (default), or 1x up to the largest that leaves the menus room (the screen's height / 180) |
+| | Frame rate | 30, 60 (default), 75, 120, 144, 165, 240 FPS |
+| | Field of view | 50 to 110 degrees from the top of the screen to the bottom (default 70) |
+| | 3D resolution | Auto (default), 100%, 75%, 50% of the resolution, in width and in height |
+| | Render distance | 32, 64, 128, 256 (default), 512 chunks of 16 blocks; the distant terrain goes on beyond |
+| | LOD quality | low (default), medium, high, ultra: the detail of the distant terrain — grid width from 127 to 511 columns, 6 to 8 levels, finest column 1 or 2 blocks |
+| | Graphics | fancy (default): shadows and anti-aliasing; fast: without them, for slower graphics cards |
+| | Texture pack | Default (the game's own textures), then every texture pack found (see below) |
+| Controls | Mouse speed | 10% to 300% (default 100%) |
+| | Invert mouse | off (default); on: pushing the mouse forward looks down |
+| | Arrow keys speed | 30 to 240 degrees per second (default 120), for looking around with the arrow keys |
+| Keys | one line per action | any key or mouse button, except those the second table of Controls keeps |
+| Sound | Music | off to 100% (default 50%) |
+| | Sound effects | off to 100% (default) |
+| Game | Autosave | every 1, 2 (default), 5 or 10 minutes, or off |
+| | Day length | 10, 20 (default), 40 or 60 minutes for a day and its night |
+| | Controls help | at the start (default): the list of keys shows for the first seconds of a game; hidden |
+| | Crosshair | cross (default), dot, none |
 
 A higher resolution makes the 3D view sharper. With the interface size on Auto, the HUD and menus
 grow with it (each of their pixels covers 2 to 5 pixels of the screen above 960x540), so they keep
@@ -168,8 +197,11 @@ pyxel.screen  The frame is copied into Pyxel's screen, then Pyxel draws the HUD 
 - `blocks.py`: block types, their properties (solid, see-through...) and the textures, generated by
   code into one 256x256 "atlas" (16x16 tiles of 16x16 pixels)
 - `player.py`: walking, jumping, swimming, flying, and collisions with blocks
+- `controls.py`: the actions of the game, the key or mouse button each one has, and the names of
+  the keys in the menus and in `settings.json`
 - `ui.py`: draws the HUD and menus scaled up at high resolutions, and their parts: panels, buttons,
-  setting rows, progress bars, tooltips
+  tabs, setting rows, sliders, key caps, slots, progress bars, tooltips. Its 16 colors (dark
+  stone, warm white, amber for what is chosen) are the first 16 of the palette
 - `autoscale.py`: picks the 3D view's render scale from the time frames take (3D resolution: Auto)
 - `main.py`: the Pyxel app: screens, input, breaking and placing, day/night, saving, sound and HUD
 
