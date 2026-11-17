@@ -9,9 +9,9 @@ from functools import lru_cache
 
 import numpy as np
 
-import blocks as B
-from blocks import (AIR, DOWN, EAST, FACING_VECTORS, LEVER, NORTH, OPAQUE, PISTON, PISTON_HEAD, REDSTONE_TORCH,
-                    REDSTONE_WIRE, REPEATER, SOUTH, STICKY_PISTON, STONE_BUTTON, STONE_PRESSURE_PLATE, UP, WEST)
+from pycraft import blocks as B
+from pycraft.blocks import (AIR, DOWN, EAST, FACING_VECTORS, LEVER, NORTH, OPAQUE, PISTON, PISTON_HEAD, REDSTONE_TORCH,
+                            REDSTONE_WIRE, REPEATER, SOUTH, STICKY_PISTON, STONE_BUTTON, STONE_PRESSURE_PLATE, UP, WEST)
 
 # Face order everywhere: +x, -x, +y, -y, +z, -z (builder.FACES); their corners, in the same order
 # as the cubes' faces (the top ones first, so the texture stands upright)

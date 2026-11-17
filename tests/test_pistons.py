@@ -1,6 +1,6 @@
-import redstone
-from blocks import (AIR, BEDROCK, DIRT, EAST, LEVER, OBSIDIAN, PISTON, PISTON_HEAD, POPPY, STICKY_PISTON, STONE, TNT,
-                    UP, WEST)
+from pycraft import redstone
+from pycraft.blocks import (AIR, BEDROCK, DIRT, EAST, LEVER, OBSIDIAN, PISTON, PISTON_HEAD, POPPY, STICKY_PISTON, STONE, TNT,
+                            UP, WEST)
 from tests.test_redstone import Bench, Y
 
 

@@ -1,6 +1,6 @@
 import pyxel
 
-from controls import ACTIONS, DEFAULTS, KEYS, NO_KEY, Controls
+from pycraft.controls import ACTIONS, DEFAULTS, KEYS, NO_KEY, Controls
 
 
 def test_defaults():

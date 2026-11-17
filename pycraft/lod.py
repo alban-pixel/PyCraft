@@ -23,12 +23,12 @@ import traceback
 
 import numpy as np
 
-import blocks as B
-import terrain as T
-from blocks import ACACIA_LEAVES, ALL_LEAVES, BIRCH_LEAVES, ICE, JUNGLE_LEAVES, LEAVES, SPRUCE_LEAVES
-from builder import TINT, WATER_SURFACE
-from terrain import CHUNK
-from world import World
+from pycraft import blocks as B
+from pycraft import terrain as T
+from pycraft.blocks import ACACIA_LEAVES, ALL_LEAVES, BIRCH_LEAVES, ICE, JUNGLE_LEAVES, LEAVES, SPRUCE_LEAVES
+from pycraft.builder import TINT, WATER_SURFACE
+from pycraft.terrain import CHUNK
+from pycraft.world import World
 
 LOD_SUB = 2  # directly sampled cells: sub-samples per side of a cell's footprint, aggregated together
 LOD_DIRTY_PER_JOB = 256  # cells sampled again per job at most, for a block the player changed under them

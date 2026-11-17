@@ -1,8 +1,8 @@
 import numpy as np
 
-from blocks import STONE
-from builder import mesh_section
-from world import World
+from pycraft.blocks import STONE
+from pycraft.builder import mesh_section
+from pycraft.world import World
 
 Y = 3000  # high in the air: nothing else in the section
 

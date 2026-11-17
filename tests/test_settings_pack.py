@@ -1,5 +1,5 @@
-from main import DEFAULT_SETTINGS, fit_text, next_pack, parse_settings
-from packs import PackInfo
+from pycraft.app import DEFAULT_SETTINGS, fit_text, next_pack, parse_settings
+from pycraft.packs import PackInfo
 
 A = PackInfo("A", "/packs/a", "", "1.8")
 B = PackInfo("B", "/packs/b.zip", "", "1.13")

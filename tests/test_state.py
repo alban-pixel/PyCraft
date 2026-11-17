@@ -1,8 +1,8 @@
 import numpy as np
 
-from blocks import FACING_VECTORS, PISTON, STONE
-from terrain import CHUNK
-from world import SAVE_VERSION, World
+from pycraft.blocks import FACING_VECTORS, PISTON, STONE
+from pycraft.terrain import CHUNK
+from pycraft.world import SAVE_VERSION, World
 
 SEED = 1234
 

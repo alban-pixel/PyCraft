@@ -5,11 +5,11 @@ import zipfile
 
 import numpy as np
 
-import blocks as B
-from blocks import TINT_ALPHA, build_tiles, tiles_to_atlas
-from main import icon_palette, load_tiles
-from packs import find_packs, load_pack
-from renderer import split_tiles
+from pycraft import blocks as B
+from pycraft.blocks import TINT_ALPHA, build_tiles, tiles_to_atlas
+from pycraft.app import icon_palette, load_tiles
+from pycraft.packs import find_packs, load_pack
+from pycraft.renderer import split_tiles
 from tests.packfactory import make_pack, png, solid
 
 
@@ -97,7 +97,7 @@ def test_tint_mask_holes_take_the_mean():
 
 
 def test_load_tiles_any_error_falls_back(tmp_path, monkeypatch):
-    import packs
+    from pycraft import packs
     make_pack(str(tmp_path), "P", "1.8", {"stone": solid((1, 2, 3))})
     found = find_packs([str(tmp_path)], [])
 

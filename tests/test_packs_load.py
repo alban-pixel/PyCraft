@@ -3,9 +3,9 @@ import os
 import numpy as np
 import pytest
 
-import blocks as B
-from blocks import TINT_ALPHA, build_tiles, resize_tile
-from packs import TILE_FILES, PackError, find_packs, load_pack
+from pycraft import blocks as B
+from pycraft.blocks import TINT_ALPHA, build_tiles, resize_tile
+from pycraft.packs import TILE_FILES, PackError, find_packs, load_pack
 from tests.packfactory import make_pack, solid
 
 JAR_18 = os.path.expanduser("~/Library/Application Support/minecraft/versions/1.8/1.8.jar")

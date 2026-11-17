@@ -2,8 +2,8 @@ import json
 import os
 import zipfile
 
-import packs
-from packs import PackInfo, clean_name, find_packs, open_pack
+from pycraft import packs
+from pycraft.packs import PackInfo, clean_name, find_packs, open_pack
 from tests.packfactory import make_pack, png, solid
 
 

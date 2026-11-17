@@ -1,6 +1,6 @@
-from blocks import AIR, DIRT, STONE
-from sim import MAX_UPDATES, TICK, Simulation
-from world import World
+from pycraft.blocks import AIR, DIRT, STONE
+from pycraft.sim import MAX_UPDATES, TICK, Simulation
+from pycraft.world import World
 
 Y = 3000
 
