@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pycraft"
+version = "0.1.0"
+description = "A Minecraft-like game: OpenGL draws the world, Pyxel runs the window, the menus and the sound"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "pyxel>=2.9",
+    "numpy>=2.0",
+    "moderngl>=5.8",
+    "Pillow>=10",  # reads texture packs (the game runs without it, on its own textures)
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools]
+packages = ["pycraft"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

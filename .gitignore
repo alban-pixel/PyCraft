@@ -6,6 +6,8 @@ venv/
 __pycache__/
 *.py[cod]
 *.egg-info/
+build/
+.pytest_cache/
 
 # Pyxel
 *.pyxel-checkpoint
@@ -20,4 +22,6 @@ __pycache__/
 # Outils agents (hors code du projet)
 .agents/
 skills-lock.json
-.venv/
+
+# What the checks in tools/ write
+tools/out/

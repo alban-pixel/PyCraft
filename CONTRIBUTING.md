@@ -19,10 +19,9 @@ the work from drifting apart on long-lived branches.
 ## Before a pull request
 
 ```bash
-cd pycraft-gpu
-python -m pip install -r requirements-dev.txt
-python -m pytest tests
-python main.py
+python -m pip install -e ".[dev]"
+python -m pytest
+python -m pycraft
 ```
 
 The tests must pass, and the game must start and play: walk, fly, break and place a block, open
