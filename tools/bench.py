@@ -36,7 +36,8 @@ if __name__ == "__main__":
     crashed = False
     import random
     random.seed(7)
-    from pycraft.app import App, parse_settings
+    from pycraft.app import App
+    from pycraft.settings import parse_settings
     from pycraft.world import World
     log = open(os.path.join(OUT, "bench%s.txt" % TAG), "w")
 

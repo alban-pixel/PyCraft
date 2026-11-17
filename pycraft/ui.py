@@ -11,6 +11,7 @@ import pyxel
 TEXT_KEY = 255  # background of the image text is written into: left out when it is copied
 AUTO_HEIGHT = 270  # "Auto" interface size: about 270 to 450 UI pixels high, whatever the resolution
 MIN_HEIGHT = 180  # the menus need at least this many UI pixels in height
+BASE_WIDTH, BASE_HEIGHT = 320, 180  # the menus and the mouse speed are designed for this size
 CHAR_W, CHAR_H = 4, 6  # Pyxel's font, spacing included (letters are 3 x 5)
 CURSOR = [  # mouse pointer: 1 outline, 2 inside
     "1.......",

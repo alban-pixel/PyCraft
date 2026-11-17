@@ -82,9 +82,14 @@ if __name__ == "__main__":
         for name in os.listdir(DATA):
             if os.path.isfile(os.path.join(DATA, name)):
                 os.remove(os.path.join(DATA, name))
-        from pycraft import app as main, controls, ui
+        import sys as _sys
+        from pycraft import app as main, blocks, controls, play, render, ui
+        from pycraft import settings as game_settings
+        from pycraft.screens import settings as settings_screen
         fake = FakePyxel(real_pyxel)
-        main.pyxel = ui.pyxel = controls.pyxel = fake
+        for _module in list(_sys.modules.values()):  # every part of the game reads the stand-in
+            if getattr(_module, '__name__', '').startswith('pycraft') and hasattr(_module, 'pyxel'):
+                _module.pyxel = fake
         main.App.sfx = lambda self, sound: None
         K = real_pyxel
         app = main.App()
@@ -219,13 +224,13 @@ if __name__ == "__main__":
 
         phase("next LOD quality, and back")
         for step in (1, -1):
-            app.cycle("lod_quality", main.LOD_QUALITY_NAMES, step)
+            app.cycle("lod_quality", render.LOD_QUALITY_NAMES, step)
             t, ok = until(complete)
             say(f"  {app.settings['lod_quality']}: complete after {t:.1f} s ({ok})")
 
         phase("next render distance, and back")
         for step in (1, -1):
-            app.cycle("render_distance", main.RENDER_DISTANCES, step)
+            app.cycle("render_distance", game_settings.RENDER_DISTANCES, step)
             hold(2)
             say(f"  {app.settings['render_distance']}: chunks {len(r.chunks.meshes)}")
 
