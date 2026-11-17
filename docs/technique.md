@@ -219,7 +219,7 @@ couvert dans la seconde, à toutes les qualités.
 
 - Les tuiles sont un tableau `(256, N, N, 4)` : 256 numéros de tuile (le numéro est un octet
   dans le vertex), N pixels par côté. Leur alpha côté CPU vaut 0 (trou), 200 (`TINT_ALPHA` :
-  texel teint par le biome) ou 255. Les textures générées (`blocks.build_tiles`) font 16 px.
+  texel teint par le biome) ou 255. Les textures générées (`tiles.build_tiles`) font 16 px.
 - Sur la carte, elles deviennent **deux tableaux de textures** (`texture_array`, une couche par
   tuile) mipmappés par le GPU : les couleurs (alpha 0/255, et les trous remplis par la couleur
   moyenne de la tuile pour éviter les halos, sauf pour les feuilles dont les trous sont dessinés)

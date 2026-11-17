@@ -36,7 +36,8 @@ pycraft/          le jeu (python -m pycraft)
   builder.py      processus workers : génération + maillage des chunks
   lod.py          processus d'échantillonnage du terrain lointain
   render/         OpenGL : blocs, terrain lointain, ombres, ciel, palette Pyxel, shaders
-  blocks.py       types de blocs, textures générées
+  blocks.py       types de blocs, leurs propriétés, la tuile de chaque face
+  tiles.py        textures générées par le code
   shapes.py       formes des blocs qui ne sont pas des cubes
   packs.py        packs de textures au format Minecraft
   sim.py          horloge des machines (20 ticks par seconde)

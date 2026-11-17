@@ -5,7 +5,8 @@ import pytest
 
 from pycraft import blocks
 from pycraft import render as renderer
-from pycraft.blocks import TINT_ALPHA, build_tiles, resize_tile, tiles_to_atlas
+from pycraft.blocks import TINT_ALPHA
+from pycraft.tiles import block_colors, build_atlas, build_tiles, resize_tile, tiles_to_atlas
 
 REFERENCE = os.path.join(os.path.dirname(__file__), "data", "default_reference.npz")
 
@@ -33,7 +34,7 @@ def test_tiles_match_atlas(tiles, reference):
     # The tiles that existed when the reference was made are unchanged (newer tiles come after)
     old = blocks.T_LEVER
     assert np.array_equal(_as_tiles(tiles_to_atlas(tiles))[:old], _as_tiles(reference["atlas"])[:old])
-    assert np.array_equal(_as_tiles(blocks.build_atlas())[:old], _as_tiles(reference["atlas"])[:old])
+    assert np.array_equal(_as_tiles(build_atlas())[:old], _as_tiles(reference["atlas"])[:old])
 
 
 def test_resize_roundtrip(tiles):
@@ -59,11 +60,11 @@ def test_resize_odd_sizes():
 
 def test_block_colors_unchanged(tiles, reference):
     n = len(reference["block_colors"])  # (the blocks and tiles added since come after)
-    assert np.allclose(blocks.block_colors(tiles)[:n], reference["block_colors"])
+    assert np.allclose(block_colors(tiles)[:n], reference["block_colors"])
     assert np.allclose(renderer.tile_averages(tiles)[:blocks.T_LEVER], reference["tile_averages"][:blocks.T_LEVER])
 
 
 def test_block_colors_size_free(tiles):
     big = np.stack([resize_tile(t, 64) for t in tiles])
-    assert np.allclose(blocks.block_colors(big), blocks.block_colors(tiles))
+    assert np.allclose(block_colors(big), block_colors(tiles))
     assert np.allclose(renderer.tile_averages(big), renderer.tile_averages(tiles))
