@@ -40,17 +40,19 @@ Ce que le jeu est aujourd'hui, et ce que ça implique pour la suite :
 
 ## Le socle commun
 
-Les chantiers 2 à 5 ont tous besoin des mêmes fondations. Elles sont posées une
-seule fois, avec le chantier 1, pour ne changer le format des sauvegardes
-qu'une fois :
+> **Fait le 16 novembre 2026 avec la redstone**, sauf le registre d'objets, reporté
+> à la survie : voir
+> [`superpowers/specs/2026-11-16-socle-redstone-design.md`](superpowers/specs/2026-11-16-socle-redstone-design.md).
+> Choix retenu : l'octet de bloc, plus un tableau d'état `uint8` par section, là où
+> il sert. Sauvegardes en v3, les v2 se chargent toujours.
+
+Les chantiers 2 à 5 ont tous besoin des mêmes fondations :
 
 - un **état par bloc** (puissance, orientation, niveau de liquide, ouvert/fermé) ;
 - des **formes non cubiques** dans le maillage ;
 - une **horloge de ticks** à pas fixe, indépendante de la fréquence d'images ;
 - un **registre d'objets** distinct des blocs (outils, lingots, nourriture).
 
-Reste à décider : élargir les blocs à 16 bits, ou garder l'octet et ajouter un
-tableau d'état à côté.
 
 ## Les chantiers
 
@@ -62,7 +64,7 @@ d'être codé.
 | 1 | **Packs de textures** | Lecture d'un pack au format Minecraft (dossier ou zip) déposé par le joueur, table de correspondance tuile → fichier, textures générées gardées comme pack par défaut, choix du pack dans les réglages. Fournit aussi les icônes d'objets. |
 | 2 | **Survie** | Inventaire avec piles, temps de casse, drops, outils et durabilité, craft, four, vie, faim, dégâts de chute, mort et réapparition. L'interface est refaite ici, avec les nouveaux écrans. |
 | 3 | **Liquides** | Eau et lave qui coulent, sources et niveaux, interaction eau/lave. |
-| 4 | **Redstone** | Poudre, torche, levier, bouton, plaque de pression, répéteur, lampe, pistons, TNT. |
+| 4 | **Redstone** — *fait* | Poudre, torche, levier, bouton, plaque de pression, répéteur, lampe, pistons, TNT. |
 | 5 | **Mobs et lumière** | Lumière de bloc (grottes sombres, torches qui éclairent), animaux, monstres qui apparaissent dans le noir, combat. |
 | 6 | **Le reste** | Agriculture, portes, escaliers, dalles, lits, coffres. |
 
