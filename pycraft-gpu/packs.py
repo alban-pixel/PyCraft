@@ -193,6 +193,10 @@ def find_packs(dirs, jars):
         info = _inspect(path, name)
         if info is not None:
             found.append(info)
+    # A folder and a .zip of the same pack: the zip says so
+    names = [p.name for p in found]
+    found = [PackInfo(p.name + " (zip)", p.path, p.description, p.layout)
+             if names.count(p.name) > 1 and p.path.lower().endswith(".zip") else p for p in found]
     return sorted(found, key=lambda p: (p.name.lower(), p.path))
 
 

@@ -73,3 +73,10 @@ def test_clean_name():
 def test_minecraft_dir_exists_or_none():
     d = packs.minecraft_dir()
     assert d is None or os.path.isdir(d)
+
+
+def test_same_name_folder_and_zip(tmp_path):
+    root = str(tmp_path)
+    make_pack(root, "Same", "1.8", {"stone": solid((1, 2, 3))})
+    make_pack(root, "Same", "1.8", {"stone": solid((1, 2, 3))}, zip=True)
+    assert sorted(p.name for p in find_packs([root], [])) == ["Same", "Same (zip)"]
