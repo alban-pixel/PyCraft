@@ -1096,6 +1096,8 @@ def block_colors(tiles):
     for block in range(1, NUM_BLOCKS):
         cell = tiles[int(BLOCK_TILES[block][2])].astype(float)
         seen = cell[..., 3] > 0
+        if not seen.any():
+            seen = np.ones_like(seen)  # nothing to see (a pack's clear glass): all its texels
         rgb = cell[..., :3][seen] / 255
         if (cell[..., 3][seen] == TINT_ALPHA).all():
             rgb = rgb / 0.8  # grey texels, about 204/255

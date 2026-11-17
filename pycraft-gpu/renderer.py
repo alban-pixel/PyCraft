@@ -973,9 +973,12 @@ def split_tiles(tiles):
     mask = np.where(alpha == TINT_ALPHA, 255, 0).astype(np.uint8)
     for t in range(len(tiles)):
         hole = alpha[t] == 0
-        if t in LEAF_TILES or not hole.any() or hole.all():
+        if not hole.any() or hole.all():
             continue
-        rgba[t][hole, :3] = np.rint(tiles[t][~hole][:, :3].astype(np.float64).mean(axis=0))
+        # The holes take the share of tinted texels around them, so the mipmaps keep the tint whole
+        mask[t][hole] = np.rint(mask[t][~hole].astype(np.float64).mean())
+        if t not in LEAF_TILES:
+            rgba[t][hole, :3] = np.rint(tiles[t][~hole][:, :3].astype(np.float64).mean(axis=0))
     return rgba, mask
 
 
