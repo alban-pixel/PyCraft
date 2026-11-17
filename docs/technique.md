@@ -23,7 +23,8 @@ terrain.py  génération procédurale du monde (bruit, biomes, grottes, arbres)
 world.py    sections 16×16×16 créées à la demande, accès blocs, sauvegarde
 builder.py  processus workers : génération + recherche des faces visibles
 lod.py      processus d'échantillonnage du terrain lointain (branche `claude`)
-renderer.py OpenGL : maillages de blocs, clipmap lointain, ombres, ciel, palette
+render/     OpenGL : maillages de blocs (chunks), terrain lointain (far), ombres (shadows),
+            palette, shaders GLSL (shaders), et le Renderer qui les assemble
 controls.py actions du jeu et touche de chacune (modifiables dans les réglages)
 ui.py       HUD et menus : panneaux, boutons, onglets, curseurs, thème de 16 couleurs
 app.py      application Pyxel : écrans, entrées, casser/poser, jour/nuit, son (`python -m pycraft`)

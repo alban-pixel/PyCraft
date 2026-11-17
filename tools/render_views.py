@@ -102,7 +102,7 @@ def shot(name):
 if __name__ == "__main__":
     import random
     random.seed(7)
-    from pycraft import renderer as R
+    from pycraft.render import shaders as R
     patch_shaders(R)
     from pycraft.app import App, parse_settings
     from pycraft.world import World

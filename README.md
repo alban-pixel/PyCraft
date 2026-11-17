@@ -197,9 +197,10 @@ builder.py   Worker processes that generate the terrain and find every visible b
 lod.py       One more process that works out what the terrain far away looks like, at every
    |         level of detail
    |
-renderer.py  OpenGL draws the shadow maps, then the sky, the blocks near the camera, the distant
+render/      OpenGL draws the shadow maps, then the sky, the blocks near the camera, the distant
    |         terrain behind them and the clouds, in full color. A last shader turns the frame
-   |         into Pyxel's palette (with dithering), one byte per pixel.
+   |         into Pyxel's palette (with dithering), one byte per pixel. Its parts: chunks (the
+   |         blocks), far (the distant terrain), shadows, palette, shaders (the GLSL), gl, textures.
    v
 pyxel.screen  The frame is copied into Pyxel's screen, then Pyxel draws the HUD and menus on top.
 ```
