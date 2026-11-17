@@ -37,6 +37,8 @@ TINT_ALPHA = 200  # texels with this alpha take the biome color (grass, leaves, 
 # Redstone: blocks with a state and a shape of their own (see shapes.py, redstone.py)
 (LEVER, STONE_BUTTON, STONE_PRESSURE_PLATE, REDSTONE_WIRE, REDSTONE_TORCH, REPEATER, REDSTONE_LAMP_OFF,
  PISTON_HEAD) = range(JACK_O_LANTERN_NORTH + 1, JACK_O_LANTERN_NORTH + 9)
+# The furnace while it burns, with its three turned versions (see FACING)
+FURNACE_ON, FURNACE_ON_WEST, FURNACE_ON_SOUTH, FURNACE_ON_NORTH = range(PISTON_HEAD + 1, PISTON_HEAD + 5)
 BLOCK_NAMES = ["Air", "Grass", "Dirt", "Stone", "Cobblestone", "Oak planks", "Oak log", "Oak leaves", "Sand", "Brick",
                "Glass", "Water", "Coal ore", "Iron ore", "Bedrock", "Snow", "Ice", "Gravel", "Sandstone",
                "Red sand", "Terracotta", "Orange terracotta", "White terracotta", "Podzol", "Spruce log",
@@ -72,7 +74,7 @@ BLOCK_NAMES = ["Air", "Grass", "Dirt", "Stone", "Cobblestone", "Oak planks", "Oa
                "Furnace", "Dispenser", "Dispenser", "Dispenser", "Dropper", "Dropper", "Dropper", "Jack o'lantern",
                "Jack o'lantern", "Jack o'lantern",
                "Lever", "Stone button", "Pressure plate", "Redstone dust", "Redstone torch", "Repeater",
-               "Redstone lamp", "Piston head"]
+               "Redstone lamp", "Piston head", "Furnace", "Furnace", "Furnace", "Furnace"]
 NUM_BLOCKS = len(BLOCK_NAMES)
 
 # Directions a block with a state can face, in the order its state numbers them: 0 is up, so a
@@ -87,11 +89,17 @@ FACING = {block: (block, west, south, north) for block, west, south, north in [
     (FURNACE, FURNACE_WEST, FURNACE_SOUTH, FURNACE_NORTH),
     (DISPENSER, DISPENSER_WEST, DISPENSER_SOUTH, DISPENSER_NORTH),
     (DROPPER, DROPPER_WEST, DROPPER_SOUTH, DROPPER_NORTH),
-    (JACK_O_LANTERN, JACK_O_LANTERN_WEST, JACK_O_LANTERN_SOUTH, JACK_O_LANTERN_NORTH)]}
+    (JACK_O_LANTERN, JACK_O_LANTERN_WEST, JACK_O_LANTERN_SOUTH, JACK_O_LANTERN_NORTH),
+    (FURNACE_ON, FURNACE_ON_WEST, FURNACE_ON_SOUTH, FURNACE_ON_NORTH)]}
 TURNED = {b for versions in FACING.values() for b in versions[1:]}
 
+# A furnace and its lit twin, version for version
+LIT_FURNACE = dict(zip(FACING[FURNACE], FACING[FURNACE_ON]))
+UNLIT_FURNACE = {lit: unlit for unlit, lit in LIT_FURNACE.items()}
+
 # Blocks the player can pick in the inventory (E)
-PLACEABLE = [b for b in range(1, NUM_BLOCKS) if b not in (BEDROCK, PISTON_HEAD, REDSTONE_LAMP) and b not in TURNED]
+PLACEABLE = [b for b in range(1, NUM_BLOCKS)
+             if b not in (BEDROCK, PISTON_HEAD, REDSTONE_LAMP, FURNACE_ON) and b not in TURNED]
 DEFAULT_HOTBAR = [GRASS, DIRT, STONE, COBBLESTONE, PLANKS, LOG, LEAVES, GLASS, BRICK]
 
 
@@ -164,7 +172,7 @@ GROWS_ON[DEAD_BUSH] = _flags(SAND, RED_SAND)
  T_COMMAND_BLOCK, T_GLOWSTONE, T_SEA_LANTERN, T_REDSTONE_LAMP, T_JACK_O_LANTERN,
  T_SPAWNER) = range(T_OAK_SAPLING + 1, T_OAK_SAPLING + 84)
 (T_LEVER, T_REDSTONE_DUST, T_REDSTONE_TORCH_ON, T_REDSTONE_TORCH_OFF, T_REPEATER_OFF, T_REPEATER_ON,
- T_REDSTONE_LAMP_OFF, T_PISTON_INNER) = range(T_SPAWNER + 1, T_SPAWNER + 9)
+ T_REDSTONE_LAMP_OFF, T_PISTON_INNER, T_FURNACE_FRONT_ON) = range(T_SPAWNER + 1, T_SPAWNER + 10)
 
 
 def _faces(side, top=None, bottom=None):
@@ -198,6 +206,7 @@ FURNACE_FACES = _fronts(T_FURNACE_FRONT, T_FURNACE_SIDE, T_FURNACE_TOP)
 DISPENSER_FACES = _fronts(T_DISPENSER_FRONT, T_FURNACE_SIDE, T_FURNACE_TOP)
 DROPPER_FACES = _fronts(T_DROPPER_FRONT, T_FURNACE_SIDE, T_FURNACE_TOP)
 JACK_O_LANTERN_FACES = _fronts(T_JACK_O_LANTERN, T_PUMPKIN_SIDE, T_PUMPKIN_TOP)
+FURNACE_ON_FACES = _fronts(T_FURNACE_FRONT_ON, T_FURNACE_SIDE, T_FURNACE_TOP)
 
 # BLOCK_TILES[block][face] -> atlas tile number
 BLOCK_TILES = np.array([
@@ -398,6 +407,10 @@ BLOCK_TILES = np.array([
     _faces(T_REPEATER_OFF),
     _faces(T_REDSTONE_LAMP_OFF),
     _faces(T_PISTON_SIDE, T_PISTON_TOP),
+    FURNACE_ON_FACES[0],
+    FURNACE_ON_FACES[1],
+    FURNACE_ON_FACES[2],
+    FURNACE_ON_FACES[3],
 ], dtype=np.int32)
 
 
@@ -1131,6 +1144,14 @@ def build_tiles(seed=7):
     inner = _noisy(rrng, (116, 116, 116), 0.1)  # inside the piston, once its head is out
     inner[(np.abs(xs - 7.5) < 2) & (np.abs(ys - 7.5) < 2)] = (60, 54, 48)
     tiles[T_PISTON_INNER] = inner
+    # The furnace's front with a fire in its door, drawn with its own random numbers as well
+    frng = np.random.default_rng(seed + 202)
+    lit_front = tiles[T_FURNACE_FRONT].copy()
+    fire = _noisy(frng, (236, 110, 24), 0.12)
+    fire[3:, :] = _noisy(frng, (255, 176, 40), 0.1)[3:, :]  # the heart of the fire is yellower
+    lit_front[10:14, 5:11] = fire[:4, :6]
+    lit_front[13, 4:12] = (200, 70, 16)  # embers along the bottom
+    tiles[T_FURNACE_FRONT_ON] = lit_front
     face = tiles[T_PUMPKIN_SIDE].copy()  # a pumpkin with a carved face, lit from inside
     candle = (255, 208, 84)
     for x in (3, 10):  # the eyes...
