@@ -129,8 +129,9 @@ On a laptop with an AMD Ryzen AI 9 H 365 and its Radeon 880M graphics, at a rend
 chunks, medium LOD quality and 100% 3D resolution, a still view takes about 7 ms a frame at
 1280x720 with fast graphics and 9 with fancy (135 and 118 FPS), and 11 and 14 ms at 2560x1440 (88
 and 70 FPS). Flying fast, frames take about half as long again. (Measured without a window, with no
-limit on the frame rate.) At 2560x1440, the distant terrain alone takes about 2 ms of the graphics
-card's time a frame at low LOD quality, 3 at medium, 4 at high and 12 at ultra. If the game doesn't
+limit on the frame rate; these times vary by a few ms from one run to the next on this laptop.) At
+2560x1440, the distant terrain alone takes about 2 ms of the graphics card's time a frame at
+medium LOD quality and 5 at ultra. If the game doesn't
 keep up with the frame rate you chose, lower the LOD quality first, then the render distance or the
 resolution, or switch to fast graphics.
 
@@ -241,9 +242,19 @@ or the two finer cells'. A neighbor only counts with its tree crown where it dra
 walls stopped short on steep slopes and the sky showed between the columns, in stripes. Columns
 are drawn whole under the blocks that fade out at the render distance, so there is always ground
 behind a block that isn't drawn, and tree crowns rise over 48 blocks past that edge instead of
-standing there as a wall of leaves. Each level's grid is sent to the card as 8x8 tiles, and only
-the tiles that may be in view are sent, nearest first; a shadow map gets two sides of each column
-instead of four. Distant terrain fades into a blue haze. Its shader finds the
+standing there as a wall of leaves. Distant terrain fades into a blue haze.
+
+Most of the card's time for the distant terrain goes into the vertices of its columns, so as few
+as possible are sent. Each level's grid is cut into 16x16 tiles, and a tile is only drawn when the
+box from the foot of its lowest column to the top of its highest touches the view, and when a
+finer level doesn't draw all of its cells; the nearest tiles go first. Of a column's four sides
+only the two turned toward the camera are drawn. A shadow map gets the two turned away from the
+light: with the tops they stop the same light as all four. One thing could still show the back of
+a far column: the mouth of a cave. A cave's walls are only built near the player, and the distant
+terrain is a hollow shell, so the eye would go through the mountain and out to the sky. The
+columns around the blocks therefore get their two other sides as well, stretched down to the
+bottom of the world at the edge of the blocks: a wall under the ground, all around. The water is
+drawn tile by tile too, for the tiles that have some. Its shader finds the
 texture of each block's face in a small table kept as a texture: as a constant array in the
 shader, picked per pixel by block, the AMD Radeon 880M's driver copied it into every pixel's
 scratch memory, and the distant terrain took 73 ms of the card's time a frame at 2560x1440.
