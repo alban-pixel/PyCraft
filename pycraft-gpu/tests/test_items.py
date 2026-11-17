@@ -68,6 +68,21 @@ def test_furnace_lit_blocks():
     assert I.base_item(B.FURNACE_ON_WEST) == B.FURNACE
 
 
-def test_every_block_has_hardness():
-    for b in range(1, B.NUM_BLOCKS):
-        assert isinstance(I.hardness(b), float)
+def test_hardness_groups_do_not_overlap():
+    seen = {}
+    for value, group in I._HARDNESS_GROUPS:
+        for b in group:
+            assert b not in seen, f"{B.BLOCK_NAMES[b]} is in the groups {seen[b]} and {value}"
+            seen[b] = value
+    assert all(I.hardness(b) == v for b, v in seen.items())
+
+
+def test_ungrouped_block_has_default_hardness():
+    grouped = {b for _, group in I._HARDNESS_GROUPS for b in group}
+    # every real block is in a group today, so test the default with an id no group holds
+    assert B.NUM_BLOCKS not in grouped
+    assert I.hardness(B.NUM_BLOCKS) == 0.5
+
+
+def test_name_of_empty_slot():
+    assert I.name(0) == ""
