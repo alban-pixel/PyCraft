@@ -1,11 +1,10 @@
-# The unit tests, on every push to main and every pull request, on the three systems the game runs
-# on. (The checks in tools/ need a graphics card: run them by hand, see tools/README.md.)
+# The unit tests, on every push to any branch, on the three systems the game runs on: a pull
+# request shows the result of its branch. (The checks in tools/ need a graphics card: run them by
+# hand, see tools/README.md.)
 name: Tests
 
 on:
   push:
-    branches: [main]
-  pull_request:
 
 jobs:
   tests:
