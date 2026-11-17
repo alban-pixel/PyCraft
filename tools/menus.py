@@ -342,6 +342,7 @@ if __name__ == "__main__":
         say("done")
     except BaseException:
         say(traceback.format_exc())
+        fails.append("the game crashed")  # (a crash is a failure, whatever came before)
     finally:
         for child in multiprocessing.active_children():
             child.terminate()

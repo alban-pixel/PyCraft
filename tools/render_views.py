@@ -100,6 +100,7 @@ def shot(name):
 
 
 if __name__ == "__main__":
+    crashed = False
     import random
     random.seed(7)
     from pycraft.render import shaders as R
@@ -185,8 +186,9 @@ if __name__ == "__main__":
     except Exception:
         import traceback
         say(traceback.format_exc())
+        crashed = True
     finally:
         for child in multiprocessing.active_children():
             child.terminate()
         log.close()
-        os._exit(0)
+        os._exit(1 if crashed else 0)
