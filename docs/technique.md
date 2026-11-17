@@ -188,6 +188,32 @@ couvert dans la seconde, à toutes les qualités.
   blocs au-dessus de la mer, dérivant avec le vent, dessinée deux fois (loin
   après le terrain lointain, près à la fin) et projetant leur ombre.
 
+## Textures et packs
+
+- Les tuiles sont un tableau `(256, N, N, 4)` : 256 numéros de tuile (le numéro est un octet
+  dans le vertex), N pixels par côté. Leur alpha côté CPU vaut 0 (trou), 200 (`TINT_ALPHA` :
+  texel teint par le biome) ou 255. Les textures générées (`blocks.build_tiles`) font 16 px.
+- Sur la carte, elles deviennent **deux tableaux de textures** (`texture_array`, une couche par
+  tuile) mipmappés par le GPU : les couleurs (alpha 0/255, et les trous remplis par la couleur
+  moyenne de la tuile pour éviter les halos, sauf pour les feuilles dont les trous sont dessinés)
+  et un **masque de teinte** R8. Le shader multiplie la couleur par `mix(1, teinte, masque)` :
+  juste à tous les niveaux de mipmap. La découpe (alpha < 0,5) lit toujours le niveau 0, pour
+  que les plantes ne s'effacent pas au loin. Filtrage : plus proche voisin de près, mipmaps
+  mélangés et anisotrope ×8 de loin. Comme chaque tuile a sa couche, rien ne bave d'une tuile
+  à l'autre.
+- Le terrain lointain lit les mêmes tableaux avec `textureGrad`, à partir des dérivées d'une
+  coordonnée de texture continue (la position monde projetée sur la face).
+- **Packs** (`packs.py`) : un dossier, un zip ou le `.jar` d'une version de Minecraft
+  installée ; format 1.8 (`textures/blocks/`) ou 1.13+ (`textures/block/`). Une table donne,
+  pour chaque tuile, les noms de fichier à essayer dans les deux formats. La taille N est la
+  plus fréquente du pack (puissance de 2, de 16 à 256) ; les textures grises de l'herbe, des
+  feuilles et de l'eau sont marquées teintes et ramenées à une luminosité moyenne de 204/255,
+  celle des textures générées ; la surcouche du côté de l'herbe est posée par-dessus.
+- Changer de pack (`Renderer.set_tiles`) remplace les textures et refait le terrain lointain
+  (moyennes de tuiles, couleurs envoyées au processus d'échantillonnage) ; les maillages des
+  blocs ne changent pas, ils ne contiennent que des numéros de tuile. Les icônes sont réduites
+  à 16 px et leurs 48 couleurs de palette recalculées (`Palette.set_fixed`).
+
 ## De la frame au pixel Pyxel
 
 1. La scène est rendue en **pleine couleur** (HDR-ish, éclairage par face :
