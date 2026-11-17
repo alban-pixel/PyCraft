@@ -141,9 +141,12 @@ def power_at(world, pos):
     return best
 
 
-def spread(sim, pos):
+def spread(sim, pos, dust_changed=False):
     """A source at pos changed: wake the blocks it may power and their neighbors (a lamp next to
-    the block a lever is fixed to)."""
+    the block a lever is fixed to). Anything but dust changing makes the dust solved this tick
+    worth solving again."""
+    if not dust_changed:
+        sim.memory.pop("wire_solved", None)
     for d in range(6):
         sim.notify(step(pos, d))
 
@@ -186,6 +189,10 @@ def update_wire(sim, x, y, z):
     """Work out again the power of the whole stretch of dust this one belongs to."""
     world = sim.world
     start = (x, y, z)
+    tick, solved = sim.memory.get("wire_solved", (None, set()))
+    if tick == sim.now and start in solved:
+        return  # its whole stretch was solved this tick, and no source changed since
+    sim.memory["wire_solves"] = sim.memory.get("wire_solves", 0) + 1
     network, todo = {start}, deque([start])
     while todo and len(network) < MAX_WIRES:
         p = todo.popleft()
@@ -205,12 +212,14 @@ def update_wire(sim, x, y, z):
             if n in power and power[n] < power[p] - 1:
                 power[n] = power[p] - 1
                 todo.append(n)
+    if tick != sim.now:
+        solved = set()
+    solved |= network
+    sim.memory["wire_solved"] = (sim.now, solved)
     for p, value in power.items():
         if world.get_state(*p) & 15 != value:
             sim.set_block(*p, REDSTONE_WIRE, value)
-            spread(sim, p)
-            for d in range(6):
-                sim.notify(step(p, d))
+            spread(sim, p, dust_changed=True)
 
 
 # --- Handlers -----------------------------------------------------------------------------------
@@ -345,8 +354,13 @@ def push(sim, x, y, z, facing, sticky):
         if _immovable(block, state) or len(line) == PUSH_LIMIT:
             return False
         line.append((p, block, state))
+    end = step(pos, facing, len(line) + 1)
+    if world.get(*end) != AIR:  # a plant or a redstone part crushed: what it powered goes dark
+        sim.set_block(*end, AIR)
+        spread(sim, end)
     for p, block, state in reversed(line):  # the farthest first, into the free cell after it
         sim.set_block(*step(p, facing), block, state)
+        spread(sim, step(p, facing))
     head = step(pos, facing)
     sim.set_block(*head, PISTON_HEAD, facing | (8 if sticky else 0))
     sim.set_block(x, y, z, world.get(x, y, z), world.get_state(x, y, z) | 8)
@@ -451,6 +465,8 @@ def explode(sim, x, y, z, radius=BLAST_RADIUS):
                 if block == B.TNT:
                     _lit(sim, p, 10 + (dx * 7 + dy * 13 + dz * 5) % 21)  # 10 to 30 ticks, never all at once
                     continue
+                if block in SOURCES or block in PISTONS:
+                    spread(sim, p)  # what it powered goes dark
                 sim.set_block(*p, AIR)
     sim.events.append(("explode", (x, y, z)))
 

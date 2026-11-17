@@ -113,6 +113,14 @@ CATEGORIES = [(tab, [b for b in PLACEABLE if tab == "All" or block_category(b) =
               for tab in ("All", "Nature", "Building", "Colors", "Plants", "Redstone", "Special")]
 
 
+def right_click(block, first_press):
+    """What a right click on this block does: "act" (flip a lever...), "place" a block against it,
+    or nothing. Held down, it repeats placing, but never flips a lever again or places on it."""
+    if block in INTERACTIVE:
+        return "act" if first_press else None
+    return "place"
+
+
 def _main_direction(v, horizontal=False):
     """The facing (blocks.FACING_VECTORS) a vector points along the most."""
     x, y, z = v
@@ -624,7 +632,8 @@ class App:
 
     def new_simulation(self, pending=None):
         """The clock of the world's machines (sim.py), for the current world."""
-        self.sim = Simulation(self.world, self.renderer.block_changed)
+        self.changes = []  # blocks the machines changed this frame: meshed together, once per section
+        self.sim = Simulation(self.world, lambda x, y, z: self.changes.append((x, y, z)))
         redstone.install(self.sim)
         self.sim.every_tick.append(self.feel_plates)
         if pending is not None:
@@ -1027,13 +1036,15 @@ class App:
                 if PLANT[self.world.get(x, y + 1, z)]:  # the plant on it goes too
                     self.sim.set_block(x, y + 1, z, 0)
                 self.sfx(SND_BREAK)
-        elif self.target and pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT) and self.world.get(*self.target[0]) in INTERACTIVE:
+        elif self.target and pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT, hold=hold, repeat=repeat) and right_click(
+                self.world.get(*self.target[0]), pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT)) == "act":
             x, y, z = self.target[0]
             act = {LEVER: redstone.toggle_lever, STONE_BUTTON: redstone.press_button,
                    REPEATER: redstone.cycle_repeater}[self.world.get(x, y, z)]
             act(self.sim, x, y, z)
             self.sfx(SND_CLICK)
-        elif self.target and pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT, hold=hold, repeat=repeat):
+        elif self.target and pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT, hold=hold, repeat=repeat) and right_click(
+                self.world.get(*self.target[0]), pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT)) == "place":
             # Aiming at a plant puts the block in its place, like on the ground under it
             x, y, z = self.target[0] if PLANT[self.world.get(*self.target[0])] else self.target[1]
             block = turned(self.hotbar[self.selected], self.player.forward())  # a front faces the player
@@ -1143,6 +1154,9 @@ class App:
     # --- Draw ----------------------------------------------------------------------------------
 
     def draw(self):
+        if self.changes:  # what the machines and the player changed this frame: meshed once per section
+            changes, self.changes = self.changes, []
+            self.renderer.blocks_changed(list(dict.fromkeys(changes)))
         now = time.perf_counter()
         self.fps = self.fps * 0.9 + 0.1 / max(now - self.last_draw, 1e-6)
         self.last_draw = now
