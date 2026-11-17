@@ -40,3 +40,15 @@ def test_upload_headless(ctx):
     big = np.stack([B.resize_tile(t, 64) for t in build_tiles()])
     atlas, _ = make_tile_textures(ctx, big)
     assert atlas.size == (64, 64, 256)
+
+
+def test_palette_set_fixed(ctx):
+    from renderer import FIXED_COLORS, Palette
+    palette = Palette(ctx, np.zeros((FIXED_COLORS, 3)))  # (0-255 RGB, as the Renderer gives it)
+    palette.apply()
+    version = palette.version
+    palette.set_fixed([0xFF0000] * (FIXED_COLORS - 16))
+    palette.apply()
+    assert palette.colors[16] == 0xFF0000 and palette.colors[FIXED_COLORS - 1] == 0xFF0000
+    assert palette.colors[15] == 0x000000  # Pyxel's own 16 stay
+    assert palette.version > version
