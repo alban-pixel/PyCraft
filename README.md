@@ -8,9 +8,15 @@ effects and music.
 
 ## Run it
 
+Double-click `PyCraft.command` (macOS) or `PyCraft.bat` (Windows). On the first launch it makes a
+virtual environment in `.venv` and installs the game's dependencies (again whenever `pyproject.toml`
+changes), then the game starts.
+
+Or by hand, from the repository's root:
+
 ```bash
-pip install -r requirements.txt
-python main.py
+python -m pip install -e .
+python -m pycraft
 ```
 
 Desktop only (Windows, Mac, Linux). It does not work in Pyxel's web version, because `moderngl` needs
@@ -379,10 +385,10 @@ Pick it in **Settings → Texture pack**: it applies right away, without reloadi
   drawn with the game's own texture. Animated textures show their first frame.
 - A pack that can't be read is reported under the settings, and the game goes back to Default.
 
-Reading packs needs Pillow (`pip install -r requirements.txt`; `PyCraft.command` installs it).
+Reading packs needs Pillow, installed with the game's other dependencies.
 Without it the game runs with its own textures only.
 
-To run the tests: `pip install -r requirements-dev.txt`, then `python -m pytest tests -q`.
+To run the tests: `python -m pip install -e ".[dev]"`, then `python -m pytest`.
 
 ## Limits
 

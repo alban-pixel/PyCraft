@@ -1,15 +1,16 @@
 #!/bin/bash
-# Double-click to run PyCraft GPU: creates a venv and installs dependencies on first launch.
-cd "$(dirname "$0")/pycraft-gpu" || exit 1
+# Double-click to run PyCraft on macOS: on the first launch, makes a virtual environment in .venv
+# and installs the game's dependencies; again whenever pyproject.toml changes.
+cd "$(dirname "$0")" || exit 1
 
-if [ ! -d .venv ]; then
+if [ ! -x .venv/bin/python ]; then
     echo "First launch: creating the virtual environment..."
     python3 -m venv .venv || { echo "python3 not found — install Xcode Command Line Tools."; read -r; exit 1; }
+    .venv/bin/python -m pip install --upgrade pip || { echo "Could not update pip."; read -r; exit 1; }
 fi
-# (Re)install the dependencies on first launch and whenever requirements.txt changes
-if [ requirements.txt -nt .venv/.requirements-installed ]; then
-    .venv/bin/pip install -r requirements.txt || { echo "Dependency install failed."; read -r; exit 1; }
-    touch .venv/.requirements-installed
+if [ pyproject.toml -nt .venv/.installed ]; then
+    .venv/bin/python -m pip install -e . || { echo "Dependency install failed."; read -r; exit 1; }
+    touch .venv/.installed
 fi
 
-exec .venv/bin/python main.py
+exec .venv/bin/python -m pycraft

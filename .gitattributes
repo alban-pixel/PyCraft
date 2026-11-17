@@ -1,0 +1,7 @@
+# The same line endings on every computer (the project is worked on from macOS and Windows)
+* text=auto eol=lf
+*.bat text eol=crlf
+*.png binary
+*.npz binary
+*.zip binary
+*.jar binary
