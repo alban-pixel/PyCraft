@@ -44,6 +44,8 @@ def is_block(item):
 
 
 def name(item):
+    if item == 0:
+        return ""  # the empty slot
     return B.BLOCK_NAMES[item] if is_block(item) else ITEM_NAMES[item]
 
 
