@@ -17,7 +17,8 @@ def test_split_tiles():
     rgba, mask = split_tiles(tiles)
     assert set(np.unique(rgba[glass, ..., 3])) == {0, 255}
     assert (rgba[glass, 1, :, 3] == 255).all() and (rgba[glass, 2:, :, 3] == 0).all()
-    assert (mask[glass, 1] == 255).all() and (mask[glass, 0] == 0).all() and (mask[glass, 2:] == 0).all()
+    assert (mask[glass, 1] == 255).all() and (mask[glass, 0] == 0).all()
+    assert (mask[glass, 2:] == 128).all()  # holes: the share of tinted texels around (4 of 8)
     assert (rgba[glass, 2:, :, :3] == (80, 60, 50)).all()  # a glass hole: the average seen color
     assert (rgba[leaves, 2:, :, :3] == 0).all()  # a leaf hole keeps its color (it is drawn)
 

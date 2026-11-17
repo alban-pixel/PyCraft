@@ -144,6 +144,8 @@ def icon_palette(atlas):
         ty, tx = divmod(t, ATLAS_TILES)
         cell = (slice(ty * TILE, (ty + 1) * TILE), slice(tx * TILE, (tx + 1) * TILE))
         texels = lab[cell][seen[cell]]
+        if len(texels) == 0:
+            continue  # nothing to see (a pack's clear glass): no colors to keep for it
         ones = np.ones(len(texels))
         summary = _kmeans(texels, ones, _spread(texels, ones, 4), 8)
         share = np.bincount(np.argmin(((texels[:, None] - summary[None]) ** 2).sum(-1), axis=1), minlength=4)
@@ -186,6 +188,29 @@ def parse_settings(saved):
     if isinstance(pack, str) and os.path.exists(pack):  # (a pack deleted since: the game's own textures)
         settings["texture_pack"] = pack
     return settings
+
+
+def load_tiles(path, found, default_tiles):
+    """The tiles of the texture pack at path (None: the game's own, default_tiles), looked up among
+    the packs found. Returns (tiles, message, path): a pack that can't be read gives the game's own
+    tiles, a message for the settings and None."""
+    if path is None:
+        return default_tiles, "", None
+    info = next((p for p in found if p.path == path), None)
+    try:
+        if info is None:
+            listed = packs.find_packs([os.path.dirname(path)], [path] if path.endswith(".jar") else [])
+            info = next((p for p in listed if p.path == path), None)
+        if info is None:
+            raise packs.PackError("no block textures")
+        tiles, missing = packs.load_pack(info, default_tiles)
+    except Exception as e:  # whatever is in the file, the game goes on with its own textures
+        print(f"Texture pack {path} unreadable: {e!r}", file=sys.stderr)
+        return default_tiles, fit_text(f"Pack unreadable: {e}", 56, keep="start"), None
+    if missing:
+        print(f"Texture pack {info.name}: {len(missing)} textures missing, the game's own drawn instead: "
+              + ", ".join(missing), file=sys.stderr)
+    return tiles, "", path
 
 
 def next_pack(current, found, step):
@@ -390,23 +415,7 @@ class App:
         """Draw the world and the icons with this texture pack (None: the game's own textures).
         Returns a message for the settings: "" when it went well. A pack that can't be read gives
         the game's own textures back, and its path is forgotten."""
-        message = ""
-        tiles = self.default_tiles
-        if path is not None:
-            info = next((p for p in self.packs if p.path == path), None)
-            try:
-                if info is None:
-                    found = packs.find_packs([os.path.dirname(path)], [path] if path.endswith(".jar") else [])
-                    info = next((p for p in found if p.path == path), None)
-                if info is None:
-                    raise packs.PackError("no block textures")
-                tiles, missing = packs.load_pack(info, self.default_tiles)
-                if missing:
-                    print(f"Texture pack {info.name}: {len(missing)} textures missing, the game's own drawn instead: "
-                          + ", ".join(missing), file=sys.stderr)
-            except (packs.PackError, OSError, ValueError, ImportError, MemoryError) as e:
-                print(f"Texture pack {path} unreadable: {e!r}", file=sys.stderr)
-                message, tiles, path = f"Pack unreadable: {e}", self.default_tiles, None
+        tiles, message, path = load_tiles(path, self.packs, self.default_tiles)
         self.renderer.set_tiles(tiles)
         self.renderer.palette.set_fixed(self.set_icons(tiles))
         self.settings["texture_pack"] = path

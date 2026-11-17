@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import zipfile
+import zlib
 from dataclasses import dataclass
 
 import numpy as np
@@ -118,8 +119,8 @@ class PackFiles:
                 return None if member is None else self.zip.read(member)
             with open(os.path.join(self.root, *name.split("/")) + ".png", "rb") as f:
                 return f.read()
-        except (OSError, KeyError, zipfile.BadZipFile, RuntimeError, ValueError):
-            return None
+        except (OSError, KeyError, zipfile.BadZipFile, RuntimeError, ValueError, EOFError, zlib.error):
+            return None  # (a damaged member of a zip: zlib.error or EOFError)
 
     def close(self):
         if self.zip is not None:
@@ -148,12 +149,15 @@ def _inspect(path, name):
         else:
             with zipfile.ZipFile(path) as z:
                 names = z.namelist()
-                meta = z.read("pack.mcmeta") if "pack.mcmeta" in names else None
+                try:  # a damaged description doesn't hide the pack
+                    meta = z.read("pack.mcmeta") if "pack.mcmeta" in names else None
+                except (OSError, zipfile.BadZipFile, RuntimeError, ValueError, EOFError, zlib.error):
+                    meta = None
 
             def count(prefix):
                 return sum(n.startswith(prefix) and n.endswith(".png") for n in names)
         counts = {layout: count(prefix) for layout, prefix in TEXTURE_DIRS.items()}
-    except (OSError, zipfile.BadZipFile, RuntimeError, ValueError):
+    except (OSError, zipfile.BadZipFile, RuntimeError, ValueError, EOFError, zlib.error):
         return None
     layout = max(counts, key=counts.get)
     if counts[layout] == 0:
@@ -162,7 +166,7 @@ def _inspect(path, name):
     if meta is not None:
         try:
             description = clean_name(_component_text(json.loads(meta.decode("utf-8-sig"))["pack"]["description"]))
-        except (ValueError, KeyError, TypeError, UnicodeDecodeError):
+        except (ValueError, KeyError, TypeError, UnicodeDecodeError, RecursionError):
             description = ""
     return PackInfo(clean_name(name) or "Pack", path, description, layout)
 
@@ -461,6 +465,8 @@ def load_pack(info, base):
     tiles = np.stack([resize_tile(base[t], n) for t in range(base.shape[0])])
     for t, img in images.items():
         tile = resize_tile(img, n)
+        if t == B.T_WATER:
+            tile[..., 3] = 255  # the game makes water see-through itself: a pack's clear water stays water
         seen = tile[..., 3] > 0
         if t in BIOME_TINTED and _is_grey(tile):
             _tint(tile, seen)
