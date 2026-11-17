@@ -160,16 +160,39 @@ causes, et ce qui les remplace :
   quatre filles sont connues).
 - L'écran de chargement attend aussi que tous les niveaux soient arrivés, et
   F3 affiche les niveaux dessinés.
-- **Tuiles** : la grille de chaque niveau est envoyée à la carte en 8×8
-  tuiles ; seules celles qui peuvent être dans le champ partent, les plus
-  proches d'abord (liste dans un tableau uniforme, un seul appel de dessin
-  par niveau). Une shadow map ne reçoit que deux côtés par colonne, ceux
-  tournés à l'opposé de la lumière : avec les sommets ils arrêtent la même
-  lumière que les quatre. La vue garde les quatre côtés : là où un bloc
-  s'efface sur une pente raide, une fente d'un pixel peut s'ouvrir, et c'est
-  le dos des colonnes plus loin qui la bouche. Passe du terrain lointain à
-  2560x1440 : 1,7 ms en low, 3,3 en medium, 4,4 en high, 11,5 en ultra
-  (14 avant les tuiles).
+- **Tuiles** : le temps de carte du terrain lointain part surtout dans les
+  sommets des colonnes, donc on en envoie le moins possible. La grille de
+  chaque niveau est découpée en 16×16 tuiles ; une tuile n'est dessinée que si
+  la boîte qui va du pied de sa colonne la plus basse au sommet de la plus
+  haute touche le champ, et si le niveau plus fin ne dessine pas toutes ses
+  cellules (liste dans un tableau uniforme, un appel de dessin par niveau,
+  les plus proches d'abord). Les hauteurs min/max par tuile sont gardées côté
+  CPU et recalculées seulement quand la grille bouge ou reçoit des cellules.
+  Avec des boîtes hautes comme le monde, presque rien n'était éliminé dès
+  que la caméra regardait vers le bas.
+- **Deux côtés par colonne** : ceux tournés vers la caméra. Une shadow map
+  reçoit les deux côtés tournés à l'opposé de la lumière : avec les sommets
+  ils arrêtent la même lumière que les quatre, et aussi celle qui passe sous
+  le terrain au bord d'une grille (les côtés tournés vers la lumière la
+  laissaient passer).
+- **Bouches de grottes** : les parois d'une grotte ne sont maillées que près
+  du joueur (sections sous le sol le plus bas du chunk), et le terrain
+  lointain est une coque creuse : par une bouche de grotte, l'œil traversait
+  la montagne jusqu'au ciel, ce que le dos des colonnes lointaines cachait
+  avant. Une seconde passe dessine donc les deux autres côtés des colonnes
+  autour des blocs, étirés jusqu'au bas du monde au bord de cette zone : un
+  mur sous le sol, tout autour. (Garder les faces de grotte là où les blocs
+  s'effacent ne marche pas : les blocs gagnent toujours le test de
+  profondeur, elles se verraient à travers le sol.)
+- **Eau** : dessinée par tuiles aussi (celles du champ qui en contiennent),
+  au lieu d'une liste de toutes les cellules mouillées.
+- Mesures du 15-16 novembre, versions lancées l'une après l'autre (les temps
+  varient de quelques ms d'un lancement à l'autre sur ce portable) : passe du
+  terrain lointain à 2560x1440, 4,0 → 2,2 ms en medium et 14 → 5,1 ms en
+  ultra ; image fixe en ultra à 1280x720 (graphismes rapides, 64 chunks),
+  11,3 → 7 ms ; vue sur l'océan en ultra, fancy, 256 chunks, 17,6 → 10,7 ms
+  de carte. Dans une vraie fenêtre avec ces derniers réglages : marche
+  29 → 13 ms par image, vol rapide 34 → 15 à 19 ms.
 
 Vérification : 16 vues de 4 mondes sont rendues deux fois, la seconde avec
 les murs prolongés jusqu'en bas ; aucun pixel de ciel de la première n'est
