@@ -36,10 +36,12 @@ PLANT_CORNERS = [[(0, 1, 0), (1, 1, 1), (1, 0, 1), (0, 0, 0)], [(1, 1, 0), (0, 1
 FACE_CORNERS = [np.array(corners, dtype=np.float32) for corners in [c for _, c in FACES] + PLANT_CORNERS]
 TOP_CORNERS = [np.array(corners)[:, 1] == 1 for _, corners in FACES]
 
-# One vertex: position relative to its column's corner; atlas tile, face corner (0-3), face
-# direction (0-5, 6-7 for plants) and kind; biome color, and in its alpha the ambient occlusion
-# (darker in corners)
-VERTEX = np.dtype([("pos", "<f4", 3), ("info", "u1", 4), ("tint", "u1", 4)])
+# One vertex: position relative to its column's corner; tile, face corner (0-3), face direction
+# (0-5, 6-7 for plants) and kind; biome color, and in its alpha the ambient occlusion (darker in
+# corners); where it is on its tile (u, v in 16ths, then two unused bytes): a whole tile for a
+# cube's face, part of it for a box of a shaped block
+VERTEX = np.dtype([("pos", "<f4", 3), ("info", "u1", 4), ("tint", "u1", 4), ("uv", "u1", 4)])
+TILE_CORNERS = np.array([[0, 0], [16, 0], [16, 16], [0, 16]], np.uint8)  # u, v of corners 0-3
 # Kind of face: 0 opaque, 1 see-through texels (glass), 2 water, 3 leaves (their holes look dark, but
 # let the light through for the shadows), 4 plants (see-through texels, lit as if they faced up), 5 opaque
 # and glowing (lamps: not darkened by the light around)
@@ -99,11 +101,14 @@ _BORDER = {-1: (slice(CHUNK - 1, CHUNK), slice(0, 1)), 0: (slice(0, CHUNK), slic
            1: (slice(0, 1), slice(CHUNK + 1, CHUNK + 2))}
 
 
-def _quads(pos, blocks, tiles, face, tints, i, k, ao):
-    """Vertices of n quads turned the same way: corners pos (n, 4, 3), their blocks, atlas tiles and
-    place (i, k) in the column, which picks the biome color; ao: brightness (0-255) of each corner."""
+def _quads(pos, blocks, tiles, face, tints, i, k, ao, uv=None):
+    """Vertices of n quads turned the same way: corners pos (n, 4, 3), their blocks, tiles and
+    place (i, k) in the column, which picks the biome color; ao: brightness (0-255) of each corner;
+    uv: (n, 4, 2) place of each corner on its tile in 16ths (default: the whole tile)."""
     v = np.empty((blocks.size, 4), VERTEX)
     v["pos"] = pos
+    v["uv"] = 0
+    v["uv"][..., :2] = TILE_CORNERS[None] if uv is None else uv
     info = np.empty((blocks.size, 4, 4), np.uint8)
     info[..., 0] = tiles[:, None]
     info[..., 1] = np.arange(4)
