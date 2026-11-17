@@ -108,6 +108,7 @@ to the save file.
 | LOD quality | low (default), medium, high, ultra: the detail of the distant terrain — grid width from 127 to 511 columns, 6 to 8 levels, finest column 1 or 2 blocks |
 | Graphics | fancy (default): shadows and anti-aliasing; fast: without them, for slower graphics cards |
 | Music | on / off |
+| Texture pack | Default (the game's own textures), then every texture pack found (see below) |
 
 A higher resolution makes the 3D view sharper. With the interface size on Auto, the HUD and menus
 grow with it (each of their pixels covers 2 to 5 pixels of the screen above 960x540), so they keep
@@ -282,6 +283,32 @@ into it, without being flipped afterward. Under 100% 3D resolution, the full-col
 the shader that turns it into palette colors scales it up first, with a Catmull-Rom filter (sharper
 than a bilinear one, from 9 bilinear samples), so the dithering stays at the screen's own
 resolution.
+
+## Texture packs
+
+The game can draw its blocks with a texture pack in Minecraft's format instead of its own textures.
+Pick it in **Settings → Texture pack**: it applies right away, without reloading the world.
+
+- **Where packs come from:** the `resourcepacks` folder next to the save file (the settings line
+  shows where it is when Default is selected); the `resourcepacks` folder of a Minecraft installed
+  on this computer; and the Minecraft versions installed there, listed as "Minecraft 1.8" and so on.
+  Packs are read where they are: nothing is copied, extracted or downloaded, and the game ships no
+  pack.
+- **What's read:** a folder or a `.zip` with `assets/minecraft/textures/blocks/` (Minecraft 1.8 to
+  1.12) or `assets/minecraft/textures/block/` (1.13 and later), and `pack.mcmeta` for its
+  description. Only the block textures are used: no models, sounds, fonts, sky or menus.
+- **Resolution:** the pack's own, from 16 to 256 pixels a block (the size most of its textures
+  have). Textures are mipmapped, so HD packs stay sharp up close and don't shimmer far away.
+- **Biome colors:** grass, leaves and water keep the colors of their biome when the pack's
+  textures are grey, as Minecraft's are. Spruce and birch leaves take Minecraft's fixed colors.
+- **What a pack lacks** (a block Minecraft doesn't have, or a texture missing from the pack) is
+  drawn with the game's own texture. Animated textures show their first frame.
+- A pack that can't be read is reported under the settings, and the game goes back to Default.
+
+Reading packs needs Pillow (`pip install -r requirements.txt`; `PyCraft.command` installs it).
+Without it the game runs with its own textures only.
+
+To run the tests: `pip install -r requirements-dev.txt`, then `python -m pytest tests -q`.
 
 ## Limits
 
