@@ -1113,6 +1113,18 @@ def column_offsets(radius):
     return sorted(offsets, key=lambda o: o[0] * o[0] + o[1] * o[1])
 
 
+def affected_sections(positions):
+    """The sections to mesh again after these blocks changed: each block's section, and the
+    sections next to it when it is on their border (diagonal ones too: the shading of their
+    corners depends on it)."""
+    todo = set()
+    for x, y, z in positions:
+        steps = [[0] + ([-1] if v % CHUNK == 0 else []) + ([1] if v % CHUNK == CHUNK - 1 else []) for v in (x, y, z)]
+        cx, cy, cz = x >> 4, y >> 4, z >> 4
+        todo |= {(cx + a, cy + b, cz + c) for a in steps[0] for b in steps[1] for c in steps[2]}
+    return todo
+
+
 def prepare_faces(parts):
     """The bytes a column mesh is made of, from its sections' vertices: the water faces last,
     and one index buffer for all of them. Pure number crunching — runs on a worker thread."""
@@ -1275,12 +1287,14 @@ class Chunks:
 
     def block_changed(self, x, y, z):
         """Rebuild the sections touching block (x, y, z) right away, and tell the workers."""
-        self.builders.block_changed(x, y, z, self.world.get(x, y, z), self.world.get_state(x, y, z))
-        # The block's section, and the sections next to it when it is on their border (diagonal
-        # ones too: the shading of their corners depends on it)
-        steps = [[0] + ([-1] if v % CHUNK == 0 else []) + ([1] if v % CHUNK == CHUNK - 1 else []) for v in (x, y, z)]
-        cx, cy, cz = x >> 4, y >> 4, z >> 4
-        todo = {(cx + a, cy + b, cz + c) for a in steps[0] for b in steps[1] for c in steps[2]}
+        self.blocks_changed([(x, y, z)])
+
+    def blocks_changed(self, positions):
+        """Rebuild the sections touching these blocks right away, each section once (a TNT blast
+        or a line of dust changes many blocks of the same few sections), and tell the workers."""
+        for x, y, z in positions:
+            self.builders.block_changed(x, y, z, self.world.get(x, y, z), self.world.get_state(x, y, z))
+        todo = affected_sections(positions)
         columns = set()
         for kx, ky, kz in todo:
             self.versions[(kx, kz)] = self.versions.get((kx, kz), 0) + 1
@@ -2075,6 +2089,15 @@ class Renderer:
         with self.ctx:
             self.chunks.block_changed(x, y, z)
             self.far.block_changed(x, y, z)
+
+    def blocks_changed(self, positions):
+        """Many blocks changed at once (the machines of a frame): each section is meshed once."""
+        if not positions:
+            return
+        with self.ctx:
+            self.chunks.blocks_changed(positions)
+            for x, y, z in positions:
+                self.far.block_changed(x, y, z)
 
     def render(self, screen, eye, forward, target=None):
         """Draw the world seen from eye into screen (a (height, width) uint8 view of pyxel.screen).
