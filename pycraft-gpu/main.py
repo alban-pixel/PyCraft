@@ -12,6 +12,7 @@ import moderngl
 import numpy as np
 import pyxel
 
+import items
 import packs
 import redstone
 from autoscale import AutoScale
@@ -174,9 +175,17 @@ def _spread(points, weight, count):
     return np.array(centers)
 
 
-def icon_palette(atlas):
-    """The block icons for pyxel.blt: 48 colors that suit them and every pixel as the index of its
-    nearest one, 16-63 (0 where transparent). Texels that take the biome color get a typical green
+def item_atlas(item_tiles):
+    """The item icons laid out as the block icons are (16 per row), padded with empty tiles: (256, 256, 4)."""
+    padded = np.zeros((ATLAS_TILES * ATLAS_TILES, TILE, TILE, 4), dtype=np.uint8)
+    padded[:len(item_tiles)] = item_tiles
+    return tiles_to_atlas(padded)
+
+
+def icon_palette(atlas, item_atlas=None):
+    """The icons for pyxel.blt: 48 colors that suit them and every pixel as the index of its
+    nearest one, 16-63 (0 where transparent). Returns (colors, block indices, item indices), the
+    last None without an item atlas: the item icons share the 48 colors with the blocks'. Texels that take the biome color get a typical green
     (blue for water).
     Each icon is first summed up in 4 colors (its main color, darker and lighter texels, specks),
     and the 48 colors are a k-means of those, every icon counting the same: a tile of a rare color
@@ -203,14 +212,35 @@ def icon_palette(atlas):
         share = np.bincount(np.argmin(((texels[:, None] - summary[None]) ** 2).sum(-1), axis=1), minlength=4)
         points.append(summary[share > 0])
         weight.append(share[share > 0] / len(texels))
+    if item_atlas is not None:
+        item_rgb = item_atlas[..., :3].astype(float) / 255
+        item_seen = item_atlas[..., 3] >= 128
+        item_lab = srgb_to_oklab(item_rgb.reshape(-1, 3)).reshape(item_rgb.shape)
+        for t in range(items.NUM_ITEMS):
+            ty, tx = divmod(t, ATLAS_TILES)
+            cell = (slice(ty * TILE, (ty + 1) * TILE), slice(tx * TILE, (tx + 1) * TILE))
+            texels = item_lab[cell][item_seen[cell]]
+            if len(texels) == 0:
+                continue
+            ones = np.ones(len(texels))
+            summary = _kmeans(texels, ones, _spread(texels, ones, 4), 8)
+            share = np.bincount(np.argmin(((texels[:, None] - summary[None]) ** 2).sum(-1), axis=1), minlength=4)
+            points.append(summary[share > 0])
+            weight.append(share[share > 0] / len(texels))
     points, weight = np.concatenate(points), np.concatenate(weight)
     centers = _kmeans(points, weight, _spread(points, weight, FIXED_COLORS - 16), 20)
     colors = np.rint(oklab_to_srgb(centers) * 255).astype(np.uint8)
-    pixels = lab.reshape(-1, 3)
-    nearest = np.argmin(((pixels[:, None] - srgb_to_oklab(colors / 255)[None]) ** 2).sum(-1), axis=1)
-    indices = (16 + nearest).reshape(seen.shape).astype(np.uint8)
-    indices[~seen] = 0
-    return [int(r) << 16 | int(g) << 8 | int(b) for r, g, b in colors], indices
+    palette = srgb_to_oklab(colors / 255)
+
+    def index(lab_image, visible):
+        pixels = lab_image.reshape(-1, 3)
+        nearest = np.argmin(((pixels[:, None] - palette[None]) ** 2).sum(-1), axis=1)
+        out = (16 + nearest).reshape(visible.shape).astype(np.uint8)
+        out[~visible] = 0
+        return out
+
+    item_indices = None if item_atlas is None else index(item_lab, item_seen)
+    return [int(r) << 16 | int(g) << 8 | int(b) for r, g, b in colors], index(lab, seen), item_indices
 
 
 def parse_settings(saved):
@@ -263,6 +293,18 @@ def load_tiles(path, found, default_tiles):
         print(f"Texture pack {info.name}: {len(missing)} textures missing, the game's own drawn instead: "
               + ", ".join(missing), file=sys.stderr)
     return tiles, "", path
+
+
+def load_item_icons(path, found, default_items):
+    """The item icons of the texture pack at path (None: the game's own, default_items). Never raises."""
+    info = next((p for p in found if p.path == path), None) if path else None
+    if info is None:
+        return default_items
+    tiles, missing = packs.load_item_tiles(info, default_items)
+    if missing:
+        print(f"Texture pack {info.name}: {len(missing)} item icons missing, the game's own drawn instead",
+              file=sys.stderr)
+    return tiles
 
 
 def next_pack(current, found, step):
@@ -347,7 +389,8 @@ class App:
         self.ui = Ui()
 
         self.default_tiles = tiles = build_tiles()
-        icon_colors = self.set_icons(tiles)
+        self.default_item_tiles = self.item_tiles = items.build_item_tiles()
+        icon_colors = self.set_icons(tiles, self.item_tiles)
         pyxel.images[1].cls(0)
         pyxel.images[1].text(0, 0, "PYCRAFT", 7)  # drawn scaled up on the title screen
         self.init_sounds()
@@ -457,11 +500,13 @@ class App:
         """The texture packs on this computer (none without Pillow, which reads their PNGs)."""
         return packs.find_packs(self.pack_dirs, packs.minecraft_jars()) if self.has_pillow else []
 
-    def set_icons(self, tiles):
-        """Draw the block icons of these tiles into Pyxel's image bank 0; returns their 48 colors."""
-        icon_colors, icons = icon_palette(tiles_to_atlas(tiles))
-        bank = np.frombuffer(pyxel.images[0].data_ptr(), dtype=np.uint8, count=256 * 256).reshape(256, 256)
-        bank[:icons.shape[0], :icons.shape[1]] = icons
+    def set_icons(self, tiles, item_tiles):
+        """Draw the block icons of these tiles into Pyxel's image bank 0, and the item icons into bank 2;
+        returns their 48 colors."""
+        icon_colors, icons, item_icons = icon_palette(tiles_to_atlas(tiles), item_atlas(item_tiles))
+        for bank_number, image in ((0, icons), (2, item_icons)):
+            bank = np.frombuffer(pyxel.images[bank_number].data_ptr(), dtype=np.uint8, count=256 * 256)
+            bank.reshape(256, 256)[:image.shape[0], :image.shape[1]] = image
         return icon_colors
 
     def apply_pack(self, path):
@@ -469,8 +514,9 @@ class App:
         Returns a message for the settings: "" when it went well. A pack that can't be read gives
         the game's own textures back, and its path is forgotten."""
         tiles, message, path = load_tiles(path, self.packs, self.default_tiles)
+        self.item_tiles = load_item_icons(path, self.packs, self.default_item_tiles)
         self.renderer.set_tiles(tiles)
-        self.renderer.palette.set_fixed(self.set_icons(tiles))
+        self.renderer.palette.set_fixed(self.set_icons(tiles, self.item_tiles))
         self.settings["texture_pack"] = path
         return message
 
@@ -1373,10 +1419,16 @@ class App:
         if hovered is not None:
             ui.tooltip(ui.mouse_x, ui.mouse_y, BLOCK_NAMES[hovered])
 
-    def draw_icon(self, x, y, block):
-        tile = BLOCK_TILES[block][0]
+    def draw_icon(self, x, y, item):
+        """Draw any item's icon: a block's from image bank 0, another item's from bank 2."""
+        if items.is_block(item):
+            tile, bank = BLOCK_TILES[item][0], 0
+        elif item >= items.FIRST_ITEM:
+            tile, bank = item - items.FIRST_ITEM, 2
+        else:
+            return  # the empty slot
         u, v = (tile % ATLAS_TILES) * TILE, (tile // ATLAS_TILES) * TILE
-        self.ui.blt(x, y, 0, u, v, TILE, TILE, 0)
+        self.ui.blt(x, y, bank, u, v, TILE, TILE, 0)
 
 
 if __name__ == "__main__":

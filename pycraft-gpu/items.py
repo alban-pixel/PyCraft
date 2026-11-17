@@ -4,6 +4,8 @@ every block number, so one number names either kind of thing in an inventory."""
 import math
 from dataclasses import dataclass
 
+import numpy as np
+
 import blocks as B
 
 FIRST_ITEM = 256
@@ -202,3 +204,88 @@ def drops(block, tool_item, rng):
             out.append((APPLE, 1))
         return out
     return [(base_item(block), 1)]
+
+
+# ------------------------------------------------------------------------------------------- icons
+ITEM_TILES = 64  # room for the item icons: tile item - FIRST_ITEM
+
+
+def _disc(cx, cy, r):
+    ys, xs = np.mgrid[0:B.TILE, 0:B.TILE]
+    return (xs - cx) ** 2 + (ys - cy) ** 2 <= r * r
+
+
+def _cells(points):
+    mask = np.zeros((B.TILE, B.TILE), dtype=bool)
+    for x, y in points:
+        if 0 <= x < B.TILE and 0 <= y < B.TILE:
+            mask[y, x] = True
+    return mask
+
+
+def _handle(length=10):
+    """A tool's handle, 2 texels wide, from the bottom-left corner toward the top-right."""
+    return _cells([(1 + i + d, 14 - i) for i in range(length) for d in (0, 1)])
+
+
+def _paint(tile, mask, color, rng, noise=0.06):
+    """Fill mask with color, lit from the top-left (lighter there, darker toward the bottom-right) and a little
+    grain, and outline it with a darker shade so the shape reads on any background."""
+    ys, xs = np.mgrid[0:B.TILE, 0:B.TILE]
+    light = 1.2 - 0.45 * (xs + ys) / (2 * B.TILE)
+    shade = np.asarray(color, float) * (light * (1 + rng.uniform(-noise, noise, (B.TILE, B.TILE))))[..., None]
+    tile[mask, :3] = np.clip(shade[mask], 0, 255)
+    tile[mask, 3] = 255
+    grown = mask.copy()
+    grown[1:] |= mask[:-1]
+    grown[:-1] |= mask[1:]
+    grown[:, 1:] |= mask[:, :-1]
+    grown[:, :-1] |= mask[:, 1:]
+    edge = grown & ~mask & (tile[..., 3] == 0)
+    tile[edge, :3] = np.asarray(color, float) * 0.4
+    tile[edge, 3] = 255
+
+
+def build_item_tiles(seed=7):
+    """The generated item icons: (64, 16, 16, 4) uint8 RGBA, tile item - FIRST_ITEM, alpha 0 or 255."""
+    rng = np.random.default_rng(seed)
+    out = np.zeros((ITEM_TILES, B.TILE, B.TILE, 4), dtype=float)
+    ys, xs = np.mgrid[0:B.TILE, 0:B.TILE]
+
+    def tile(item):
+        return out[item - FIRST_ITEM]
+
+    _paint(tile(STICK), _handle(12), (137, 103, 56), rng)
+    lump = _disc(7.5, 8, 5) & ~((xs + ys < 7) | (xs - ys > 9))  # a rough lump, chipped at two corners
+    _paint(tile(COAL), lump, (52, 52, 52), rng, 0.25)
+    _paint(tile(CHARCOAL), lump & ~_disc(12, 4, 3), (78, 66, 54), rng, 0.25)
+    bar = (ys >= 6) & (ys <= 10) & (xs >= 2 + (10 - ys) // 2) & (xs <= 13 - (ys - 6) // 2)  # a bar, slanted ends
+    _paint(tile(IRON_INGOT), bar, (222, 222, 222), rng)
+    _paint(tile(GOLD_INGOT), bar, (250, 210, 50), rng)
+    _paint(tile(BRICK), bar & (ys >= 7), (176, 82, 58), rng, 0.12)
+    gem = np.abs(xs - 7.5) / 6 + np.abs(ys - 7.5) / 6 <= 1
+    _paint(tile(DIAMOND), gem, (95, 225, 215), rng)
+    tile(DIAMOND)[4:6, 6:8, :3] = 255  # a glint
+    _paint(tile(EMERALD), (np.abs(xs - 7.5) <= 3.5) & (np.abs(ys - 7.5) <= 6) & (np.abs(xs - 7.5) / 3.5 + np.abs(ys - 7.5) / 6 <= 1.5),
+           (40, 200, 90), rng)
+    _paint(tile(LAPIS), ((xs - 7.5) / 5.5) ** 2 + ((ys - 8) / 4) ** 2 <= 1, (40, 70, 190), rng, 0.2)
+    _paint(tile(QUARTZ), np.abs(xs - 7.5) / 3.5 + np.abs(ys - 7.5) / 7 <= 1, (236, 230, 220), rng)
+    _paint(tile(FLINT), (ys >= 3) & (ys <= 13) & (np.abs(xs - 7.5) <= (ys - 2) * 0.5), (60, 58, 62), rng, 0.15)
+    apple = _disc(7.5, 9, 5)
+    _paint(tile(APPLE), apple, (210, 30, 34), rng)
+    _paint(tile(APPLE), _cells([(8, 2), (8, 3)]), (96, 64, 30), rng)  # the stem
+    _paint(tile(APPLE), _cells([(9, 2), (10, 2), (10, 1)]), (60, 150, 40), rng)  # its leaf
+    _paint(tile(CLAY_BALL), _disc(7.5, 8, 4.5), (160, 166, 178), rng)
+
+    wood = (137, 103, 56)
+    heads = {WOODEN_PICKAXE: (160, 122, 72), STONE_PICKAXE: (125, 125, 125), IRON_PICKAXE: (222, 222, 222),
+             GOLDEN_PICKAXE: (250, 210, 50), DIAMOND_PICKAXE: (95, 225, 215)}
+    reach = np.hypot(xs - 1, ys - 14)  # an arc around the handle's end: the pickaxe's head
+    pick = (reach >= 10.5) & (reach <= 12.6) & (xs >= 2) & (ys <= 13)
+    axe = _disc(8, 4, 3.6) & (xs + ys <= 13)  # a blade on one side of the handle, near its top
+    shovel = _disc(12, 3.5, 3) | _cells([(10, 5), (11, 4)])
+    for first, color in heads.items():
+        for item, head, length in ((first, pick, 11), (first + 1, axe, 11), (first + 2, shovel, 9)):
+            _paint(tile(item), _handle(length), wood, rng)
+            _paint(tile(item), head, color, rng)
+    return np.clip(np.rint(out), 0, 255).astype(np.uint8)
