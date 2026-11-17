@@ -366,6 +366,14 @@ _TABLE = [
     (B.T_REDSTONE_LAMP, _n("redstone_lamp_on"), _n("redstone_lamp_on")),
     (B.T_JACK_O_LANTERN, _n("pumpkin_face_on"), _n("jack_o_lantern")),
     (B.T_SPAWNER, _n("mob_spawner"), _n("spawner")),
+    (B.T_LEVER, _n("lever"), _n("lever")),
+    (B.T_REDSTONE_DUST, _n("redstone_dust_cross"), _n("redstone_dust_dot")),
+    (B.T_REDSTONE_TORCH_ON, _n("redstone_torch_on"), _n("redstone_torch")),
+    (B.T_REDSTONE_TORCH_OFF, _n("redstone_torch_off"), _n("redstone_torch_off")),
+    (B.T_REPEATER_OFF, _n("repeater_off"), _n("repeater")),
+    (B.T_REPEATER_ON, _n("repeater_on"), _n("repeater_on")),
+    (B.T_REDSTONE_LAMP_OFF, _n("redstone_lamp_off"), _n("redstone_lamp")),
+    (B.T_PISTON_INNER, _n("piston_inner"), _n("piston_inner")),
 ]
 # The 16 colors: 1.8 calls light gray "silver"
 _COLORS = ["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray", "cyan",
@@ -381,7 +389,8 @@ for _c in _COLORS:
 TILE_FILES = {t: (n18, n113) for t, n18, n113 in _TABLE}
 GRASS_OVERLAY = {"1.8": "grass_side_overlay", "1.13": "grass_block_side_overlay"}
 
-BIOME_TINTED = {B.T_GRASS_TOP, B.T_TALL_GRASS, B.T_FERN, B.T_LEAVES, B.T_JUNGLE_LEAVES, B.T_ACACIA_LEAVES, B.T_WATER}
+BIOME_TINTED = {B.T_GRASS_TOP, B.T_TALL_GRASS, B.T_FERN, B.T_LEAVES, B.T_JUNGLE_LEAVES, B.T_ACACIA_LEAVES, B.T_WATER,
+                B.T_REDSTONE_DUST}  # (dust: colored by its power, through the same tint)
 LEAF_TILES = {B.T_LEAVES, B.T_SPRUCE_LEAVES, B.T_BIRCH_LEAVES, B.T_JUNGLE_LEAVES, B.T_ACACIA_LEAVES,
               B.T_DARK_OAK_LEAVES}
 # Leaves the game doesn't color by the biome: Minecraft's own fixed colors for spruce and birch;

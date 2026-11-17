@@ -5,7 +5,8 @@ import math
 
 import numpy as np
 
-from blocks import AIR, ALL_LEAVES, ICE, PLANT, SOLID, STONE, TARGETABLE, WATER
+from blocks import AIR, ALL_LEAVES, FLAT, ICE, PLANT, SHAPED, SOLID, STONE, TARGETABLE, WATER
+from shapes import selection_box
 from terrain import (BIRCH_FOREST, BIOME_NAMES, CHUNK, FOREST, PLAINS, SAVANNA, SEA_LEVEL, TAIGA, WORLD_HEIGHT,
                      TerrainGenerator)
 
@@ -157,7 +158,7 @@ class World:
                 p = AIR
                 while y >= 0:
                     b = real(x, y, z)
-                    if b != AIR and not PLANT[b]:
+                    if b != AIR and not PLANT[b] and not FLAT[b]:  # (small redstone parts: like plants)
                         break
                     if PLANT[b] and p == AIR:
                         p = b  # the first plant on the way down tints the ground under it
@@ -265,12 +266,32 @@ class World:
 
     # --- Aiming --------------------------------------------------------------------------------
 
+    def _aimed(self, pos, origin, direction, reach):
+        """Whether the ray hits the block at pos: any targetable cube, or the box of a shaped block."""
+        block = self.get(*pos)
+        if not TARGETABLE[block]:
+            return False
+        if not SHAPED[block]:
+            return True
+        lo, hi = selection_box(block, self.get_state(*pos))
+        t_near, t_far = 0.0, reach
+        for i in range(3):
+            a, b = pos[i] + lo[i], pos[i] + hi[i]
+            if direction[i] == 0:
+                if not a <= origin[i] <= b:
+                    return False
+                continue
+            t1, t2 = (a - origin[i]) / direction[i], (b - origin[i]) / direction[i]
+            t_near, t_far = max(t_near, min(t1, t2)), min(t_far, max(t1, t2))
+        return t_near <= t_far
+
     def raycast(self, origin, direction, reach):
         """Walk the grid along a ray (DDA). Returns (hit_block, previous_block) or None.
 
-        Air and water are passed through, so you can aim at blocks under water."""
+        Air and water are passed through, so you can aim at blocks under water. A shaped block
+        (a lever, dust...) is hit only through its box."""
         pos = [math.floor(c) for c in origin]
-        if TARGETABLE[self.get(*pos)]:  # the ray starts inside a block (e.g. flying through leaves)
+        if self._aimed(pos, origin, direction, reach):  # the ray starts inside a block (e.g. flying through leaves)
             return tuple(pos), tuple(pos)
         step, t_delta, t_max = [0] * 3, [math.inf] * 3, [math.inf] * 3
         for i in range(3):
@@ -288,5 +309,5 @@ class World:
             previous = tuple(pos)
             pos[axis] += step[axis]
             t_max[axis] += t_delta[axis]
-            if TARGETABLE[self.get(*pos)]:
+            if self._aimed(pos, origin, direction, reach):
                 return tuple(pos), previous
