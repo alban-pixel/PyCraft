@@ -58,9 +58,14 @@ if __name__ == "__main__":
         with open(os.path.join(DATA, "settings.json"), "w") as f:
             json.dump({"resolution": [640, 360], "fps": 60, "render_distance": 32, "lod_quality": "low",
                        "fancy": False, "music": False, "ui_scale": "auto", "render_scale": 1.0}, f)
-        from pycraft import app as main, controls, ui
+        import sys as _sys
+        from pycraft import app as main, blocks, controls, play, render, ui
+        from pycraft import settings as game_settings
+        from pycraft.screens import settings as settings_screen
         fake = FakePyxel(real)
-        main.pyxel = ui.pyxel = controls.pyxel = fake
+        for _module in list(_sys.modules.values()):  # every part of the game reads the stand-in
+            if getattr(_module, '__name__', '').startswith('pycraft') and hasattr(_module, 'pyxel'):
+                _module.pyxel = fake
         K = real
         app = main.App(headless=True)
         app.headless = False  # (so the game moves the stand-in's mouse where it would move the real one)
@@ -144,19 +149,19 @@ if __name__ == "__main__":
 
         # --- tabs ---
         frame([K.KEY_TAB])
-        check("TAB: the Controls tab", main.TAB_NAMES[app.settings_tab] == "Controls")
+        check("TAB: the Controls tab", game_settings.TAB_NAMES[app.settings_tab] == "Controls")
         frame([K.KEY_RIGHT]); frame([K.KEY_RIGHT])
         check("mouse speed up twice", s["sensitivity"] == 120, s["sensitivity"])
         frame([K.KEY_DOWN]); frame([K.KEY_RETURN])
         check("ENTER on Invert mouse", s["invert_y"] is True)
-        click(app.tab_rects()[main.TAB_NAMES.index("Sound")])
-        check("a click on the Sound tab", main.TAB_NAMES[app.settings_tab] == "Sound")
+        click(app.tab_rects()[game_settings.TAB_NAMES.index("Sound")])
+        check("a click on the Sound tab", game_settings.TAB_NAMES[app.settings_tab] == "Sound")
         frame([K.KEY_RIGHT]); frame([K.KEY_RIGHT])
         check("music from off to 20%: it plays", s["music_volume"] == 20 and app.music_playing)
         frame([K.KEY_LEFT]); frame([K.KEY_LEFT])
         check("and off again", s["music_volume"] == 0 and not app.music_playing)
         frame([K.KEY_TAB], [K.KEY_SHIFT])
-        check("SHIFT+TAB: the tab before", main.TAB_NAMES[app.settings_tab] == "Keys")
+        check("SHIFT+TAB: the tab before", game_settings.TAB_NAMES[app.settings_tab] == "Keys")
 
         # --- keys ---
         names = [a for a, _, _ in controls.ACTIONS]
@@ -174,7 +179,7 @@ if __name__ == "__main__":
         frame([K.MOUSE_BUTTON_X1], [K.MOUSE_BUTTON_X1])
         check("a mouse button as a key", app.controls.name("zoom") == "MOUSE 4", app.controls.name("zoom"))
         frame(); frame([K.KEY_RIGHT])
-        check("RIGHT: the other column", app.menu_index == names.index("zoom") + main.SETTING_ROWS or app.menu_index < len(names), app.menu_index)
+        check("RIGHT: the other column", app.menu_index == names.index("zoom") + settings_screen.SETTING_ROWS or app.menu_index < len(names), app.menu_index)
         real_shot = None
         n = len(app.setting_rows())
         click(app.setting_rects()[n])
@@ -186,7 +191,7 @@ if __name__ == "__main__":
         click(app.setting_rects()[n + 1])
         check("Done: back on the title, on Settings", app.state == "title" and app.menu_items()[app.menu_index][0] == "Settings")
         # A fresh start reads it all back
-        again = main.parse_settings(saved())
+        again = game_settings.parse_settings(saved())
         check("the file gives the same settings back", again == {**s, "keys": again["keys"]} and again["keys"]["forward"] == "Z", {k: (again[k], s[k]) for k in s if again[k] != s[k]})
         check("and the same keys", controls.Controls(again["keys"]).name("forward") == "Z")
 
@@ -259,10 +264,10 @@ if __name__ == "__main__":
         looked = int(app.world.get(*app.target[0]))
         app.selected = 5
         frame([K.MOUSE_BUTTON_MIDDLE])
-        want = main.PICKS.get(looked)
+        want = play.PICKS.get(looked)
         check("pick: the block looked at is the chosen one", app.hotbar[app.selected] == want, (looked, want, app.hotbar, app.selected))
         spot = app.target[1]
-        app.selected = app.hotbar.index(main.DEFAULT_HOTBAR[2]) if main.DEFAULT_HOTBAR[2] in app.hotbar else 2
+        app.selected = app.hotbar.index(blocks.DEFAULT_HOTBAR[2]) if blocks.DEFAULT_HOTBAR[2] in app.hotbar else 2
         frame([K.MOUSE_BUTTON_RIGHT])
         placed = int(app.world.get(*spot))
         check("place", placed == app.hotbar[app.selected], (spot, placed))
@@ -271,9 +276,9 @@ if __name__ == "__main__":
         check("break", int(app.world.get(*spot)) == 0)
         # a lever: placed with the place key, then flipped with it (and with the place key moved to G)
         from pycraft import blocks as BL
-        frame(); app.target = app.world.raycast(p.eye(), p.forward(), main.REACH)
+        frame(); app.target = app.world.raycast(p.eye(), p.forward(), play.REACH)
         app.sim.set_block(*app.target[0], BL.STONE)  # (a lever needs a full block: not leaves)
-        frame(); app.target = app.world.raycast(p.eye(), p.forward(), main.REACH)
+        frame(); app.target = app.world.raycast(p.eye(), p.forward(), play.REACH)
         spot = app.target[1]
         app.hotbar[app.selected] = BL.LEVER
         frame([K.MOUSE_BUTTON_RIGHT])
@@ -283,7 +288,7 @@ if __name__ == "__main__":
             """A small lever is only hit where its box is (it tilts when flipped): find a pitch that hits it."""
             for pitch in [p.pitch] + [-20.0 - 0.5 * i for i in range(120)]:
                 p.pitch = pitch
-                hit = app.world.raycast(p.eye(), p.forward(), main.REACH)
+                hit = app.world.raycast(p.eye(), p.forward(), play.REACH)
                 if hit is not None and tuple(hit[0]) == tuple(spot):
                     frame()
                     return True
@@ -325,7 +330,7 @@ if __name__ == "__main__":
         labels = [label for label, _ in app.menu_items()]
         click(app.button_rect(labels.index("Settings")))
         check("Settings from the pause menu", app.state == "settings")
-        click(app.tab_rects()[main.TAB_NAMES.index("Game")])
+        click(app.tab_rects()[game_settings.TAB_NAMES.index("Game")])
         rows = [r[1] for r in app.setting_rows()]
         click(app.setting_rects()[rows.index("Crosshair")], 0.8)
         check("crosshair: the next one", s["crosshair"] == "dot", s["crosshair"])

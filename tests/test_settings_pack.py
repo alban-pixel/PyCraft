@@ -1,4 +1,4 @@
-from pycraft.app import DEFAULT_SETTINGS, fit_text, next_pack, parse_settings
+from pycraft.settings import DEFAULT_SETTINGS, fit_text, next_pack, parse_settings
 from pycraft.packs import PackInfo
 
 A = PackInfo("A", "/packs/a", "", "1.8")

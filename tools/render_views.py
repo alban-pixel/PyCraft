@@ -105,7 +105,8 @@ if __name__ == "__main__":
     random.seed(7)
     from pycraft.render import shaders as R
     patch_shaders(R)
-    from pycraft.app import App, parse_settings
+    from pycraft.app import App
+    from pycraft.settings import parse_settings
     from pycraft.world import World
 
     log = open(os.path.join(OUT, "log%s.txt" % TAG), "w")

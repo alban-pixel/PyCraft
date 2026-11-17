@@ -8,7 +8,8 @@ import numpy as np
 from pycraft import blocks as B
 from pycraft.blocks import TINT_ALPHA
 from pycraft.tiles import block_colors, build_tiles, tiles_to_atlas
-from pycraft.app import icon_palette, load_tiles
+from pycraft.icons import icon_palette
+from pycraft.settings import load_tiles
 from pycraft.packs import find_packs, load_pack
 from pycraft.render import split_tiles
 from tests.packfactory import make_pack, png, solid

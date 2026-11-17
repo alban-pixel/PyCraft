@@ -27,7 +27,10 @@ render/     OpenGL : maillages de blocs (chunks), terrain lointain (far), ombres
             palette, shaders GLSL (shaders), et le Renderer qui les assemble
 controls.py actions du jeu et touche de chacune (modifiables dans les réglages)
 ui.py       HUD et menus : panneaux, boutons, onglets, curseurs, thème de 16 couleurs
-app.py      application Pyxel : écrans, entrées, casser/poser, jour/nuit, son (`python -m pycraft`)
+app.py      application Pyxel (`python -m pycraft`) : boucle, états, partie, monde ; ses écrans
+            sont des classes dont App hérite : screens/ (menus, réglages, inventaire, HUD, chat),
+            play.py (jouer), sound.py (sons, musique)
+settings.py valeurs, défauts et onglets des réglages ; sky.py ciel et lumière ; icons.py icônes
 ```
 
 ## Terrain

@@ -30,7 +30,13 @@ pas de version web Pyxel.
 
 ```
 pycraft/          le jeu (python -m pycraft)
-  app.py          application Pyxel : écrans, entrées, casser/poser, cycle jour/nuit
+  app.py          application Pyxel : boucle, états, partie (App)
+  screens/        écrans : menus, réglages, inventaire, HUD, chat
+  play.py         jouer : bouger, regarder, casser, poser, leviers
+  settings.py     réglages : valeurs, défauts, onglets
+  sound.py        sons et musique
+  sky.py          ciel et lumière au fil du jour
+  icons.py        icônes des blocs
   terrain.py      génération du terrain : continents, montagnes, rivières, biomes
   world.py        monde : sections à la demande, état des blocs, sauvegarde
   builder.py      processus workers : génération + maillage des chunks

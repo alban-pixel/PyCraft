@@ -221,7 +221,12 @@ pyxel.screen  The frame is copied into Pyxel's screen, then Pyxel draws the HUD 
   tabs, setting rows, sliders, key caps, slots, progress bars, tooltips. Its 16 colors (dark
   stone, warm white, amber for what is chosen) are the first 16 of the palette
 - `autoscale.py`: picks the 3D view's render scale from the time frames take (3D resolution: Auto)
-- `app.py`: the Pyxel app: screens, input, breaking and placing, day/night, saving, sound and HUD
+- `app.py`: the Pyxel app (`App`): the window, the frame loop, the states, starting and saving a game,
+  drawing the world. Its screens are classes it inherits from: `screens/menus.py` (title and pause),
+  `screens/settings.py`, `screens/inventory.py`, `screens/hud.py`, `screens/chat.py`, and `play.py`
+  (moving, looking, breaking, placing, levers), with `sound.py` for the sounds and music
+- `settings.py`: the settings' values, defaults and tabs, and reading `settings.json`
+- `sky.py`: the colors of the sky and the light through the day; `icons.py`: the block icons
 
 ### The terrain
 
