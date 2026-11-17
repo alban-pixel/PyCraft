@@ -1,0 +1,25 @@
+# The unit tests, on every push to main and every pull request, on the three systems the game runs
+# on. (The checks in tools/ need a graphics card: run them by hand, see tools/README.md.)
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install the game and pytest
+        run: python -m pip install -e ".[dev]"
+      - name: Run the tests (the OpenGL ones are skipped without a graphics card)
+        run: python -m pytest -q -rs

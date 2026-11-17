@@ -8,7 +8,8 @@ commits and what may go in the repository. In short:
 - The game is the `pycraft` package (Pyxel for the window, `moderngl` for the 3D). From the
   repository's root: `python -m pip install -e ".[dev]"` once, then `python -m pycraft` runs it
   and `python -m pytest` runs the tests.
-- Before saying a change is done: the tests pass, and the game starts and plays.
+- Before saying a change is done: the tests pass, and the game starts and plays. For the drawing,
+  the menus or the controls, also run the checks in `tools/` (see `tools/README.md`).
 - Don't move or rename many files without the owner's go-ahead: it conflicts with work in progress.
 - Never add files from Mojang (textures, sounds, models).
 - Specs and plans of roadmap items: `docs/superpowers/`. Engine notes: `docs/technique.md`.

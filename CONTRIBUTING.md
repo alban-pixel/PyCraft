@@ -24,8 +24,11 @@ python -m pytest
 python -m pycraft
 ```
 
-The tests must pass, and the game must start and play: walk, fly, break and place a block, open
-the menus. Say in the pull request what you checked, and what you could not.
+The tests must pass (GitHub runs them too, on Windows, macOS and Linux), and the game must start
+and play: walk, fly, break and place a block, open the menus. A change to the drawing, the menus
+or the controls also runs the checks in [`tools/`](tools/README.md): `python tools/holes.py`,
+`python tools/menus.py`, `python tools/play_window.py`. Say in the pull request what you
+checked, and what you could not.
 
 ## Commits
 
