@@ -14,7 +14,7 @@ ACTIONS = [  # (name in the settings file, name in the menus, default key)
     ("fly", "Fly on/off", "F"),
     ("zoom", "Zoom", "C"),
     ("break", "Break a block", "MOUSE LEFT"),
-    ("place", "Place a block", "MOUSE RIGHT"),
+    ("place", "Place, use a block", "MOUSE RIGHT"),
     ("pick", "Pick the block", "MOUSE MIDDLE"),
     ("inventory", "All the blocks", "E"),
     ("chat", "Chat, commands", "T"),

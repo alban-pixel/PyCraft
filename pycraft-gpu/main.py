@@ -13,12 +13,16 @@ import numpy as np
 import pyxel
 
 import packs
+import redstone
 from autoscale import AutoScale
+from blocks import (DOWN, EAST, FACING_VECTORS, LEVER, NORTH, OPAQUE, OPPOSITE, PISTON, REDSTONE_TORCH,
+                    REDSTONE_WIRE, REPEATER, SOUTH, STICKY_PISTON, STONE_BUTTON, STONE_PRESSURE_PLATE, UP, WEST)
 from blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, FACING, GROWS_ON, PLACEABLE, PLANT, SOLID,
-                    T_WATER,
+                    T_REDSTONE_DUST, T_WATER,
                     TILE, TINT_ALPHA, UNBREAKABLE, WATER, build_tiles, tiles_to_atlas, turned)
 from controls import ACTIONS, LABELS, Controls
 from player import Player
+from sim import Simulation
 from renderer import FIXED_COLORS, LOD_QUALITY_NAMES, Renderer, oklab_to_srgb, srgb_to_oklab
 from terrain import SEA_LEVEL
 from ui import (AMBER, ASH, BLACK, COAL, CREAM, GOLD, IRON, PALETTE, RUST, TEXT, TEXT_DIM, TEXT_HOT, WHITE, Ui,
@@ -83,6 +87,7 @@ NIGHT_ZENITH, NIGHT_HORIZON = (0.01, 0.01, 0.06), (0.06, 0.08, 0.18)
 SUNSET = (1.0, 0.55, 0.3)
 UNDERWATER_FOG = (0.08, 0.2, 0.5)
 ICON_GREEN, ICON_BLUE = (0.5, 0.72, 0.33), (0.25, 0.45, 0.95)  # grass/leaves and water in the inventory
+ICON_RED = (0.9, 0.12, 0.08)  # redstone dust in the inventory
 # Light (RGB): direct light from the sun or the moon, and the light of the whole sky
 NOON_LIGHT, SUNSET_LIGHT, MOON_LIGHT = (0.56, 0.54, 0.48), (0.6, 0.36, 0.2), (0.1, 0.12, 0.17)
 DAY_SKY_LIGHT, NIGHT_SKY_LIGHT, SUNSET_SKY_LIGHT = (0.52, 0.56, 0.63), (0.17, 0.19, 0.28), (0.58, 0.46, 0.44)
@@ -100,9 +105,12 @@ NATURE = {"Grass", "Dirt", "Stone", "Sand", "Water", "Snow", "Ice", "Gravel", "R
           "Deepslate", "Clay", "Mud", "Moss", "Granite", "Diorite", "Andesite", "Obsidian", "Coarse dirt", "Mycelium",
           "Farmland", "Packed ice", "Netherrack", "Soul sand", "End stone", "Brown mushroom block",
           "Red mushroom block", "Mushroom stem", "Pumpkin", "Melon"}
-SPECIAL = {"Crafting table", "Furnace", "Dispenser", "Dropper", "Note block", "Jukebox", "TNT", "Piston",
-           "Sticky piston", "Command block", "Glowstone", "Sea lantern", "Redstone lamp", "Jack o'lantern",
-           "Monster spawner", "Slime block", "Sponge", "Wet sponge", "Bookshelf"}
+SPECIAL = {"Crafting table", "Furnace", "Dispenser", "Dropper", "Note block", "Jukebox", "Command block",
+           "Glowstone", "Sea lantern", "Jack o'lantern", "Monster spawner", "Slime block", "Sponge", "Wet sponge",
+           "Bookshelf"}
+REDSTONE = {"Lever", "Stone button", "Pressure plate", "Redstone dust", "Redstone torch", "Repeater",
+            "Redstone lamp", "Piston", "Sticky piston", "TNT", "Block of redstone"}
+INTERACTIVE = {LEVER, STONE_BUTTON, REPEATER}  # a right click works them instead of placing a block
 
 
 def block_category(block):
@@ -111,6 +119,8 @@ def block_category(block):
         return "Plants"
     if name.lower().endswith(("wool", "terracotta", "stained glass")):
         return "Colors"
+    if name in REDSTONE:
+        return "Redstone"
     if name in SPECIAL:
         return "Special"
     if name in NATURE or name.endswith((" ore", " log", " leaves")):
@@ -119,7 +129,49 @@ def block_category(block):
 
 
 CATEGORIES = [(tab, [b for b in PLACEABLE if tab == "All" or block_category(b) == tab])
-              for tab in ("All", "Nature", "Building", "Colors", "Plants", "Special")]
+              for tab in ("All", "Nature", "Building", "Colors", "Plants", "Redstone", "Special")]
+
+
+def right_click(block, first_press):
+    """What a right click on this block does: "act" (flip a lever...), "place" a block against it,
+    or nothing. Held down, it repeats placing, but never flips a lever again or places on it."""
+    if block in INTERACTIVE:
+        return "act" if first_press else None
+    return "place"
+
+
+def _main_direction(v, horizontal=False):
+    """The facing (blocks.FACING_VECTORS) a vector points along the most."""
+    x, y, z = v
+    if not horizontal and abs(y) > max(abs(x), abs(z)):
+        return UP if y > 0 else DOWN
+    if abs(x) > abs(z):
+        return EAST if x > 0 else WEST
+    return SOUTH if z > 0 else NORTH
+
+
+def placement(block, hit, previous, look, world):
+    """The (block, state) to put in the cell previous, aiming at the block hit while looking along
+    look; None when it can't go there (a lever needs a full block to be fixed to...)."""
+    face = tuple(p - h for p, h in zip(previous, hit))
+    facing = FACING_VECTORS.index(face) if face in FACING_VECTORS else UP
+    floor = OPAQUE[world.get(previous[0], previous[1] - 1, previous[2])]
+    if block in (LEVER, STONE_BUTTON, REDSTONE_TORCH):
+        if not OPAQUE[world.get(*hit)] or (block == REDSTONE_TORCH and facing == DOWN):
+            return None
+        state = facing
+        if block == LEVER and facing in (UP, DOWN) and abs(look[0]) > abs(look[2]):
+            state |= 16  # a lever on the floor turns with the player's look
+        return block, state
+    if block in (REDSTONE_WIRE, STONE_PRESSURE_PLATE, REPEATER):
+        if not floor:
+            return None
+        return block, (_main_direction(look, horizontal=True) if block == REPEATER else 0)
+    if block in (PISTON, STICKY_PISTON):
+        return block, OPPOSITE[_main_direction(look)]  # its face looks back at the player
+    return block, 0
+
+
 # The block the "pick" key puts in the hotbar for each block of the world (a turned furnace: a furnace)
 PICKS = {b: b for b in PLACEABLE}
 PICKS.update({version: block for block, versions in FACING.items() for version in versions})
@@ -158,6 +210,8 @@ def icon_palette(atlas):
     tint = np.broadcast_to(np.array(ICON_GREEN), rgb.shape).copy()
     ty, tx = divmod(T_WATER, ATLAS_TILES)
     tint[ty * TILE:(ty + 1) * TILE, tx * TILE:(tx + 1) * TILE] = ICON_BLUE
+    ty, tx = divmod(T_REDSTONE_DUST, ATLAS_TILES)
+    tint[ty * TILE:(ty + 1) * TILE, tx * TILE:(tx + 1) * TILE] = ICON_RED
     rgb = np.where((atlas[..., 3] == TINT_ALPHA)[..., None], rgb * tint, rgb)
     seen = atlas[..., 3] >= 128
     lab = srgb_to_oklab(rgb.reshape(-1, 3)).reshape(rgb.shape)
@@ -359,6 +413,7 @@ class App:
             pyxel.colors[i] = color
         self.renderer = Renderer(ctx, self.world, tiles, BASE_WIDTH, BASE_HEIGHT,
                                  list(pyxel.colors)[:16] + icon_colors)
+        self.new_simulation()
         self.palette_version = None
         self.use_palette()
         self.renderer.render_distance = self.settings["render_distance"]
@@ -648,7 +703,25 @@ class App:
             "time_of_day": self.time_of_day,
             "hotbar": np.array(self.hotbar),
             "selected": self.selected,
+            "ticks": self.sim.pending(),  # the machines' updates still to come
         }
+
+    def new_simulation(self, pending=None):
+        """The clock of the world's machines (sim.py), for the current world."""
+        self.changes = []  # blocks the machines changed this frame: meshed together, once per section
+        self.sim = Simulation(self.world, lambda x, y, z: self.changes.append((x, y, z)))
+        redstone.install(self.sim)
+        self.sim.every_tick.append(self.feel_plates)
+        if pending is not None:
+            self.sim.load_pending(pending)
+
+    def feel_plates(self, sim):
+        """Tell the simulation where the player stands, for the pressure plates."""
+        x, y, z = (math.floor(c) for c in self.player.pos)
+        cell = (x, y, z)
+        before, sim.occupied = sim.occupied, {cell}
+        if cell not in before and self.world.get(*cell) == STONE_PRESSURE_PLATE:
+            sim.notify(cell)
 
     def save(self):
         tmp = self.save_path + ".tmp.npz"
@@ -665,6 +738,7 @@ class App:
                 self.spawn = self.world.find_spawn()
             self.player = Player(*self.spawn)
             self.hotbar, self.selected, self.time_of_day = list(DEFAULT_HOTBAR), 0, 0.05
+            self.new_simulation()
             self.save()
         elif self.save_data is not None:
             data = self.save_data
@@ -674,6 +748,7 @@ class App:
             self.time_of_day = float(data["time_of_day"])
             self.hotbar = [int(b) for b in data["hotbar"]]
             self.selected = int(data["selected"])
+            self.new_simulation(data.get("ticks"))
         self.save_data = None
         self.play_time = self.last_save = self.selected_time = 0.0
         self.show_help = self.settings["show_help"]
@@ -1108,6 +1183,12 @@ class App:
         keys = self.controls
         self.play_time += dt
         self.time_of_day = (self.time_of_day + dt / (self.settings["day_length"] * 60)) % 1.0
+        self.sim.update(dt)  # the machines: 20 ticks a second
+        if self.sim.events:
+            for event, pos in self.sim.events:
+                if event == "explode":
+                    self.sfx(SND_BREAK)
+            self.sim.events.clear()
         if self.play_time - dt < HELP_SECONDS <= self.play_time:
             self.show_help = False  # hide the help once, after the first seconds of play
         autosave = self.settings["autosave"] * 60
@@ -1156,13 +1237,25 @@ class App:
             if UNBREAKABLE[self.world.get(x, y, z)]:
                 self.notify("Bedrock can't be broken")
             else:
-                self.world.set(x, y, z, 0)
-                self.renderer.block_changed(x, y, z)
+                broken, state = self.world.get(x, y, z), self.world.get_state(x, y, z)
+                self.sim.set_block(x, y, z, 0)
+                if broken in redstone.SOURCES:  # what it powered goes dark
+                    redstone.spread(self.sim, (x, y, z))
+                    support = redstone.support_of(broken, state, (x, y, z))
+                    if support is not None:
+                        redstone.spread(self.sim, support)
                 if PLANT[self.world.get(x, y + 1, z)]:  # the plant on it goes too
-                    self.world.set(x, y + 1, z, 0)
-                    self.renderer.block_changed(x, y + 1, z)
+                    self.sim.set_block(x, y + 1, z, 0)
                 self.sfx(SND_BREAK)
-        elif self.target and keys.pressed("place", hold=hold, repeat=repeat):
+        elif self.target and keys.pressed("place", hold=hold, repeat=repeat) and right_click(
+                self.world.get(*self.target[0]), keys.pressed("place")) == "act":
+            x, y, z = self.target[0]
+            act = {LEVER: redstone.toggle_lever, STONE_BUTTON: redstone.press_button,
+                   REPEATER: redstone.cycle_repeater}[self.world.get(x, y, z)]
+            act(self.sim, x, y, z)
+            self.sfx(SND_CLICK)
+        elif self.target and keys.pressed("place", hold=hold, repeat=repeat) and right_click(
+                self.world.get(*self.target[0]), keys.pressed("place")) == "place":
             # Aiming at a plant puts the block in its place, like on the ground under it
             x, y, z = self.target[0] if PLANT[self.world.get(*self.target[0])] else self.target[1]
             block = turned(self.hotbar[self.selected], self.player.forward())  # a front faces the player
@@ -1172,9 +1265,12 @@ class App:
                 grounds = [BLOCK_NAMES[g].lower() for g in np.flatnonzero(GROWS_ON[block])]
                 self.notify("%s grows only on %s or %s" % (BLOCK_NAMES[block], ", ".join(grounds[:-1]), grounds[-1]))
             elif free and (not SOLID[block] or not self.player.overlaps(x, y, z)):  # plants and water: walk-through
-                self.world.set(x, y, z, block)
-                self.renderer.block_changed(x, y, z)
-                self.sfx(SND_PLACE)
+                placed = placement(block, self.target[0], (x, y, z), self.player.forward(), self.world)
+                if placed is None:
+                    self.notify("%s needs a full block to go on" % BLOCK_NAMES[block])
+                else:
+                    self.sim.set_block(x, y, z, *placed)
+                    self.sfx(SND_PLACE)
 
     def pick_block(self, block):
         """The block looked at becomes the chosen one: its hotbar slot if it has one, else it
@@ -1288,6 +1384,9 @@ class App:
     # --- Draw ----------------------------------------------------------------------------------
 
     def draw(self):
+        if self.changes:  # what the machines and the player changed this frame: meshed once per section
+            changes, self.changes = self.changes, []
+            self.renderer.blocks_changed(list(dict.fromkeys(changes)))
         now = time.perf_counter()
         self.fps = self.fps * 0.9 + 0.1 / max(now - self.last_draw, 1e-6)
         self.last_draw = now
@@ -1496,7 +1595,7 @@ class App:
              (key("jump"), "Jump, swim, fly up"), (key("down"), "Fly down"), (key("sprint"), "Sprint, fly fast"),
              (key("fly"), "Fly on/off"), (key("zoom"), "Zoom"), (key("inventory"), "All the blocks"),
              (key("chat"), "Chat, commands")],
-            [(key("break"), "Break"), (key("place"), "Place"), (key("pick"), "Pick the block"),
+            [(key("break"), "Break"), (key("place"), "Place, use"), (key("pick"), "Pick the block"),
              ("1-9, WHEEL", "Choose a block"), (key("mouse"), "Free the mouse"), (key("info"), "Info"),
              (key("help"), "Hide this help"), ("ESC", "Menu, settings")],
         ]

@@ -25,9 +25,15 @@ def test_tiles_shape(tiles):
     assert tiles.shape == (256, 16, 16, 4) and tiles.dtype == np.uint8
 
 
+def _as_tiles(atlas):
+    return atlas.reshape(16, 16, 16, 16, 4).transpose(0, 2, 1, 3, 4).reshape(256, 16, 16, 4)
+
+
 def test_tiles_match_atlas(tiles, reference):
-    assert np.array_equal(tiles_to_atlas(tiles), reference["atlas"])
-    assert np.array_equal(blocks.build_atlas(), reference["atlas"])
+    # The tiles that existed when the reference was made are unchanged (newer tiles come after)
+    old = blocks.T_LEVER
+    assert np.array_equal(_as_tiles(tiles_to_atlas(tiles))[:old], _as_tiles(reference["atlas"])[:old])
+    assert np.array_equal(_as_tiles(blocks.build_atlas())[:old], _as_tiles(reference["atlas"])[:old])
 
 
 def test_resize_roundtrip(tiles):
@@ -52,8 +58,9 @@ def test_resize_odd_sizes():
 
 
 def test_block_colors_unchanged(tiles, reference):
-    assert np.allclose(blocks.block_colors(tiles), reference["block_colors"])
-    assert np.allclose(renderer.tile_averages(tiles), reference["tile_averages"])
+    n = len(reference["block_colors"])  # (the blocks and tiles added since come after)
+    assert np.allclose(blocks.block_colors(tiles)[:n], reference["block_colors"])
+    assert np.allclose(renderer.tile_averages(tiles)[:blocks.T_LEVER], reference["tile_averages"][:blocks.T_LEVER])
 
 
 def test_block_colors_size_free(tiles):

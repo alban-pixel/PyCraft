@@ -14,7 +14,8 @@ import traceback
 import numpy as np
 
 from blocks import (ACACIA_LEAVES, ALL_LEAVES, BLOCK_TILES, CUTOUT, FERN, GLOWING, GRASS, JUNGLE_LEAVES, LEAVES,
-                    NUM_BLOCKS, OPAQUE, PLANT, PLANTS, SELF_CULL, TALL_GRASS, WATER)
+                    NUM_BLOCKS, OPAQUE, PLANT, PLANTS, SELF_CULL, SHAPED, TALL_GRASS, THIN, WATER)
+from shapes import model_quads, wire_tint
 from terrain import CHUNK
 from world import World
 
@@ -36,10 +37,12 @@ PLANT_CORNERS = [[(0, 1, 0), (1, 1, 1), (1, 0, 1), (0, 0, 0)], [(1, 1, 0), (0, 1
 FACE_CORNERS = [np.array(corners, dtype=np.float32) for corners in [c for _, c in FACES] + PLANT_CORNERS]
 TOP_CORNERS = [np.array(corners)[:, 1] == 1 for _, corners in FACES]
 
-# One vertex: position relative to its column's corner; atlas tile, face corner (0-3), face
-# direction (0-5, 6-7 for plants) and kind; biome color, and in its alpha the ambient occlusion
-# (darker in corners)
-VERTEX = np.dtype([("pos", "<f4", 3), ("info", "u1", 4), ("tint", "u1", 4)])
+# One vertex: position relative to its column's corner; tile, face corner (0-3), face direction
+# (0-5, 6-7 for plants) and kind; biome color, and in its alpha the ambient occlusion (darker in
+# corners); where it is on its tile (u, v in 16ths, then two unused bytes): a whole tile for a
+# cube's face, part of it for a box of a shaped block
+VERTEX = np.dtype([("pos", "<f4", 3), ("info", "u1", 4), ("tint", "u1", 4), ("uv", "u1", 4)])
+TILE_CORNERS = np.array([[0, 0], [16, 0], [16, 16], [0, 16]], np.uint8)  # u, v of corners 0-3
 # Kind of face: 0 opaque, 1 see-through texels (glass), 2 water, 3 leaves (their holes look dark, but
 # let the light through for the shadows), 4 plants (see-through texels, lit as if they faced up), 5 opaque
 # and glowing (lamps: not darkened by the light around)
@@ -49,6 +52,7 @@ KIND[list(ALL_LEAVES)] = 3
 KIND[WATER] = 2
 KIND[list(PLANTS)] = 4
 KIND[GLOWING] = 5
+KIND[list(THIN)] = 1  # small redstone parts: see-through around their pixels (their boxes may say otherwise)
 TINT = np.zeros(NUM_BLOCKS, np.uint8)  # 1 grass, 2 leaves, 3 water: which biome color a block takes
 TINT[[GRASS, TALL_GRASS, FERN]] = 1
 TINT[[LEAVES, JUNGLE_LEAVES, ACACIA_LEAVES]] = 2
@@ -99,11 +103,14 @@ _BORDER = {-1: (slice(CHUNK - 1, CHUNK), slice(0, 1)), 0: (slice(0, CHUNK), slic
            1: (slice(0, 1), slice(CHUNK + 1, CHUNK + 2))}
 
 
-def _quads(pos, blocks, tiles, face, tints, i, k, ao):
-    """Vertices of n quads turned the same way: corners pos (n, 4, 3), their blocks, atlas tiles and
-    place (i, k) in the column, which picks the biome color; ao: brightness (0-255) of each corner."""
+def _quads(pos, blocks, tiles, face, tints, i, k, ao, uv=None):
+    """Vertices of n quads turned the same way: corners pos (n, 4, 3), their blocks, tiles and
+    place (i, k) in the column, which picks the biome color; ao: brightness (0-255) of each corner;
+    uv: (n, 4, 2) place of each corner on its tile in 16ths (default: the whole tile)."""
     v = np.empty((blocks.size, 4), VERTEX)
     v["pos"] = pos
+    v["uv"] = 0
+    v["uv"][..., :2] = TILE_CORNERS[None] if uv is None else uv
     info = np.empty((blocks.size, 4, 4), np.uint8)
     info[..., 0] = tiles[:, None]
     info[..., 1] = np.arange(4)
@@ -140,10 +147,11 @@ def mesh_section(world, col, cx, cy, cz):
                 (sx, tx), (sy, ty), (sz, tz) = _BORDER[dx], _BORDER[dy], _BORDER[dz]
                 padded[tx, ty, tz] = n if isinstance(n, int) else n[sx, sy, sz]
     core = padded[1:-1, 1:-1, 1:-1]
+    shaped = SHAPED[core]
     water_above = padded[1:-1, 2:, 1:-1] == WATER
     occludes = OCCLUDES[padded].ravel()
     tints = [None, col.grass, col.foliage, col.water_tint]
-    cube = (core != 0) & ~PLANT[core]
+    cube = (core != 0) & ~PLANT[core] & ~shaped
     parts = []
     for face, ((dx, dy, dz), _) in enumerate(FACES):
         neighbor = padded[1 + dx:1 + dx + CHUNK, 1 + dy:1 + dy + CHUNK, 1 + dz:1 + dz + CHUNK]
@@ -171,7 +179,48 @@ def mesh_section(world, col, cx, cy, cz):
         for face in PLANT_FACES:
             parts.append(_quads(corner + FACE_CORNERS[face][None], blocks, BLOCK_TILES[blocks, 0], face, tints, i, k,
                                 255))
+    if shaped.any():
+        parts.append(_shaped_vertices(world, padded, cx, cy, cz, np.nonzero(shaped)))
     return np.concatenate(parts) if parts else None
+
+
+def _padded_states(world, cx, cy, cz):
+    """The states of a section with its one-block border (zeros where no block has a state)."""
+    out = np.zeros((P, P, P), dtype=np.uint8)
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                st = world.state_section(cx + dx, cy + dy, cz + dz)
+                if st is not None:
+                    (sx, tx), (sy, ty), (sz, tz) = _BORDER[dx], _BORDER[dy], _BORDER[dz]
+                    out[tx, ty, tz] = st[sx, sy, sz]
+    return out
+
+
+def _shaped_vertices(world, padded, cx, cy, cz, where):
+    """Vertices of the blocks drawn from boxes (shapes.py): redstone parts and pistons. Few per
+    section, so one at a time. A face on the side of its cell is hidden by an opaque neighbor."""
+    states = _padded_states(world, cx, cy, cz)
+    quads = []
+    for i, j, k in zip(*where):
+        block, state = int(padded[i + 1, j + 1, k + 1]), int(states[i + 1, j + 1, k + 1])
+
+        def around(dx, dy, dz, i=i, j=j, k=k):
+            return int(padded[i + 1 + dx, j + 1 + dy, k + 1 + dz]), int(states[i + 1 + dx, j + 1 + dy, k + 1 + dz])
+        for q in model_quads(block, state, around):
+            if q.boundary:
+                (dx, dy, dz), _ = FACES[q.face]
+                if OPAQUE[padded[i + 1 + dx, j + 1 + dy, k + 1 + dz]]:
+                    continue
+            quads.append((i, j, k, block, state, q))
+    v = np.empty((len(quads), 4), VERTEX)
+    for n, (i, j, k, block, state, q) in enumerate(quads):
+        v[n]["pos"] = q.corners + (i, j + cy * CHUNK, k)
+        v[n]["info"] = (q.tile, 0, q.face, KIND[block] if q.kind is None else q.kind)
+        v[n]["tint"] = (*wire_tint(state), 255) if q.tint else (255, 255, 255, 255)
+        v[n]["uv"] = 0
+        v[n]["uv"][:, :2] = q.uv
+    return v.reshape(-1)
 
 
 def wanted_sections(world, cx, cz):
@@ -210,8 +259,8 @@ def _help_sampler(world, shared, helpers):
 
 def _worker(tasks, results, shared=None):
     """Main loop of a worker process. Messages:
-    ("world", generation, seed, edited sections) start over with another world
-    ("set", x, y, z, block)                      a block the player changed
+    ("world", generation, seed, edited sections, their states) start over with another world
+    ("set", x, y, z, block, state)               a block the player (or a machine) changed
     ("columns", generation, [column])            send these columns back (for the game's own world)
     ("build", generation, (cx, cy, cz) of the camera, [(column, version, sections done, caves)])
     shared: the queues where the distant terrain's sampler leaves work for idle builders.
@@ -234,12 +283,13 @@ def _worker(tasks, results, shared=None):
             continue
         try:
             if msg[0] == "world":
-                _, generation, seed, edited = msg
+                _, generation, seed, edited, states = msg
                 world, forget_center = World(seed), None
                 for key, blocks in edited:
                     world.sections[key] = blocks
                     world.edited.add(key)
                     world.edited_columns.setdefault((key[0], key[2]), set()).add(key[1])
+                world.states.update(states)
             elif msg[0] == "set":
                 world.set(*msg[1:])
             elif msg[0] == "columns" and msg[1] == generation:
@@ -282,13 +332,14 @@ class Builders:
         self.generation += 1
         edited = [(k, world.sections[k]) for k in world.edited]
         edited = [(k, np.full((CHUNK,) * 3, s, np.uint8) if isinstance(s, int) else s) for k, s in edited]
+        states = {k: s for k, s in world.states.items() if k in world.edited}
         for tasks, flying in zip(self.tasks, self.in_flight):
-            tasks.put(("world", self.generation, world.seed, edited))
+            tasks.put(("world", self.generation, world.seed, edited, states))
             flying.clear()
 
-    def block_changed(self, x, y, z, block):
+    def block_changed(self, x, y, z, block, state=0):
         for tasks in self.tasks:
-            tasks.put(("set", x, y, z, block))
+            tasks.put(("set", x, y, z, block, state))
 
     def busy(self, key):
         return any(key in flying for flying in self.in_flight)

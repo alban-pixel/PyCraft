@@ -34,6 +34,9 @@ TINT_ALPHA = 200  # texels with this alpha take the biome color (grass, leaves, 
  REDSTONE_LAMP, JACK_O_LANTERN, MONSTER_SPAWNER, FURNACE_WEST, FURNACE_SOUTH, FURNACE_NORTH, DISPENSER_WEST,
  DISPENSER_SOUTH, DISPENSER_NORTH, DROPPER_WEST, DROPPER_SOUTH, DROPPER_NORTH, JACK_O_LANTERN_WEST,
  JACK_O_LANTERN_SOUTH, JACK_O_LANTERN_NORTH) = range(OAK_SAPLING + 1, OAK_SAPLING + 85)
+# Redstone: blocks with a state and a shape of their own (see shapes.py, redstone.py)
+(LEVER, STONE_BUTTON, STONE_PRESSURE_PLATE, REDSTONE_WIRE, REDSTONE_TORCH, REPEATER, REDSTONE_LAMP_OFF,
+ PISTON_HEAD) = range(JACK_O_LANTERN_NORTH + 1, JACK_O_LANTERN_NORTH + 9)
 BLOCK_NAMES = ["Air", "Grass", "Dirt", "Stone", "Cobblestone", "Oak planks", "Oak log", "Oak leaves", "Sand", "Brick",
                "Glass", "Water", "Coal ore", "Iron ore", "Bedrock", "Snow", "Ice", "Gravel", "Sandstone",
                "Red sand", "Terracotta", "Orange terracotta", "White terracotta", "Podzol", "Spruce log",
@@ -67,8 +70,16 @@ BLOCK_NAMES = ["Air", "Grass", "Dirt", "Stone", "Cobblestone", "Oak planks", "Oa
                "Dispenser", "Dropper", "Note block", "Jukebox", "TNT", "Piston", "Sticky piston", "Command block",
                "Glowstone", "Sea lantern", "Redstone lamp", "Jack o'lantern", "Monster spawner", "Furnace", "Furnace",
                "Furnace", "Dispenser", "Dispenser", "Dispenser", "Dropper", "Dropper", "Dropper", "Jack o'lantern",
-               "Jack o'lantern", "Jack o'lantern"]
+               "Jack o'lantern", "Jack o'lantern",
+               "Lever", "Stone button", "Pressure plate", "Redstone dust", "Redstone torch", "Repeater",
+               "Redstone lamp", "Piston head"]
 NUM_BLOCKS = len(BLOCK_NAMES)
+
+# Directions a block with a state can face, in the order its state numbers them: 0 is up, so a
+# block saved before states existed (state 0) faces up, as it was drawn
+FACING_VECTORS = [(0, 1, 0), (0, -1, 0), (1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1)]
+UP, DOWN, EAST, WEST, SOUTH, NORTH = range(6)
+OPPOSITE = [DOWN, UP, WEST, EAST, NORTH, SOUTH]
 
 # Blocks with a front, which faces the player who places them: the block in the inventory has its front
 # toward +x, and three more numbers turn it toward -x, +z and -z
@@ -80,7 +91,7 @@ FACING = {block: (block, west, south, north) for block, west, south, north in [
 TURNED = {b for versions in FACING.values() for b in versions[1:]}
 
 # Blocks the player can pick in the inventory (E)
-PLACEABLE = [b for b in range(1, NUM_BLOCKS) if b != BEDROCK and b not in TURNED]
+PLACEABLE = [b for b in range(1, NUM_BLOCKS) if b not in (BEDROCK, PISTON_HEAD, REDSTONE_LAMP) and b not in TURNED]
 DEFAULT_HOTBAR = [GRASS, DIRT, STONE, COBBLESTONE, PLANKS, LOG, LEAVES, GLASS, BRICK]
 
 
@@ -98,8 +109,10 @@ PLANTS = (TALL_GRASS, FERN, DEAD_BUSH, *FLOWERS, OAK_SAPLING)
 
 # Properties, as lookup tables indexed by block id (they also work on whole NumPy arrays of blocks)
 # Hides the faces of the blocks next to it
-OPAQUE = ~_flags(AIR, GLASS, WATER, MONSTER_SPAWNER, *ALL_LEAVES, *ALL_STAINED_GLASS, *PLANTS)
-SOLID = ~_flags(AIR, WATER, *PLANTS)  # the player collides with it
+# Small redstone parts: drawn from boxes (shapes.py), walked through, seen through
+THIN = (LEVER, STONE_BUTTON, STONE_PRESSURE_PLATE, REDSTONE_WIRE, REDSTONE_TORCH, REPEATER)
+OPAQUE = ~_flags(AIR, GLASS, WATER, MONSTER_SPAWNER, *ALL_LEAVES, *ALL_STAINED_GLASS, *PLANTS, *THIN, PISTON_HEAD)
+SOLID = ~_flags(AIR, WATER, *PLANTS, *THIN)  # the player collides with it
 CUTOUT = _flags(GLASS, MONSTER_SPAWNER, *ALL_LEAVES, *ALL_STAINED_GLASS, *PLANTS)  # see-through where the texture is
 PLANT = _flags(*PLANTS)  # drawn as two crossed quads
 SELF_CULL = _flags(GLASS, WATER, *ALL_LEAVES, *ALL_STAINED_GLASS)  # no faces between two blocks of this same type
@@ -107,6 +120,10 @@ TARGETABLE = ~_flags(AIR, WATER)  # can be aimed at and broken
 UNBREAKABLE = _flags(BEDROCK)
 # Lamps: drawn at full brightness, day and night (they light nothing around them)
 GLOWING = _flags(GLOWSTONE, SEA_LANTERN, REDSTONE_LAMP, *FACING[JACK_O_LANTERN])
+# Drawn from boxes, turned by their state (shapes.py): the redstone parts, and the pistons (a cube
+# facing its way, or a short base once its head is out)
+SHAPED = _flags(*THIN, PISTON_HEAD, PISTON, STICKY_PISTON)
+FLAT = _flags(*THIN)  # left out of the distant terrain's ground, like plants
 # The ground each plant grows on: GROWS_ON[plant, block under it]
 GROWS_ON = np.zeros((NUM_BLOCKS, NUM_BLOCKS), dtype=bool)
 GROWS_ON[np.ix_(PLANTS, (GRASS, DIRT, PODZOL))] = True
@@ -146,6 +163,8 @@ GROWS_ON[DEAD_BUSH] = _flags(SAND, RED_SAND)
  T_JUKEBOX_TOP, T_TNT_SIDE, T_TNT_TOP, T_PISTON_SIDE, T_PISTON_TOP, T_PISTON_BOTTOM, T_STICKY_PISTON_TOP,
  T_COMMAND_BLOCK, T_GLOWSTONE, T_SEA_LANTERN, T_REDSTONE_LAMP, T_JACK_O_LANTERN,
  T_SPAWNER) = range(T_OAK_SAPLING + 1, T_OAK_SAPLING + 84)
+(T_LEVER, T_REDSTONE_DUST, T_REDSTONE_TORCH_ON, T_REDSTONE_TORCH_OFF, T_REPEATER_OFF, T_REPEATER_ON,
+ T_REDSTONE_LAMP_OFF, T_PISTON_INNER) = range(T_SPAWNER + 1, T_SPAWNER + 9)
 
 
 def _faces(side, top=None, bottom=None):
@@ -369,6 +388,16 @@ BLOCK_TILES = np.array([
     JACK_O_LANTERN_FACES[1],
     JACK_O_LANTERN_FACES[2],
     JACK_O_LANTERN_FACES[3],
+    # The redstone blocks with a shape: their tiles come from shapes.py; these are their icons
+    # (face 0) and their color from afar (face 2)
+    _faces(T_LEVER),
+    _faces(T_STONE),
+    _faces(T_STONE),
+    _faces(T_REDSTONE_DUST),
+    _faces(T_REDSTONE_TORCH_ON),
+    _faces(T_REPEATER_OFF),
+    _faces(T_REDSTONE_LAMP_OFF),
+    _faces(T_PISTON_SIDE, T_PISTON_TOP),
 ], dtype=np.int32)
 
 
@@ -1067,6 +1096,41 @@ def build_tiles(seed=7):
     lamp[[0, 5, 10, 15]] = (84, 54, 34)  # the lamp's frame
     lamp[:, [0, 5, 10, 15]] = (84, 54, 34)
     tiles[T_REDSTONE_LAMP] = lamp
+    lamp_off = lamp * 0.55  # the same lamp, unlit
+    lamp_off[[0, 5, 10, 15]] = (70, 46, 30)
+    lamp_off[:, [0, 5, 10, 15]] = (70, 46, 30)
+    tiles[T_REDSTONE_LAMP_OFF] = lamp_off
+
+    # Redstone parts: a stick in the middle of the tile, as the boxes of shapes.py take it. Their
+    # own random numbers, so the tiles drawn after them stay as they were
+    rrng = np.random.default_rng(seed + 101)
+    stick = np.zeros((TILE, TILE), bool)
+    stick[6:, 7:9] = True
+    lever = np.zeros((TILE, TILE, 3))
+    lever[stick] = _noisy(rrng, (120, 92, 56), 0.12)[stick]
+    lever[6, 7:9] = (150, 118, 74)
+    tiles[T_LEVER], alpha[T_LEVER] = lever, stick
+    for t, flame in ((T_REDSTONE_TORCH_ON, (255, 40, 24)), (T_REDSTONE_TORCH_OFF, (96, 28, 22))):
+        torch = lever.copy()
+        torch[6:8, 7:9] = flame  # the tip
+        torch[5, 7:9] = flame
+        lit = stick.copy()
+        lit[5, 7:9] = True
+        tiles[t], alpha[t] = torch, lit
+    dust = np.zeros((TILE, TILE, 3))  # grey: colored by its power (see shapes.py)
+    cross = (np.abs(xs - 7.5) < 3) | (np.abs(ys - 7.5) < 3)
+    cross &= rrng.random((TILE, TILE)) < 0.85
+    dust[cross] = _noisy(rrng, (210, 210, 210), 0.12)[cross]
+    tiles[T_REDSTONE_DUST], alpha[T_REDSTONE_DUST], tint[T_REDSTONE_DUST] = dust, cross, cross
+    for t, line in ((T_REPEATER_OFF, (110, 30, 24)), (T_REPEATER_ON, (240, 40, 28))):
+        rep = _noisy(rrng, (160, 160, 160), 0.05)  # smooth stone, with its line of dust
+        rep[1:15, 7:9] = line
+        rep[[0, 15]] *= 0.8
+        rep[:, [0, 15]] *= 0.8
+        tiles[t] = rep
+    inner = _noisy(rrng, (116, 116, 116), 0.1)  # inside the piston, once its head is out
+    inner[(np.abs(xs - 7.5) < 2) & (np.abs(ys - 7.5) < 2)] = (60, 54, 48)
+    tiles[T_PISTON_INNER] = inner
     face = tiles[T_PUMPKIN_SIDE].copy()  # a pumpkin with a carved face, lit from inside
     candle = (255, 208, 84)
     for x in (3, 10):  # the eyes...

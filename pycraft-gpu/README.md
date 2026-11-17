@@ -55,10 +55,12 @@ a real graphics card driver.
   player who places them
 - Plants: tall grass, ferns, dead bushes, six kinds of flowers and oak saplings, which also grow wild
   in the world
+- Redstone that works (see below): levers, stone buttons, pressure plates, redstone dust, redstone
+  torches, repeaters, redstone lamps, pistons and sticky pistons, TNT and blocks of redstone
 - Walking, sprinting, jumping, swimming and flying (and flying fast)
 - A day and night cycle, with a sun, a moon and sunsets (20 minutes long, or 10, 40 or 60)
-- A title screen, a pause menu and a block inventory with tabs: Nature, Building, Colors, Plants
-  and Special
+- A title screen, a pause menu and a block inventory with tabs: Nature, Building, Colors, Plants,
+  Redstone and Special
 - Settings on five tabs, among them the resolution, the field of view, the mouse speed, the
   volumes, and a key of your choice for every action
 - Automatic scaling: the menus and the HUD keep the same size at every resolution, and the 3D view
@@ -80,7 +82,7 @@ These are the keys the game starts with. Every one in the first table can be cha
 | F | Toggle flying |
 | C | Zoom, for as long as it is held |
 | Left click | Break block (hold to repeat) |
-| Right click | Place block (hold to repeat) |
+| Right click | Place block (hold to repeat); on a lever: flip it; on a button: press it; on a repeater: change its delay |
 | Middle click | Pick the block you look at: its hotbar slot becomes the chosen one, or it takes the chosen slot's place |
 | E | All blocks: click one to put it in the selected slot (click a hotbar slot to select it). Tab / Shift+Tab or a click change the tab. If a tab's blocks don't all fit on the screen, they go on pages: mouse wheel, Left/Right, Page Up/Down or the arrows under the slots turn them |
 | T | Chat: `/tp x y z`, `/time set day\|noon\|sunset\|night\|midnight` |
@@ -326,6 +328,28 @@ into it, without being flipped afterward. Under 100% 3D resolution, the full-col
 the shader that turns it into palette colors scales it up first, with a Catmull-Rom filter (sharper
 than a bilinear one, from 9 bilinear samples), so the dithering stays at the screen's own
 resolution.
+
+## Redstone
+
+The machines run 20 ticks a second, and only where something changes. A simpler cousin of
+Minecraft's rules, meant to be predictable:
+
+- **Levers, buttons and pressure plates** give power 15 around them, and power the block they are
+  fixed to. A button stays pressed for a second; a plate stays down while you stand on it.
+- **Redstone dust** carries power, losing 1 a block, so it reaches 15 blocks. It climbs and goes
+  down steps of one block. It powers the block under it and the blocks it points into: a line's
+  ends, or each arm of a corner (a lamp beside a line that just passes by stays dark).
+- **Redstone torches** are lit unless the block they are fixed to is powered (a NOT gate, 2 ticks
+  late). A torch flipping more than 8 times in 3 seconds burns out for 3 seconds.
+- **Repeaters** carry power one way only, after 1 to 4 notches of delay (right-click to change it).
+- **Lamps** light at once and go out 2 ticks later. **Pistons** push up to 12 blocks, and break
+  plants and redstone parts in their way; a **sticky piston** pulls the block in front of it back.
+  Bedrock, obsidian and extended pistons can't be moved. Pistons don't take power from their face.
+- **TNT** explodes 4 seconds after being powered, in a radius of 4 blocks, sparing bedrock,
+  obsidian and water, and lighting the TNT around it.
+- Levers, buttons and torches are fixed to the face you aim at (no torch on a ceiling); dust,
+  plates and repeaters need a full block under them, and repeaters point the way you look.
+  Pistons face you. A part whose support goes breaks.
 
 ## Texture packs
 

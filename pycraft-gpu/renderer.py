@@ -32,6 +32,7 @@ from blocks import ALL_LEAVES, ATLAS_TILES, BLOCK_TILES, TILE, TINT_ALPHA
 import blocks as B
 import terrain as T
 from builder import IN_FLIGHT, WORKERS, Builders, mesh_section
+from shapes import selection_box
 from lod import SamplerProcess, oklab_to_srgb, srgb_to_oklab
 from terrain import CHUNK, SEA_LEVEL, WORLD_HEIGHT
 
@@ -234,6 +235,7 @@ uniform int mode;
 in vec3 in_pos;       // relative to the corner of the column
 in uvec4 in_info;     // tile (layer of the texture array), corner of the face (0-3), face direction (0-5, plants 6-7), kind (builder.KIND)
 in vec4 in_tint;      // biome color for grass, leaves and water; ambient occlusion
+in uvec4 in_uv;       // place on the tile, in 16ths (x, y)
 out vec2 v_uv;
 out vec3 v_pos;
 out vec3 v_tint;
@@ -241,12 +243,11 @@ out float v_ao;
 flat out int v_face;
 flat out int v_kind;
 flat out int v_tile;
-const vec2 CORNERS[4] = vec2[](vec2(0.0, 0.0), vec2(1.0, 0.0), vec2(1.0, 1.0), vec2(0.0, 1.0));
 void main() {
     vec3 pos = origin + in_pos;
     gl_Position = vp * vec4(pos, 1.0);
     if (mode == 2) gl_Position.z = max(gl_Position.z, -1.0);  // nearer the light than the map: flattened onto it
-    v_uv = CORNERS[in_info.y];  // in the tile: each tile is its own layer, so nothing bleeds in
+    v_uv = vec2(in_uv.xy) / 16.0;  // in the tile: each tile is its own layer, so nothing bleeds in
     v_face = int(in_info.z);
     v_kind = int(in_info.w);
     v_tile = int(in_info.x);
@@ -1112,6 +1113,18 @@ def column_offsets(radius):
     return sorted(offsets, key=lambda o: o[0] * o[0] + o[1] * o[1])
 
 
+def affected_sections(positions):
+    """The sections to mesh again after these blocks changed: each block's section, and the
+    sections next to it when it is on their border (diagonal ones too: the shading of their
+    corners depends on it)."""
+    todo = set()
+    for x, y, z in positions:
+        steps = [[0] + ([-1] if v % CHUNK == 0 else []) + ([1] if v % CHUNK == CHUNK - 1 else []) for v in (x, y, z)]
+        cx, cy, cz = x >> 4, y >> 4, z >> 4
+        todo |= {(cx + a, cy + b, cz + c) for a in steps[0] for b in steps[1] for c in steps[2]}
+    return todo
+
+
 def prepare_faces(parts):
     """The bytes a column mesh is made of, from its sections' vertices: the water faces last,
     and one index buffer for all of them. Pure number crunching — runs on a worker thread."""
@@ -1267,19 +1280,21 @@ class Chunks:
             vbo, ibo, mesh.water, mesh.solid, mesh.y_range = prepared
             mesh.vbo = self.ctx.buffer(vbo)
             mesh.ibo = self.ctx.buffer(ibo)
-            mesh.vao = self.ctx.vertex_array(self.program, [(mesh.vbo, "3f 4u1 4f1", "in_pos", "in_info", "in_tint")],
+            mesh.vao = self.ctx.vertex_array(self.program, [(mesh.vbo, "3f 4u1 4f1 4u1", "in_pos", "in_info", "in_tint", "in_uv")],
                                              index_buffer=mesh.ibo, index_element_size=4)
         self.ready[key[1] % READY_SIZE, key[0] % READY_SIZE] = 255
         self.ready_changed = True
 
     def block_changed(self, x, y, z):
         """Rebuild the sections touching block (x, y, z) right away, and tell the workers."""
-        self.builders.block_changed(x, y, z, self.world.get(x, y, z))
-        # The block's section, and the sections next to it when it is on their border (diagonal
-        # ones too: the shading of their corners depends on it)
-        steps = [[0] + ([-1] if v % CHUNK == 0 else []) + ([1] if v % CHUNK == CHUNK - 1 else []) for v in (x, y, z)]
-        cx, cy, cz = x >> 4, y >> 4, z >> 4
-        todo = {(cx + a, cy + b, cz + c) for a in steps[0] for b in steps[1] for c in steps[2]}
+        self.blocks_changed([(x, y, z)])
+
+    def blocks_changed(self, positions):
+        """Rebuild the sections touching these blocks right away, each section once (a TNT blast
+        or a line of dust changes many blocks of the same few sections), and tell the workers."""
+        for x, y, z in positions:
+            self.builders.block_changed(x, y, z, self.world.get(x, y, z), self.world.get_state(x, y, z))
+        todo = affected_sections(positions)
         columns = set()
         for kx, ky, kz in todo:
             self.versions[(kx, kz)] = self.versions.get((kx, kz), 0) + 1
@@ -2075,6 +2090,15 @@ class Renderer:
             self.chunks.block_changed(x, y, z)
             self.far.block_changed(x, y, z)
 
+    def blocks_changed(self, positions):
+        """Many blocks changed at once (the machines of a frame): each section is meshed once."""
+        if not positions:
+            return
+        with self.ctx:
+            self.chunks.blocks_changed(positions)
+            for x, y, z in positions:
+                self.far.block_changed(x, y, z)
+
     def render(self, screen, eye, forward, target=None):
         """Draw the world seen from eye into screen (a (height, width) uint8 view of pyxel.screen).
         Afterward, self.palette.colors is the palette the frame was drawn for."""
@@ -2184,8 +2208,10 @@ class Renderer:
         self.render_clouds(near_draw, near_radius, near_pass=True)
 
         if target:
-            corners = np.array([(x, y, z) for x in (0, 1) for y in (0, 1) for z in (0, 1)], dtype=np.float64)
-            corners = (corners - 0.5) * 1.004 + 0.5 + np.array(target) - np.array(cam)
+            lo, hi = selection_box(self.world.get(*target), self.world.get_state(*target))  # (a lever: its box)
+            corners = np.array([(x, y, z) for x in (lo[0], hi[0]) for y in (lo[1], hi[1]) for z in (lo[2], hi[2])])
+            mid = (np.array(lo) + np.array(hi)) / 2
+            corners = (corners - mid) * 1.004 + mid + np.array(target) - np.array(cam)
             lines = corners[np.array(CUBE_EDGES).ravel()]
             self.outline_vbo.write(lines.astype("f4").tobytes())
             self.outline_program["vp"].write(matrix_bytes(near_draw))
