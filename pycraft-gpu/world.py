@@ -9,7 +9,7 @@ from blocks import AIR, ALL_LEAVES, ICE, PLANT, SOLID, STONE, TARGETABLE, WATER
 from terrain import (BIRCH_FOREST, BIOME_NAMES, CHUNK, FOREST, PLAINS, SAVANNA, SEA_LEVEL, TAIGA, WORLD_HEIGHT,
                      TerrainGenerator)
 
-SAVE_VERSION = 2
+SAVE_VERSION = 3  # 3: block states; a save of version 2 (no states) still loads
 
 
 class World:
@@ -19,6 +19,9 @@ class World:
         self.columns = {}  # (cx, cz) -> terrain.Column
         self.sections = {}  # (cx, cy, cz) -> (16, 16, 16) uint8 array [x, y, z], or one block id
         self.edited = set()  # sections the player changed: saved, and never forgotten
+        # A byte of state for each block (facing, on/off, power...), only in the sections that
+        # have a block with a state: (cx, cy, cz) -> (16, 16, 16) uint8 array [x, y, z]
+        self.states = {}
         self.edited_columns = {}  # (cx, cz) -> set of cy of its edited sections
 
     # --- Columns and sections ------------------------------------------------------------------
@@ -77,7 +80,15 @@ class World:
         s = self.section(x >> 4, y >> 4, z >> 4)
         return s if isinstance(s, int) else int(s[x & 15, y & 15, z & 15])
 
-    def set(self, x, y, z, block):
+    def get_state(self, x, y, z):
+        st = self.states.get((x >> 4, y >> 4, z >> 4))
+        return 0 if st is None else int(st[x & 15, y & 15, z & 15])
+
+    def state_section(self, cx, cy, cz):
+        """The states of a section, or None when all its blocks have state 0."""
+        return self.states.get((cx, cy, cz))
+
+    def set(self, x, y, z, block, state=0):
         if not 0 <= y < WORLD_HEIGHT:
             return
         key = (x >> 4, y >> 4, z >> 4)
@@ -88,6 +99,11 @@ class World:
             s = np.full((CHUNK, CHUNK, CHUNK), s, dtype=np.uint8)
             self.sections[key] = s
         s[x & 15, y & 15, z & 15] = block
+        st = self.states.get(key)
+        if st is None and state:
+            st = self.states[key] = np.zeros((CHUNK, CHUNK, CHUNK), np.uint8)
+        if st is not None:
+            st[x & 15, y & 15, z & 15] = state
 
     def is_solid(self, x, y, z):
         if y < 0:
@@ -222,23 +238,29 @@ class World:
         keys = sorted(self.edited)
         blocks = [self.sections[k] for k in keys]
         blocks = [np.full((CHUNK,) * 3, b, np.uint8) if isinstance(b, int) else b for b in blocks]
+        state_keys = sorted(k for k in self.states if k in self.edited)
         np.savez_compressed(path, version=SAVE_VERSION, seed=self.seed,
                             keys=np.array(keys, dtype=np.int64).reshape(-1, 3),
-                            sections=np.array(blocks, dtype=np.uint8).reshape(-1, CHUNK, CHUNK, CHUNK), **extra)
+                            sections=np.array(blocks, dtype=np.uint8).reshape(-1, CHUNK, CHUNK, CHUNK),
+                            state_keys=np.array(state_keys, dtype=np.int64).reshape(-1, 3),
+                            states=np.array([self.states[k] for k in state_keys], dtype=np.uint8).reshape(
+                                -1, CHUNK, CHUNK, CHUNK), **extra)
 
     @classmethod
     def load(cls, path):
         """Return (world, data) where data holds the extra values given to save()."""
         with np.load(path) as f:
             data = {key: f[key] for key in f.files}
-        if int(data.pop("version", 1)) != SAVE_VERSION:
-            raise ValueError("this save is from an older version of the game")
+        if int(data.pop("version", 1)) not in (2, SAVE_VERSION):
+            raise ValueError("this save is from another version of the game")
         world = cls(int(data.pop("seed")))
         for key, blocks in zip(data.pop("keys"), data.pop("sections")):
             key = tuple(int(v) for v in key)
             world.sections[key] = blocks.copy()
             world.edited.add(key)
             world.edited_columns.setdefault((key[0], key[2]), set()).add(key[1])
+        for key, states in zip(data.pop("state_keys", ()), data.pop("states", ())):
+            world.states[tuple(int(v) for v in key)] = states.copy()
         return world, data
 
     # --- Aiming --------------------------------------------------------------------------------
