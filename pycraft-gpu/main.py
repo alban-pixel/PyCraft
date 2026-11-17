@@ -17,6 +17,7 @@ from autoscale import AutoScale
 from blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, GROWS_ON, PLACEABLE, PLANT, SOLID, T_REDSTONE_DUST, T_WATER,
                     TILE, TINT_ALPHA, UNBREAKABLE, WATER, build_tiles, tiles_to_atlas, turned)
 from player import Player
+from sim import Simulation
 from renderer import FIXED_COLORS, LOD_QUALITY_NAMES, Renderer, oklab_to_srgb, srgb_to_oklab
 from terrain import SEA_LEVEL
 from ui import BLACK, BLUE, GREY, LIGHT_BLUE, NAVY, TEXT, TEXT_DIM, TEXT_HOT, WHITE, Ui, text_width
@@ -330,6 +331,7 @@ class App:
         # Palette: Pyxel's 16 colors (HUD), 48 for the icons, and 192 that adapt to the 3D view
         self.renderer = Renderer(ctx, self.world, tiles, BASE_WIDTH, BASE_HEIGHT,
                                  list(pyxel.colors)[:16] + icon_colors)
+        self.new_simulation()
         self.palette_version = None
         self.use_palette()
         self.renderer.render_distance = self.settings["render_distance"]
@@ -577,7 +579,14 @@ class App:
             "time_of_day": self.time_of_day,
             "hotbar": np.array(self.hotbar),
             "selected": self.selected,
+            "ticks": self.sim.pending(),  # the machines' updates still to come
         }
+
+    def new_simulation(self, pending=None):
+        """The clock of the world's machines (sim.py), for the current world."""
+        self.sim = Simulation(self.world, self.renderer.block_changed)
+        if pending is not None:
+            self.sim.load_pending(pending)
 
     def save(self):
         tmp = self.save_path + ".tmp.npz"
@@ -594,6 +603,7 @@ class App:
                 self.spawn = self.world.find_spawn()
             self.player = Player(*self.spawn)
             self.hotbar, self.selected, self.time_of_day = list(DEFAULT_HOTBAR), 0, 0.05
+            self.new_simulation()
             self.save()
         elif self.save_data is not None:
             data = self.save_data
@@ -603,6 +613,7 @@ class App:
             self.time_of_day = float(data["time_of_day"])
             self.hotbar = [int(b) for b in data["hotbar"]]
             self.selected = int(data["selected"])
+            self.new_simulation(data.get("ticks"))
         self.save_data = None
         self.play_time = self.last_save = self.selected_time = 0.0
         self.show_help = True
@@ -905,6 +916,7 @@ class App:
         dt = self.dt
         self.play_time += dt
         self.time_of_day = (self.time_of_day + dt / DAY_SECONDS) % 1.0
+        self.sim.update(dt)  # the machines: 20 ticks a second
         if self.play_time - dt < HELP_SECONDS <= self.play_time:
             self.show_help = False  # hide the help once, after the first seconds of play
         if self.play_time - self.last_save > AUTOSAVE_SECONDS:
@@ -950,11 +962,9 @@ class App:
             if UNBREAKABLE[self.world.get(x, y, z)]:
                 self.notify("Bedrock can't be broken")
             else:
-                self.world.set(x, y, z, 0)
-                self.renderer.block_changed(x, y, z)
+                self.sim.set_block(x, y, z, 0)
                 if PLANT[self.world.get(x, y + 1, z)]:  # the plant on it goes too
-                    self.world.set(x, y + 1, z, 0)
-                    self.renderer.block_changed(x, y + 1, z)
+                    self.sim.set_block(x, y + 1, z, 0)
                 self.sfx(SND_BREAK)
         elif self.target and pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT, hold=hold, repeat=repeat):
             # Aiming at a plant puts the block in its place, like on the ground under it
@@ -966,8 +976,7 @@ class App:
                 grounds = [BLOCK_NAMES[g].lower() for g in np.flatnonzero(GROWS_ON[block])]
                 self.notify("%s grows only on %s or %s" % (BLOCK_NAMES[block], ", ".join(grounds[:-1]), grounds[-1]))
             elif free and (not SOLID[block] or not self.player.overlaps(x, y, z)):  # plants and water: walk-through
-                self.world.set(x, y, z, block)
-                self.renderer.block_changed(x, y, z)
+                self.sim.set_block(x, y, z, block)
                 self.sfx(SND_PLACE)
 
     def update_look(self):
