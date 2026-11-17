@@ -1,5 +1,6 @@
 """PyCraft GPU: a Minecraft-like game. OpenGL draws the 3D world, Pyxel shows it and runs everything else."""
 import ctypes
+import importlib.util
 import json
 import math
 import os
@@ -11,6 +12,7 @@ import moderngl
 import numpy as np
 import pyxel
 
+import packs
 from autoscale import AutoScale
 from blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, GROWS_ON, PLACEABLE, PLANT, SOLID, T_WATER,
                     TILE, TINT_ALPHA, UNBREAKABLE, WATER, build_tiles, tiles_to_atlas, turned)
@@ -27,7 +29,8 @@ FRAME_RATES = [30, 60, 75, 120, 144, 165, 240]
 RENDER_DISTANCES = [32, 64, 128, 256, 512]  # how far the world is seen, in chunks of 16 blocks
 RENDER_SCALES = ["auto", 1.0, 0.75, 0.5]  # share of the resolution the 3D view is drawn at ("auto": follows the FPS)
 DEFAULT_SETTINGS = {"resolution": (1280, 720), "fps": 60, "render_distance": 256, "lod_quality": "low",
-                    "fancy": True, "music": True, "ui_scale": "auto", "render_scale": "auto"}
+                    "fancy": True, "music": True, "ui_scale": "auto", "render_scale": "auto",
+                    "texture_pack": None}  # texture_pack: path of the pack, None for the game's own textures
 SAVE_FILE = "world2.npz"  # "world.npz" holds a world of the older, smaller version: left alone
 LOADING_RADIUS = 2  # chunks around the player that must be ready before playing
 HAZE = 1 / 4500  # share of light lost per block of distance: far mountains fade into the sky
@@ -156,6 +159,51 @@ def icon_palette(atlas):
     return [int(r) << 16 | int(g) << 8 | int(b) for r, g, b in colors], indices
 
 
+def parse_settings(saved):
+    """The settings from settings.json's contents, with the default for any that is missing or
+    not valid."""
+    settings = dict(DEFAULT_SETTINGS)
+    if not isinstance(saved, dict):
+        return settings
+    resolution = saved.get("resolution")
+    if isinstance(resolution, list) and tuple(resolution) in RESOLUTIONS:
+        settings["resolution"] = tuple(resolution)
+    if saved.get("fps") in FRAME_RATES:
+        settings["fps"] = saved["fps"]
+    if saved.get("render_distance") in RENDER_DISTANCES:
+        settings["render_distance"] = saved["render_distance"]
+    if saved.get("lod_quality") in LOD_QUALITY_NAMES:
+        settings["lod_quality"] = saved["lod_quality"]
+    for key in ("fancy", "music"):
+        if isinstance(saved.get(key), bool):
+            settings[key] = saved[key]
+    ui_scale = saved.get("ui_scale")
+    if ui_scale == "auto" or (type(ui_scale) is int and 1 <= ui_scale <= 8):
+        settings["ui_scale"] = ui_scale
+    if saved.get("render_scale") in RENDER_SCALES:
+        settings["render_scale"] = saved["render_scale"]
+    pack = saved.get("texture_pack")
+    if isinstance(pack, str) and os.path.exists(pack):  # (a pack deleted since: the game's own textures)
+        settings["texture_pack"] = pack
+    return settings
+
+
+def next_pack(current, found, step):
+    """The texture pack after (step 1) or before (step -1) the current one: None (the game's own
+    textures), then the packs found, round and round. Paths."""
+    choices = [None] + [p.path for p in found]
+    i = choices.index(current) if current in choices else 0
+    return choices[(i + step) % len(choices)]
+
+
+def fit_text(text, n, keep="end"):
+    """The text cut to n characters at most, with "..." where it was cut: keeping its end (paths)
+    or its start (names)."""
+    if len(text) <= n:
+        return text
+    return "..." + text[len(text) - n + 3:] if keep == "end" else text[:n - 3] + "..."
+
+
 def mix(a, b, t):
     return tuple(float(x + (y - x) * t) for x, y in zip(a, b))
 
@@ -221,15 +269,18 @@ class App:
         self.headless = headless
         self.ui = Ui()
 
-        tiles = build_tiles()
-        icon_colors, icons = icon_palette(tiles_to_atlas(tiles))
-        bank = np.frombuffer(pyxel.images[0].data_ptr(), dtype=np.uint8, count=256 * 256).reshape(256, 256)
-        bank[:icons.shape[0], :icons.shape[1]] = icons
+        self.default_tiles = tiles = build_tiles()
+        icon_colors = self.set_icons(tiles)
         pyxel.images[1].cls(0)
         pyxel.images[1].text(0, 0, "PYCRAFT", 7)  # drawn scaled up on the title screen
         self.init_sounds()
 
         data_dir = pyxel.user_data_dir("PyCraft", "PyCraft GPU")
+        self.pack_dirs = packs.pack_dirs(data_dir)
+        self.has_pillow = importlib.util.find_spec("PIL") is not None
+        self.packs = self.find_packs()
+        self.pack_message = ""  # shown under the settings: a pack that couldn't be read
+        self.pack_to_apply = False  # a pack chosen in the settings, applied on the next update
         self.save_path = os.path.join(data_dir, SAVE_FILE)
         self.settings_path = os.path.join(data_dir, "settings.json")
         self.settings = self.load_settings()
@@ -256,6 +307,8 @@ class App:
         self.renderer.render_distance = self.settings["render_distance"]
         self.renderer.set_lod_quality(self.settings["lod_quality"])
         self.renderer.set_fancy(self.settings["fancy"])
+        if self.settings["texture_pack"] is not None:
+            self.pack_message = self.apply_pack(self.settings["texture_pack"])
         self.scaler = AutoScale()  # picks the 3D view's render scale with the "auto" setting
         self.set_resolution(*self.settings["resolution"])
         self.apply_render_scale()
@@ -309,36 +362,76 @@ class App:
 
     def load_settings(self):
         """The saved settings, with the default for any that is missing or not valid."""
-        settings = dict(DEFAULT_SETTINGS)
         try:
             with open(self.settings_path, encoding="utf-8") as f:
                 saved = json.load(f)
         except (OSError, ValueError):
             saved = {}
-        if not isinstance(saved, dict):
-            saved = {}
-        resolution = saved.get("resolution")
-        if isinstance(resolution, list) and tuple(resolution) in RESOLUTIONS:
-            settings["resolution"] = tuple(resolution)
-        if saved.get("fps") in FRAME_RATES:
-            settings["fps"] = saved["fps"]
-        if saved.get("render_distance") in RENDER_DISTANCES:
-            settings["render_distance"] = saved["render_distance"]
-        if saved.get("lod_quality") in LOD_QUALITY_NAMES:
-            settings["lod_quality"] = saved["lod_quality"]
-        for key in ("fancy", "music"):
-            if isinstance(saved.get(key), bool):
-                settings[key] = saved[key]
-        ui_scale = saved.get("ui_scale")
-        if ui_scale == "auto" or (type(ui_scale) is int and 1 <= ui_scale <= 8):
-            settings["ui_scale"] = ui_scale
-        if saved.get("render_scale") in RENDER_SCALES:
-            settings["render_scale"] = saved["render_scale"]
-        return settings
+        return parse_settings(saved)
 
     def save_settings(self):
         with open(self.settings_path, "w", encoding="utf-8") as f:
             json.dump(self.settings, f)
+
+    # --- Texture packs -------------------------------------------------------------------------
+
+    def find_packs(self):
+        """The texture packs on this computer (none without Pillow, which reads their PNGs)."""
+        return packs.find_packs(self.pack_dirs, packs.minecraft_jars()) if self.has_pillow else []
+
+    def set_icons(self, tiles):
+        """Draw the block icons of these tiles into Pyxel's image bank 0; returns their 48 colors."""
+        icon_colors, icons = icon_palette(tiles_to_atlas(tiles))
+        bank = np.frombuffer(pyxel.images[0].data_ptr(), dtype=np.uint8, count=256 * 256).reshape(256, 256)
+        bank[:icons.shape[0], :icons.shape[1]] = icons
+        return icon_colors
+
+    def apply_pack(self, path):
+        """Draw the world and the icons with this texture pack (None: the game's own textures).
+        Returns a message for the settings: "" when it went well. A pack that can't be read gives
+        the game's own textures back, and its path is forgotten."""
+        message = ""
+        tiles = self.default_tiles
+        if path is not None:
+            info = next((p for p in self.packs if p.path == path), None)
+            try:
+                if info is None:
+                    found = packs.find_packs([os.path.dirname(path)], [path] if path.endswith(".jar") else [])
+                    info = next((p for p in found if p.path == path), None)
+                if info is None:
+                    raise packs.PackError("no block textures")
+                tiles, missing = packs.load_pack(info, self.default_tiles)
+                if missing:
+                    print(f"Texture pack {info.name}: {len(missing)} textures missing, the game's own drawn instead: "
+                          + ", ".join(missing), file=sys.stderr)
+            except (packs.PackError, OSError, ValueError, ImportError, MemoryError) as e:
+                print(f"Texture pack {path} unreadable: {e!r}", file=sys.stderr)
+                message, tiles, path = f"Pack unreadable: {e}", self.default_tiles, None
+        self.renderer.set_tiles(tiles)
+        self.renderer.palette.set_fixed(self.set_icons(tiles))
+        self.settings["texture_pack"] = path
+        return message
+
+    def change_texture_pack(self, step):
+        """Next / previous texture pack: applied on the next update, once "Loading textures..." shows."""
+        if not self.packs and self.settings["texture_pack"] is None:
+            return
+        self.pack_to_apply = next_pack(self.settings["texture_pack"], self.packs, step)
+        self.pack_message = "Loading textures..."
+
+    def texture_pack_row(self):
+        current = self.settings["texture_pack"]
+        info = next((p for p in self.packs if p.path == current), None)
+        name = "Default" if current is None else info.name if info else os.path.basename(current)
+        if self.pack_message:
+            explain = self.pack_message
+        elif not self.has_pillow:
+            explain = "Install Pillow to use texture packs"
+        elif current is None:
+            explain = "Packs go in " + fit_text(self.pack_dirs[0], 44)
+        else:
+            explain = info.description if info and info.description else "Minecraft-style texture pack"
+        return ("Texture pack", fit_text(name, 19, keep="start"), self.change_texture_pack, fit_text(explain, 56))
 
     def set_resolution(self, width, height):
         if (pyxel.width, pyxel.height) != (width, height):
@@ -425,6 +518,8 @@ class App:
 
     def open_settings(self):
         self.settings_parent = self.state
+        self.packs = self.find_packs()  # (a pack put in the folder while the game runs shows up)
+        self.pack_message = ""
         self.set_state("settings")
 
     def close_settings(self):
@@ -578,6 +673,7 @@ class App:
             ("Graphics", "Fancy" if s["fancy"] else "Fast", lambda step: self.toggle_graphics(),
              "Fancy: shadows and smooth edges"),
             ("Music", "On" if s["music"] else "Off", lambda step: self.toggle_music(), "Background music"),
+            self.texture_pack_row(),
         ]
 
     def new_world_clicked(self):
@@ -599,6 +695,10 @@ class App:
     # --- Update --------------------------------------------------------------------------------
 
     def update(self):
+        if self.pack_to_apply is not False:  # a texture pack chosen last frame, with its message shown
+            path, self.pack_to_apply = self.pack_to_apply, False
+            self.pack_message = self.apply_pack(path)
+            self.save_settings()
         # Build the world around the camera a little every frame (much more while loading)
         budget = 0.06 if self.state == "loading" else 0.3 / self.settings["fps"]
         if self.state != "generating":
