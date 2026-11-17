@@ -374,6 +374,7 @@ _TABLE = [
     (B.T_REPEATER_ON, _n("repeater_on"), _n("repeater_on")),
     (B.T_REDSTONE_LAMP_OFF, _n("redstone_lamp_off"), _n("redstone_lamp")),
     (B.T_PISTON_INNER, _n("piston_inner"), _n("piston_inner")),
+    (B.T_FURNACE_FRONT_ON, _n("furnace_front_on"), _n("furnace_front_on")),
 ]
 # The 16 colors: 1.8 calls light gray "silver"
 _COLORS = ["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray", "cyan",
