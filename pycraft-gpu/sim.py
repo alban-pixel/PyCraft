@@ -30,6 +30,7 @@ class Simulation:
         self.timers = {}  # (x, y, z) -> tick it is due: see after()
         self.occupied = set()  # blocks someone stands in (the player): pressure plates feel them
         self.memory = {}  # what handlers keep between ticks (a torch's recent flips...)
+        self.events = []  # what the game should hear: ("explode", pos)... (the game empties it)
 
     def schedule(self, pos, delay):
         """Look at the block at pos again in delay ticks (at least 1)."""
