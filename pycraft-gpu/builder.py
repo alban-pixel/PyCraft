@@ -210,8 +210,8 @@ def _help_sampler(world, shared, helpers):
 
 def _worker(tasks, results, shared=None):
     """Main loop of a worker process. Messages:
-    ("world", generation, seed, edited sections) start over with another world
-    ("set", x, y, z, block)                      a block the player changed
+    ("world", generation, seed, edited sections, their states) start over with another world
+    ("set", x, y, z, block, state)               a block the player (or a machine) changed
     ("columns", generation, [column])            send these columns back (for the game's own world)
     ("build", generation, (cx, cy, cz) of the camera, [(column, version, sections done, caves)])
     shared: the queues where the distant terrain's sampler leaves work for idle builders.
@@ -234,12 +234,13 @@ def _worker(tasks, results, shared=None):
             continue
         try:
             if msg[0] == "world":
-                _, generation, seed, edited = msg
+                _, generation, seed, edited, states = msg
                 world, forget_center = World(seed), None
                 for key, blocks in edited:
                     world.sections[key] = blocks
                     world.edited.add(key)
                     world.edited_columns.setdefault((key[0], key[2]), set()).add(key[1])
+                world.states.update(states)
             elif msg[0] == "set":
                 world.set(*msg[1:])
             elif msg[0] == "columns" and msg[1] == generation:
@@ -282,13 +283,14 @@ class Builders:
         self.generation += 1
         edited = [(k, world.sections[k]) for k in world.edited]
         edited = [(k, np.full((CHUNK,) * 3, s, np.uint8) if isinstance(s, int) else s) for k, s in edited]
+        states = {k: s for k, s in world.states.items() if k in world.edited}
         for tasks, flying in zip(self.tasks, self.in_flight):
-            tasks.put(("world", self.generation, world.seed, edited))
+            tasks.put(("world", self.generation, world.seed, edited, states))
             flying.clear()
 
-    def block_changed(self, x, y, z, block):
+    def block_changed(self, x, y, z, block, state=0):
         for tasks in self.tasks:
-            tasks.put(("set", x, y, z, block))
+            tasks.put(("set", x, y, z, block, state))
 
     def busy(self, key):
         return any(key in flying for flying in self.in_flight)

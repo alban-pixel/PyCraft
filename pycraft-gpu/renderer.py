@@ -1274,7 +1274,7 @@ class Chunks:
 
     def block_changed(self, x, y, z):
         """Rebuild the sections touching block (x, y, z) right away, and tell the workers."""
-        self.builders.block_changed(x, y, z, self.world.get(x, y, z))
+        self.builders.block_changed(x, y, z, self.world.get(x, y, z), self.world.get_state(x, y, z))
         # The block's section, and the sections next to it when it is on their border (diagonal
         # ones too: the shading of their corners depends on it)
         steps = [[0] + ([-1] if v % CHUNK == 0 else []) + ([1] if v % CHUNK == CHUNK - 1 else []) for v in (x, y, z)]

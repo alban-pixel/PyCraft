@@ -70,6 +70,12 @@ BLOCK_NAMES = ["Air", "Grass", "Dirt", "Stone", "Cobblestone", "Oak planks", "Oa
                "Jack o'lantern", "Jack o'lantern"]
 NUM_BLOCKS = len(BLOCK_NAMES)
 
+# Directions a block with a state can face, in the order its state numbers them: 0 is up, so a
+# block saved before states existed (state 0) faces up, as it was drawn
+FACING_VECTORS = [(0, 1, 0), (0, -1, 0), (1, 0, 0), (-1, 0, 0), (0, 0, 1), (0, 0, -1)]
+UP, DOWN, EAST, WEST, SOUTH, NORTH = range(6)
+OPPOSITE = [DOWN, UP, WEST, EAST, NORTH, SOUTH]
+
 # Blocks with a front, which faces the player who places them: the block in the inventory has its front
 # toward +x, and three more numbers turn it toward -x, +z and -z
 FACING = {block: (block, west, south, north) for block, west, south, north in [
