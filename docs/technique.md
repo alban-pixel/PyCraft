@@ -1,8 +1,9 @@
 # PyCraft — Technique
 
-> Comment le moteur fonctionne réellement, tel qu'implémenté dans `pycraft-gpu/`
-> (branches `SWE-2`, `m1-pro` puis `claude`). Pour le jeu lui-même (contrôles, réglages,
-> limites), voir [`pycraft-gpu/README.md`](../pycraft-gpu/README.md).
+> Comment le moteur fonctionne réellement, tel qu'implémenté dans le paquet `pycraft/`
+> (développé sur les branches `SWE-2`, `m1-pro`, `claude` et `gpu-renderer-dev`, toutes
+> réunies dans `main`). Pour le jeu lui-même (contrôles, réglages, limites), voir le
+> [`README.md`](../README.md).
 >
 > Document rédigé le 4 novembre 2026, mis à jour le 15 novembre 2026 pour la branche
 > `claude` (terrain lointain refait). L'approche initiale (rendu 2D par
@@ -25,7 +26,7 @@ lod.py      processus d'échantillonnage du terrain lointain (branche `claude`)
 renderer.py OpenGL : maillages de blocs, clipmap lointain, ombres, ciel, palette
 controls.py actions du jeu et touche de chacune (modifiables dans les réglages)
 ui.py       HUD et menus : panneaux, boutons, onglets, curseurs, thème de 16 couleurs
-main.py     application Pyxel : écrans, entrées, casser/poser, jour/nuit, son
+app.py      application Pyxel : écrans, entrées, casser/poser, jour/nuit, son (`python -m pycraft`)
 ```
 
 ## Terrain

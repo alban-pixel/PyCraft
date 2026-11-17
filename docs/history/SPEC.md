@@ -1,7 +1,7 @@
 # Spec : PyCraft
 
-> Version 1 — 21 octobre 2026. Source : [docs/intent/pycraft.md](docs/intent/pycraft.md),
-> [docs/ideas/pycraft.md](docs/ideas/pycraft.md), [tasks/plan.md](tasks/plan.md).
+> Version 1 — 21 octobre 2026. Source : [docs/intent/pycraft.md](intent/pycraft.md),
+> [docs/ideas/pycraft.md](ideas/pycraft.md), [tasks/plan.md](tasks/plan.md).
 > Statut : **approuvée le 21 octobre 2026**.
 
 ## Mise à jour — 4 novembre 2026
@@ -16,8 +16,8 @@ qu'à la fenêtre, aux entrées, aux menus, au HUD et au son.
 
 - *Contrainte fondatrice* (« Pyxel ne dessine qu'en 2D, la 3D est calculée à la
   main ») : remplacée par le pipeline GPU — voir
-  [`pycraft-gpu/README.md`](pycraft-gpu/README.md) et
-  [`docs/technique.md`](docs/technique.md).
+  [`pycraft-gpu/README.md`](../../README.md) et
+  [`docs/technique.md`](../technique.md).
 - *« Threading exclu »* : les processus workers existent depuis le début ; la
   branche `m1-pro` y ajoute des pools de threads (numpy libère le GIL).
 - *Structure `pycraft/` + `tests/` + `tools/`* : jamais créée ; le code vit dans

@@ -3,8 +3,8 @@
 > **Document historique (approche 2D).** Ce plan visait le rendu par
 > `pyxel.tri` ; l'implémentation a pivoté vers le **rendu GPU**
 > (`pycraft-gpu/`, branches `SWE-2` puis `m1-pro`). Voir
-> [`pycraft-gpu/README.md`](../pycraft-gpu/README.md) et
-> [`docs/technique.md`](../docs/technique.md) pour l'architecture réelle.
+> [`pycraft-gpu/README.md`](../../../README.md) et
+> [`docs/technique.md`](../../technique.md) pour l'architecture réelle.
 > Conservé comme trace de la décision.
 
 ## Overview
@@ -16,8 +16,8 @@ faces (algorithme du peintre), **1280×800 par défaut (jusqu'à 1920×1200)**,
 Cible : une démo NSI de quelques minutes où l'on marche, regarde, casse et pose
 des blocs, sans jamais voir de ralentissement.
 
-Direction validée : [docs/ideas/pycraft.md](../docs/ideas/pycraft.md).
-Intention : [docs/intent/pycraft.md](../docs/intent/pycraft.md).
+Direction validée : [docs/ideas/pycraft.md](../ideas/pycraft.md).
+Intention : [docs/intent/pycraft.md](../intent/pycraft.md).
 
 ## Architecture Decisions
 

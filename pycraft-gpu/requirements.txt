@@ -1,4 +1,0 @@
-pyxel>=2.9
-numpy>=2.0
-moderngl>=5.8
-Pillow>=10
