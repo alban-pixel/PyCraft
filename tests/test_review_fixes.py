@@ -6,7 +6,8 @@ import zipfile
 import numpy as np
 
 from pycraft import blocks as B
-from pycraft.blocks import TINT_ALPHA, build_tiles, tiles_to_atlas
+from pycraft.blocks import TINT_ALPHA
+from pycraft.tiles import block_colors, build_tiles, tiles_to_atlas
 from pycraft.app import icon_palette, load_tiles
 from pycraft.packs import find_packs, load_pack
 from pycraft.render import split_tiles
@@ -77,7 +78,7 @@ def test_block_colors_empty_tile():
     tiles = build_tiles()
     tiles[B.T_GLASS, ..., 3] = 0
     tiles[B.T_TALL_GRASS, ..., 3] = 0
-    assert np.isfinite(B.block_colors(tiles)).all()
+    assert np.isfinite(block_colors(tiles)).all()
 
 
 def test_see_through_water_stays_water(tmp_path):

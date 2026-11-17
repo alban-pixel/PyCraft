@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 
 from pycraft import blocks as B
-from pycraft.blocks import TINT_ALPHA, build_tiles, resize_tile
+from pycraft.blocks import TINT_ALPHA
+from pycraft.tiles import build_tiles, resize_tile
 from pycraft.packs import TILE_FILES, PackError, find_packs, load_pack
 from tests.packfactory import make_pack, solid
 

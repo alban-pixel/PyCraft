@@ -17,7 +17,8 @@ from dataclasses import dataclass
 import numpy as np
 
 from pycraft import blocks as B
-from pycraft.blocks import TINT_ALPHA, resize_tile
+from pycraft.blocks import TINT_ALPHA
+from pycraft.tiles import resize_tile
 
 TEXTURE_DIRS = {"1.8": "assets/minecraft/textures/blocks/", "1.13": "assets/minecraft/textures/block/"}
 

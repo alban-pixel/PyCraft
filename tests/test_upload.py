@@ -2,7 +2,8 @@ import numpy as np
 import pytest
 
 from pycraft import blocks as B
-from pycraft.blocks import TINT_ALPHA, build_tiles
+from pycraft.blocks import TINT_ALPHA
+from pycraft.tiles import build_tiles, resize_tile
 from pycraft.render import make_tile_textures, split_tiles
 
 
@@ -38,7 +39,7 @@ def test_upload_headless(ctx):
     atlas, tint = make_tile_textures(ctx, build_tiles())
     assert atlas.size == (16, 16, 256) and atlas.layers == 256 and atlas.components == 4
     assert tint.size == (16, 16, 256) and tint.layers == 256 and tint.components == 1
-    big = np.stack([B.resize_tile(t, 64) for t in build_tiles()])
+    big = np.stack([resize_tile(t, 64) for t in build_tiles()])
     atlas, _ = make_tile_textures(ctx, big)
     assert atlas.size == (64, 64, 256)
 

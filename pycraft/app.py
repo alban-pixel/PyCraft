@@ -19,9 +19,9 @@ from pycraft import redstone
 from pycraft.autoscale import AutoScale
 from pycraft.blocks import (DOWN, EAST, FACING_VECTORS, LEVER, NORTH, OPAQUE, OPPOSITE, PISTON, REDSTONE_TORCH,
                             REDSTONE_WIRE, REPEATER, SOUTH, STICKY_PISTON, STONE_BUTTON, STONE_PRESSURE_PLATE, UP, WEST)
-from pycraft.blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, FACING, GROWS_ON, PLACEABLE, PLANT,
-                            SOLID, T_REDSTONE_DUST, T_WATER, TILE, TINT_ALPHA, UNBREAKABLE, WATER, build_tiles,
-                            tiles_to_atlas, turned)
+from pycraft.blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, FACING, GROWS_ON, PLACEABLE,
+                            PLANT, SOLID, T_REDSTONE_DUST, T_WATER, TILE, TINT_ALPHA, UNBREAKABLE, WATER, turned)
+from pycraft.tiles import build_tiles, tiles_to_atlas
 from pycraft.controls import ACTIONS, LABELS, Controls
 from pycraft.player import Player
 from pycraft.sim import Simulation
