@@ -13,7 +13,10 @@ import numpy as np
 import pyxel
 
 import packs
+import redstone
 from autoscale import AutoScale
+from blocks import (DOWN, EAST, FACING_VECTORS, LEVER, NORTH, OPAQUE, OPPOSITE, PISTON, REDSTONE_TORCH,
+                    REDSTONE_WIRE, REPEATER, SOUTH, STICKY_PISTON, STONE_BUTTON, STONE_PRESSURE_PLATE, UP, WEST)
 from blocks import (ATLAS_TILES, BLOCK_NAMES, BLOCK_TILES, DEFAULT_HOTBAR, GROWS_ON, PLACEABLE, PLANT, SOLID, T_REDSTONE_DUST, T_WATER,
                     TILE, TINT_ALPHA, UNBREAKABLE, WATER, build_tiles, tiles_to_atlas, turned)
 from player import Player
@@ -83,9 +86,12 @@ NATURE = {"Grass", "Dirt", "Stone", "Sand", "Water", "Snow", "Ice", "Gravel", "R
           "Deepslate", "Clay", "Mud", "Moss", "Granite", "Diorite", "Andesite", "Obsidian", "Coarse dirt", "Mycelium",
           "Farmland", "Packed ice", "Netherrack", "Soul sand", "End stone", "Brown mushroom block",
           "Red mushroom block", "Mushroom stem", "Pumpkin", "Melon"}
-SPECIAL = {"Crafting table", "Furnace", "Dispenser", "Dropper", "Note block", "Jukebox", "TNT", "Piston",
-           "Sticky piston", "Command block", "Glowstone", "Sea lantern", "Redstone lamp", "Jack o'lantern",
-           "Monster spawner", "Slime block", "Sponge", "Wet sponge", "Bookshelf"}
+SPECIAL = {"Crafting table", "Furnace", "Dispenser", "Dropper", "Note block", "Jukebox", "Command block",
+           "Glowstone", "Sea lantern", "Jack o'lantern", "Monster spawner", "Slime block", "Sponge", "Wet sponge",
+           "Bookshelf"}
+REDSTONE = {"Lever", "Stone button", "Pressure plate", "Redstone dust", "Redstone torch", "Repeater",
+            "Redstone lamp", "Piston", "Sticky piston", "TNT", "Block of redstone"}
+INTERACTIVE = {LEVER, STONE_BUTTON, REPEATER}  # a right click works them instead of placing a block
 
 
 def block_category(block):
@@ -94,6 +100,8 @@ def block_category(block):
         return "Plants"
     if name.lower().endswith(("wool", "terracotta", "stained glass")):
         return "Colors"
+    if name in REDSTONE:
+        return "Redstone"
     if name in SPECIAL:
         return "Special"
     if name in NATURE or name.endswith((" ore", " log", " leaves")):
@@ -102,7 +110,39 @@ def block_category(block):
 
 
 CATEGORIES = [(tab, [b for b in PLACEABLE if tab == "All" or block_category(b) == tab])
-              for tab in ("All", "Nature", "Building", "Colors", "Plants", "Special")]
+              for tab in ("All", "Nature", "Building", "Colors", "Plants", "Redstone", "Special")]
+
+
+def _main_direction(v, horizontal=False):
+    """The facing (blocks.FACING_VECTORS) a vector points along the most."""
+    x, y, z = v
+    if not horizontal and abs(y) > max(abs(x), abs(z)):
+        return UP if y > 0 else DOWN
+    if abs(x) > abs(z):
+        return EAST if x > 0 else WEST
+    return SOUTH if z > 0 else NORTH
+
+
+def placement(block, hit, previous, look, world):
+    """The (block, state) to put in the cell previous, aiming at the block hit while looking along
+    look; None when it can't go there (a lever needs a full block to be fixed to...)."""
+    face = tuple(p - h for p, h in zip(previous, hit))
+    facing = FACING_VECTORS.index(face) if face in FACING_VECTORS else UP
+    floor = OPAQUE[world.get(previous[0], previous[1] - 1, previous[2])]
+    if block in (LEVER, STONE_BUTTON, REDSTONE_TORCH):
+        if not OPAQUE[world.get(*hit)] or (block == REDSTONE_TORCH and facing == DOWN):
+            return None
+        state = facing
+        if block == LEVER and facing in (UP, DOWN) and abs(look[0]) > abs(look[2]):
+            state |= 16  # a lever on the floor turns with the player's look
+        return block, state
+    if block in (REDSTONE_WIRE, STONE_PRESSURE_PLATE, REPEATER):
+        if not floor:
+            return None
+        return block, (_main_direction(look, horizontal=True) if block == REPEATER else 0)
+    if block in (PISTON, STICKY_PISTON):
+        return block, OPPOSITE[_main_direction(look)]  # its face looks back at the player
+    return block, 0
 
 
 def _kmeans(points, weight, centers, rounds):
@@ -585,8 +625,18 @@ class App:
     def new_simulation(self, pending=None):
         """The clock of the world's machines (sim.py), for the current world."""
         self.sim = Simulation(self.world, self.renderer.block_changed)
+        redstone.install(self.sim)
+        self.sim.every_tick.append(self.feel_plates)
         if pending is not None:
             self.sim.load_pending(pending)
+
+    def feel_plates(self, sim):
+        """Tell the simulation where the player stands, for the pressure plates."""
+        x, y, z = (math.floor(c) for c in self.player.pos)
+        cell = (x, y, z)
+        before, sim.occupied = sim.occupied, {cell}
+        if cell not in before and self.world.get(*cell) == STONE_PRESSURE_PLATE:
+            sim.notify(cell)
 
     def save(self):
         tmp = self.save_path + ".tmp.npz"
@@ -917,6 +967,11 @@ class App:
         self.play_time += dt
         self.time_of_day = (self.time_of_day + dt / DAY_SECONDS) % 1.0
         self.sim.update(dt)  # the machines: 20 ticks a second
+        if self.sim.events:
+            for event, pos in self.sim.events:
+                if event == "explode":
+                    self.sfx(SND_BREAK)
+            self.sim.events.clear()
         if self.play_time - dt < HELP_SECONDS <= self.play_time:
             self.show_help = False  # hide the help once, after the first seconds of play
         if self.play_time - self.last_save > AUTOSAVE_SECONDS:
@@ -962,10 +1017,22 @@ class App:
             if UNBREAKABLE[self.world.get(x, y, z)]:
                 self.notify("Bedrock can't be broken")
             else:
+                broken, state = self.world.get(x, y, z), self.world.get_state(x, y, z)
                 self.sim.set_block(x, y, z, 0)
+                if broken in redstone.SOURCES:  # what it powered goes dark
+                    redstone.spread(self.sim, (x, y, z))
+                    support = redstone.support_of(broken, state, (x, y, z))
+                    if support is not None:
+                        redstone.spread(self.sim, support)
                 if PLANT[self.world.get(x, y + 1, z)]:  # the plant on it goes too
                     self.sim.set_block(x, y + 1, z, 0)
                 self.sfx(SND_BREAK)
+        elif self.target and pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT) and self.world.get(*self.target[0]) in INTERACTIVE:
+            x, y, z = self.target[0]
+            act = {LEVER: redstone.toggle_lever, STONE_BUTTON: redstone.press_button,
+                   REPEATER: redstone.cycle_repeater}[self.world.get(x, y, z)]
+            act(self.sim, x, y, z)
+            self.sfx(SND_CLICK)
         elif self.target and pyxel.btnp(pyxel.MOUSE_BUTTON_RIGHT, hold=hold, repeat=repeat):
             # Aiming at a plant puts the block in its place, like on the ground under it
             x, y, z = self.target[0] if PLANT[self.world.get(*self.target[0])] else self.target[1]
@@ -976,8 +1043,12 @@ class App:
                 grounds = [BLOCK_NAMES[g].lower() for g in np.flatnonzero(GROWS_ON[block])]
                 self.notify("%s grows only on %s or %s" % (BLOCK_NAMES[block], ", ".join(grounds[:-1]), grounds[-1]))
             elif free and (not SOLID[block] or not self.player.overlaps(x, y, z)):  # plants and water: walk-through
-                self.sim.set_block(x, y, z, block)
-                self.sfx(SND_PLACE)
+                placed = placement(block, self.target[0], (x, y, z), self.player.forward(), self.world)
+                if placed is None:
+                    self.notify("%s needs a full block to go on" % BLOCK_NAMES[block])
+                else:
+                    self.sim.set_block(x, y, z, *placed)
+                    self.sfx(SND_PLACE)
 
     def update_look(self):
         keys_yaw = pyxel.btn(pyxel.KEY_LEFT) - pyxel.btn(pyxel.KEY_RIGHT)
