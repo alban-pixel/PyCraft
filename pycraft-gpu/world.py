@@ -5,11 +5,12 @@ import math
 
 import numpy as np
 
-from blocks import AIR, ALL_LEAVES, ICE, PLANT, SOLID, STONE, TARGETABLE, WATER
+from blocks import AIR, ALL_LEAVES, FLAT, ICE, PLANT, SHAPED, SOLID, STONE, TARGETABLE, WATER
+from shapes import selection_box
 from terrain import (BIRCH_FOREST, BIOME_NAMES, CHUNK, FOREST, PLAINS, SAVANNA, SEA_LEVEL, TAIGA, WORLD_HEIGHT,
                      TerrainGenerator)
 
-SAVE_VERSION = 2
+SAVE_VERSION = 3  # 3: block states; a save of version 2 (no states) still loads
 
 
 class World:
@@ -19,6 +20,9 @@ class World:
         self.columns = {}  # (cx, cz) -> terrain.Column
         self.sections = {}  # (cx, cy, cz) -> (16, 16, 16) uint8 array [x, y, z], or one block id
         self.edited = set()  # sections the player changed: saved, and never forgotten
+        # A byte of state for each block (facing, on/off, power...), only in the sections that
+        # have a block with a state: (cx, cy, cz) -> (16, 16, 16) uint8 array [x, y, z]
+        self.states = {}
         self.edited_columns = {}  # (cx, cz) -> set of cy of its edited sections
 
     # --- Columns and sections ------------------------------------------------------------------
@@ -77,7 +81,15 @@ class World:
         s = self.section(x >> 4, y >> 4, z >> 4)
         return s if isinstance(s, int) else int(s[x & 15, y & 15, z & 15])
 
-    def set(self, x, y, z, block):
+    def get_state(self, x, y, z):
+        st = self.states.get((x >> 4, y >> 4, z >> 4))
+        return 0 if st is None else int(st[x & 15, y & 15, z & 15])
+
+    def state_section(self, cx, cy, cz):
+        """The states of a section, or None when all its blocks have state 0."""
+        return self.states.get((cx, cy, cz))
+
+    def set(self, x, y, z, block, state=0):
         if not 0 <= y < WORLD_HEIGHT:
             return
         key = (x >> 4, y >> 4, z >> 4)
@@ -88,6 +100,11 @@ class World:
             s = np.full((CHUNK, CHUNK, CHUNK), s, dtype=np.uint8)
             self.sections[key] = s
         s[x & 15, y & 15, z & 15] = block
+        st = self.states.get(key)
+        if st is None and state:
+            st = self.states[key] = np.zeros((CHUNK, CHUNK, CHUNK), np.uint8)
+        if st is not None:
+            st[x & 15, y & 15, z & 15] = state
 
     def is_solid(self, x, y, z):
         if y < 0:
@@ -141,7 +158,7 @@ class World:
                 p = AIR
                 while y >= 0:
                     b = real(x, y, z)
-                    if b != AIR and not PLANT[b]:
+                    if b != AIR and not PLANT[b] and not FLAT[b]:  # (small redstone parts: like plants)
                         break
                     if PLANT[b] and p == AIR:
                         p = b  # the first plant on the way down tints the ground under it
@@ -222,33 +239,59 @@ class World:
         keys = sorted(self.edited)
         blocks = [self.sections[k] for k in keys]
         blocks = [np.full((CHUNK,) * 3, b, np.uint8) if isinstance(b, int) else b for b in blocks]
+        state_keys = sorted(k for k in self.states if k in self.edited)
         np.savez_compressed(path, version=SAVE_VERSION, seed=self.seed,
                             keys=np.array(keys, dtype=np.int64).reshape(-1, 3),
-                            sections=np.array(blocks, dtype=np.uint8).reshape(-1, CHUNK, CHUNK, CHUNK), **extra)
+                            sections=np.array(blocks, dtype=np.uint8).reshape(-1, CHUNK, CHUNK, CHUNK),
+                            state_keys=np.array(state_keys, dtype=np.int64).reshape(-1, 3),
+                            states=np.array([self.states[k] for k in state_keys], dtype=np.uint8).reshape(
+                                -1, CHUNK, CHUNK, CHUNK), **extra)
 
     @classmethod
     def load(cls, path):
         """Return (world, data) where data holds the extra values given to save()."""
         with np.load(path) as f:
             data = {key: f[key] for key in f.files}
-        if int(data.pop("version", 1)) != SAVE_VERSION:
-            raise ValueError("this save is from an older version of the game")
+        if int(data.pop("version", 1)) not in (2, SAVE_VERSION):
+            raise ValueError("this save is from another version of the game")
         world = cls(int(data.pop("seed")))
         for key, blocks in zip(data.pop("keys"), data.pop("sections")):
             key = tuple(int(v) for v in key)
             world.sections[key] = blocks.copy()
             world.edited.add(key)
             world.edited_columns.setdefault((key[0], key[2]), set()).add(key[1])
+        for key, states in zip(data.pop("state_keys", ()), data.pop("states", ())):
+            world.states[tuple(int(v) for v in key)] = states.copy()
         return world, data
 
     # --- Aiming --------------------------------------------------------------------------------
 
+    def _aimed(self, pos, origin, direction, reach):
+        """Whether the ray hits the block at pos: any targetable cube, or the box of a shaped block."""
+        block = self.get(*pos)
+        if not TARGETABLE[block]:
+            return False
+        if not SHAPED[block]:
+            return True
+        lo, hi = selection_box(block, self.get_state(*pos))
+        t_near, t_far = 0.0, reach
+        for i in range(3):
+            a, b = pos[i] + lo[i], pos[i] + hi[i]
+            if direction[i] == 0:
+                if not a <= origin[i] <= b:
+                    return False
+                continue
+            t1, t2 = (a - origin[i]) / direction[i], (b - origin[i]) / direction[i]
+            t_near, t_far = max(t_near, min(t1, t2)), min(t_far, max(t1, t2))
+        return t_near <= t_far
+
     def raycast(self, origin, direction, reach):
         """Walk the grid along a ray (DDA). Returns (hit_block, previous_block) or None.
 
-        Air and water are passed through, so you can aim at blocks under water."""
+        Air and water are passed through, so you can aim at blocks under water. A shaped block
+        (a lever, dust...) is hit only through its box."""
         pos = [math.floor(c) for c in origin]
-        if TARGETABLE[self.get(*pos)]:  # the ray starts inside a block (e.g. flying through leaves)
+        if self._aimed(pos, origin, direction, reach):  # the ray starts inside a block (e.g. flying through leaves)
             return tuple(pos), tuple(pos)
         step, t_delta, t_max = [0] * 3, [math.inf] * 3, [math.inf] * 3
         for i in range(3):
@@ -266,5 +309,5 @@ class World:
             previous = tuple(pos)
             pos[axis] += step[axis]
             t_max[axis] += t_delta[axis]
-            if TARGETABLE[self.get(*pos)]:
+            if self._aimed(pos, origin, direction, reach):
                 return tuple(pos), previous
