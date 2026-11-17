@@ -18,10 +18,7 @@ def grid_for(recipe, size=3):
 
 def test_every_recipe_crafts():
     for recipe in R.RECIPES:
-        got = R.match(grid_for(recipe))
-        assert got is not None, recipe
-        first = next(r for r in R.RECIPES if R.match(grid_for(recipe)) == r.result)
-        assert got == recipe.result or first is not recipe, recipe
+        assert R.match(grid_for(recipe)) == recipe.result, recipe
 
 
 def test_planks_and_sticks():
