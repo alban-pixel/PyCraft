@@ -738,6 +738,14 @@ def build_tiles(seed=7):
     inner = _noisy(rrng, (116, 116, 116), 0.1)  # inside the piston, once its head is out
     inner[(np.abs(xs - 7.5) < 2) & (np.abs(ys - 7.5) < 2)] = (60, 54, 48)
     tiles[T_PISTON_INNER] = inner
+    # The furnace's front with a fire in its door, drawn with its own random numbers as well
+    frng = np.random.default_rng(seed + 202)
+    lit_front = tiles[T_FURNACE_FRONT].copy()
+    fire = _noisy(frng, (236, 110, 24), 0.12)
+    fire[3:, :] = _noisy(frng, (255, 176, 40), 0.1)[3:, :]  # the heart of the fire is yellower
+    lit_front[10:14, 5:11] = fire[:4, :6]
+    lit_front[13, 4:12] = (200, 70, 16)  # embers along the bottom
+    tiles[T_FURNACE_FRONT_ON] = lit_front
     face = tiles[T_PUMPKIN_SIDE].copy()  # a pumpkin with a carved face, lit from inside
     candle = (255, 208, 84)
     for x in (3, 10):  # the eyes...

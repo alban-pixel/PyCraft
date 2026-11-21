@@ -14,26 +14,30 @@ import moderngl
 import numpy as np
 import pyxel
 
-from pycraft import packs, redstone
+from pycraft import items, packs, redstone
 from pycraft.autoscale import AutoScale
-from pycraft.blocks import ATLAS_TILES, BLOCK_TILES, DEFAULT_HOTBAR, STONE_PRESSURE_PLATE, TILE
+from pycraft.blocks import ATLAS_TILES, BLOCK_TILES, STONE_PRESSURE_PLATE, TILE
 from pycraft.controls import Controls
-from pycraft.icons import icon_palette
+from pycraft.icons import icon_palette, item_atlas
 from pycraft.play import Playing
 from pycraft.player import Player
 from pycraft.render import Renderer
+from pycraft.furnace import Furnaces
 from pycraft.screens.chat import Chat
 from pycraft.screens.hud import Hud
 from pycraft.screens.inventory import Inventory
 from pycraft.screens.menus import Menus
 from pycraft.screens.settings import SettingsScreen
-from pycraft.settings import load_tiles, parse_settings
+from pycraft.settings import load_item_icons, load_tiles, parse_settings
 from pycraft.sim import Simulation
+from pycraft.survival import (CREATIVE, SURVIVAL, BreakProgress, Health, convert_old_save,
+                              creative_inventory)
+from pycraft.inventory import Inventory as Slots
 from pycraft.sky import FOG_START, HAZE, UNDERWATER_FOG, environment, scale
 from pycraft.sound import Sound
 from pycraft.terrain import SEA_LEVEL
 from pycraft.tiles import build_tiles, tiles_to_atlas
-from pycraft.ui import BASE_HEIGHT, BASE_WIDTH, BLACK, PALETTE, TEXT, Ui, text_width
+from pycraft.ui import BASE_HEIGHT, BASE_WIDTH, BLACK, BRICK, PALETTE, TEXT, Ui, text_width
 from pycraft.world import World
 
 
@@ -71,7 +75,8 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
         self.ui = Ui()
 
         self.default_tiles = tiles = build_tiles()
-        icon_colors = self.set_icons(tiles)
+        self.default_item_tiles = self.item_tiles = items.build_item_tiles()
+        icon_colors = self.set_icons(tiles, self.item_tiles)
         pyxel.images[1].cls(0)
         pyxel.images[1].text(0, 0, "PYCRAFT", 7)  # drawn scaled up on the title screen
         self.init_sounds()
@@ -129,7 +134,14 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
         self.view_fov = float(self.settings["fov"])  # the field of view on screen (it glides to the zoom's)
         self.music_playing = False
         self.warp_to_button = False
-        self.hotbar = list(DEFAULT_HOTBAR)
+        self.mode = CREATIVE
+        self.new_mode = CREATIVE  # the next new world's mode (the title menu asks for it)
+        self.inv = creative_inventory()  # its slots 0 to 8 are the hotbar
+        self.health = Health()
+        self.breaking = BreakProgress()
+        self.open_screen = None  # the Survival screen shown (inventory, crafting table, furnace), in "screen"
+        self.hurt_time = -1.0  # play time the player was last hurt (the screen flashes red)
+        self.rng = random.Random()
         self.selected = 0
         self.selected_time = 0.0  # play time when the chosen block last changed (its name shows a while)
         self.inventory_tab = 0
@@ -182,19 +194,22 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
     def find_packs(self):
         """The texture packs on this computer (none without Pillow, which reads their PNGs)."""
         return packs.find_packs(self.pack_dirs, packs.minecraft_jars()) if self.has_pillow else []
-    def set_icons(self, tiles):
-        """Draw the block icons of these tiles into Pyxel's image bank 0; returns their 48 colors."""
-        icon_colors, icons = icon_palette(tiles_to_atlas(tiles))
-        bank = np.frombuffer(pyxel.images[0].data_ptr(), dtype=np.uint8, count=256 * 256).reshape(256, 256)
-        bank[:icons.shape[0], :icons.shape[1]] = icons
+    def set_icons(self, tiles, item_tiles):
+        """Draw the block icons of these tiles into Pyxel's image bank 0, and the item icons into bank 2;
+        returns their 48 colors."""
+        icon_colors, icons, item_icons = icon_palette(tiles_to_atlas(tiles), item_atlas(item_tiles))
+        for bank_number, image in ((0, icons), (2, item_icons)):
+            bank = np.frombuffer(pyxel.images[bank_number].data_ptr(), dtype=np.uint8, count=256 * 256)
+            bank.reshape(256, 256)[:image.shape[0], :image.shape[1]] = image
         return icon_colors
     def apply_pack(self, path):
         """Draw the world and the icons with this texture pack (None: the game's own textures).
         Returns a message for the settings: "" when it went well. A pack that can't be read gives
         the game's own textures back, and its path is forgotten."""
         tiles, message, path = load_tiles(path, self.packs, self.default_tiles)
+        self.item_tiles = load_item_icons(path, self.packs, self.default_item_tiles)
         self.renderer.set_tiles(tiles)
-        self.renderer.palette.set_fixed(self.set_icons(tiles))
+        self.renderer.palette.set_fixed(self.set_icons(tiles, self.item_tiles))
         self.settings["texture_pack"] = path
         return message
     def set_resolution(self, width, height):
@@ -227,22 +242,33 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
     def frames(self, seconds):
         """Number of frames lasting about this long at the current frame rate (for pyxel.btnp)."""
         return max(1, round(seconds * self.settings["fps"]))
+    @property
+    def hotbar(self):
+        """The items of the hotbar's 9 slots (0: empty); change them through self.inv."""
+        return [stack[0] for stack in self.inv.slots[:9]]
     def snapshot(self):
         """Everything besides the blocks needed to continue the game later."""
         p = self.player
         return {
             "player": np.array(p.pos + [p.yaw, p.pitch, float(p.flying)]),
             "time_of_day": self.time_of_day,
-            "hotbar": np.array(self.hotbar),
             "selected": self.selected,
             "ticks": self.sim.pending(),  # the machines' updates still to come
+            "mode": self.mode,
+            "inventory": self.inv.to_array(),
+            "health": self.health.hp,
+            "air": self.health.air,
+            "spawn": np.array(self.spawn, dtype=float),
+            "furnaces": self.furnaces.to_array(),
         }
-    def new_simulation(self, pending=None):
-        """The clock of the world's machines (sim.py), for the current world."""
+    def new_simulation(self, pending=None, furnaces=None):
+        """The clock of the world's machines (sim.py), for the current world, and its furnaces."""
         self.changes = []  # blocks the machines changed this frame: meshed together, once per section
         self.sim = Simulation(self.world, lambda x, y, z: self.changes.append((x, y, z)))
         redstone.install(self.sim)
         self.sim.every_tick.append(self.feel_plates)
+        self.furnaces = Furnaces() if furnaces is None else furnaces
+        self.sim.every_tick.append(self.furnaces.tick)
         if pending is not None:
             self.sim.load_pending(pending)
     def feel_plates(self, sim):
@@ -265,7 +291,10 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
                 self.renderer.set_world(self.world)
                 self.spawn = self.world.find_spawn()
             self.player = Player(*self.spawn)
-            self.hotbar, self.selected, self.time_of_day = list(DEFAULT_HOTBAR), 0, 0.05
+            self.selected, self.time_of_day = 0, 0.05
+            self.mode = self.new_mode
+            self.inv = Slots() if self.mode == SURVIVAL else creative_inventory()
+            self.health.reset()
             self.new_simulation()
             self.save()
         elif self.save_data is not None:
@@ -274,11 +303,22 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
             self.player = Player(x, y, z)
             self.player.yaw, self.player.pitch, self.player.flying = yaw, pitch, bool(flying)
             self.time_of_day = float(data["time_of_day"])
-            self.hotbar = [int(b) for b in data["hotbar"]]
+            self.mode, self.inv = convert_old_save(data)
             self.selected = int(data["selected"])
-            self.new_simulation(data.get("ticks"))
+            self.health.reset()
+            if "health" in data:  # (a save from before Survival: full health)
+                self.health.hp = int(data["health"])
+                self.health.air = float(data["air"])
+            if "spawn" in data:
+                self.spawn = tuple(float(v) for v in np.asarray(data["spawn"]).tolist())
+            furnaces = Furnaces.from_array(data["furnaces"]) if "furnaces" in data else None
+            self.new_simulation(data.get("ticks"), furnaces)
         self.save_data = None
+        self.player.can_fly = self.mode == CREATIVE
+        self.breaking.reset()
+        self.open_screen = None
         self.play_time = self.last_save = self.selected_time = 0.0
+        self.hurt_time = -1.0
         self.show_help = self.settings["show_help"]
         self.set_state("loading")  # until the blocks around the player are ready
     def set_state(self, state):
@@ -295,7 +335,7 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
         self.last_mouse = (pyxel.mouse_x, pyxel.mouse_y)
     def on_title(self):
         """True on the title screen and on the settings screen opened from it."""
-        return self.state == "title" or (self.state == "settings" and self.settings_parent == "title")
+        return self.state in ("title", "newmode") or (self.state == "settings" and self.settings_parent == "title")
     def camera(self):
         """(eye, forward) of the view: the player's, or a slow look around on the title screen."""
         if self.on_title():
@@ -321,13 +361,17 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
                 self.set_state("playing")
         elif self.state == "settings":
             self.update_settings()
-        elif self.state in ("title", "paused"):
+        elif self.state in ("title", "paused", "newmode", "dead"):
             if self.state == "paused" and pyxel.btnp(pyxel.KEY_ESCAPE):
                 self.set_state("playing")
+            elif self.state == "newmode" and pyxel.btnp(pyxel.KEY_ESCAPE):
+                self.set_state("title")
             else:
                 self.update_menu()
         elif self.state == "inventory":
             self.update_inventory()
+        elif self.state == "screen":
+            self.update_screen()
         elif self.state == "chat":
             self.update_chat()
         else:
@@ -349,7 +393,7 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
             return
 
         self.draw_world()
-        if self.state == "title":
+        if self.state in ("title", "newmode"):
             self.draw_title()
         elif self.state == "loading":
             done = self.renderer.progress(self.player.eye(), LOADING_RADIUS)
@@ -357,12 +401,18 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
         elif self.state == "paused":
             ui.center_text(self.menu_top() - 26, "Game paused", TEXT, shadow=True, size=2)
             self.draw_menu()
+        elif self.state == "dead":
+            ui.shade(0, 0, ui.width, ui.height, 0.35, col=BRICK)
+            ui.center_text(self.menu_top() - 26, "You died!", TEXT, shadow=True, size=2)
+            self.draw_menu()
         elif self.state == "settings":
             self.draw_settings()
         else:
             self.draw_hud()
             if self.state == "inventory":
                 self.draw_inventory()
+            elif self.state == "screen":
+                self.open_screen.draw(ui, self.draw_icon, ui.mouse_x, ui.mouse_y, ui.width, ui.height)
             elif self.state == "chat":
                 self.draw_chat()
         if not self.mouse_captured and self.state != "loading":
@@ -397,13 +447,20 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
             fog = (env["horizon"], HAZE, FOG_START * end, end)
         self.renderer.set_environment(**env, fog_color=fog[0], fog_density=fog[1], fog_start=fog[2], fog_end=fog[3])
         self.renderer.underwater = underwater
-        self.renderer.dim = DIM if self.state in ("loading", "paused", "settings", "inventory") else 1.0
+        dimmed = ("loading", "paused", "settings", "inventory", "screen", "dead")
+        self.renderer.dim = DIM if self.state in dimmed else 1.0
         self.renderer.render(self.screen, eye, forward, target)
         self.use_palette()
-    def draw_icon(self, x, y, block):
-        tile = BLOCK_TILES[block][0]
+    def draw_icon(self, x, y, item):
+        """Draw any item's icon: a block's from image bank 0, another item's from bank 2."""
+        if items.is_block(item):
+            tile, bank = BLOCK_TILES[item][0], 0
+        elif item >= items.FIRST_ITEM:
+            tile, bank = item - items.FIRST_ITEM, 2
+        else:
+            return  # the empty slot
         u, v = (tile % ATLAS_TILES) * TILE, (tile // ATLAS_TILES) * TILE
-        self.ui.blt(x, y, 0, u, v, TILE, TILE, 0)
+        self.ui.blt(x, y, bank, u, v, TILE, TILE, 0)
 
 
 def main():

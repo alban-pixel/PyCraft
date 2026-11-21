@@ -1,6 +1,7 @@
-"""The command line: /tp and /time."""
+"""The command line: /tp, /time and /gamemode."""
 import pyxel
 
+from pycraft.survival import parse_gamemode
 from pycraft.ui import AMBER, TEXT, TEXT_DIM
 
 
@@ -60,12 +61,18 @@ class Chat:
                 return
             self.time_of_day = (t / 24000 if t > 1 else t) % 1.0
             self.notify(f"Time set to {self.time_of_day * 24 % 24:.0f}:00")
+        elif cmd == "gamemode":
+            mode = parse_gamemode(parts[1]) if len(parts) == 2 else None
+            if mode is None:
+                self.notify("Usage: /gamemode survival|creative")
+                return
+            self.set_mode(mode)
         else:
-            self.notify(f"Unknown command: {parts[0]}  (/tp x y z, /time set ...)")
+            self.notify(f"Unknown command: {parts[0]}  (/tp x y z, /time set ..., /gamemode ...)")
     def draw_chat(self):
         ui = self.ui
         y = self.hotbar_rects()[0][1] - 19
-        ui.text(4, y - 9, "ENTER run   ESC cancel   /tp x y z   /time set day|noon|night", TEXT_DIM, shadow=True)
+        ui.text(4, y - 9, "ENTER run  ESC cancel  /tp x y z  /time set day|night  /gamemode s|c", TEXT_DIM, shadow=True)
         ui.glass(2, y - 1, ui.width - 4, 12, 0.85)
         ui.rect(2, y - 1, 2, 12, AMBER)
         cursor = "_" if self.play_time % 1.0 < 0.6 else ""

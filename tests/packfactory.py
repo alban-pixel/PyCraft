@@ -8,6 +8,7 @@ import numpy as np
 from PIL import Image
 
 FOLDERS = {"1.8": "assets/minecraft/textures/blocks", "1.13": "assets/minecraft/textures/block"}
+ITEM_FOLDERS = {"1.8": "assets/minecraft/textures/items", "1.13": "assets/minecraft/textures/item"}
 
 
 def png(pixels):
@@ -23,14 +24,17 @@ def solid(color, size=16):
     return np.tile(np.array(color, np.uint8), (size, size, 1))
 
 
-def make_pack(root, name, layout, textures, zip=False, description="test", raw=None):
+def make_pack(root, name, layout, textures, zip=False, description="test", raw=None, items=None):
     """Write a pack under root: textures maps a file name (without .png) to an array, raw maps a
-    file name to bytes written as they are. Returns the pack's path (a folder or a .zip)."""
+    file name to bytes written as they are, items maps an item texture's name to an array.
+    Returns the pack's path (a folder or a .zip)."""
     files = {"pack.mcmeta": json.dumps({"pack": {"pack_format": 1, "description": description}}).encode()}
     for tex, pixels in textures.items():
         files[f"{FOLDERS[layout]}/{tex}.png"] = png(pixels)
     for tex, data in (raw or {}).items():
         files[f"{FOLDERS[layout]}/{tex}.png"] = data
+    for tex, pixels in (items or {}).items():
+        files[f"{ITEM_FOLDERS[layout]}/{tex}.png"] = png(pixels)
     os.makedirs(root, exist_ok=True)
     if zip:
         path = os.path.join(root, name + ".zip")
