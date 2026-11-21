@@ -1,4 +1,5 @@
-"""The inventory: every block, on tabs and pages, to put in the hotbar."""
+"""The Creative inventory: every block, on tabs and pages, to put in the hotbar. (Survival has its
+own screens: containers.py.)"""
 import math
 
 import pyxel
@@ -111,7 +112,7 @@ class Inventory:
                     self.sfx(SND_CLICK)
             for block, x, y in self.inventory_slots():
                 if ui.mouse_in(x, y, INVENTORY_SLOT, INVENTORY_SLOT):
-                    self.hotbar[self.selected] = block
+                    self.inv.slots[self.selected] = (block, 1, 0)
                     self.selected_time = self.play_time
                     self.sfx(SND_CLICK)
         if tab != self.inventory_tab:

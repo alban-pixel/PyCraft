@@ -1,7 +1,10 @@
-"""The title screen and the pause menu: their buttons, by mouse or keyboard."""
+"""The title screen, the choice of a new world's mode, the pause menu and the death screen: their buttons,
+by mouse or keyboard."""
 import pyxel
 
+from pycraft.player import Player
 from pycraft.sound import SND_CLICK
+from pycraft.survival import CREATIVE, MODE_NAMES, SURVIVAL
 from pycraft.ui import AMBER, BASE_HEIGHT, BLACK, CREAM, GOLD, RUST, TEXT_DIM, text_width
 
 
@@ -17,10 +20,15 @@ class Menus:
             items = []
             if not self.world_is_fresh:
                 items.append(("Continue", lambda: self.start_game(new_world=False)))
-            items.append(("New world", self.new_world_clicked))
+            items.append(("New world", lambda: self.set_state("newmode")))
             items.append(("Settings", self.open_settings))
             items.append(("Quit", pyxel.quit))
             return items
+        if self.state == "newmode":
+            return [("Survival", lambda: self.choose_mode(SURVIVAL)), ("Creative", lambda: self.choose_mode(CREATIVE)),
+                    ("Back", lambda: self.set_state("title"))]
+        if self.state == "dead":
+            return [("Respawn", self.respawn)]
         if self.state == "paused":
             return [
                 ("Resume", lambda: self.set_state("playing")),
@@ -29,6 +37,24 @@ class Menus:
                 ("Save and quit", self.save_and_quit),
             ]
         return []
+    def choose_mode(self, mode):
+        self.new_mode = mode
+        self.new_world_clicked()
+    def respawn(self):
+        """Back to the spawn with full health; the inventory is kept (nothing is dropped on the ground)."""
+        self.player = Player(*self.spawn)
+        self.player.can_fly = self.mode == CREATIVE
+        self.health.reset()
+        self.breaking.reset()
+        self.set_state("playing")
+    def set_mode(self, mode):
+        """Survival or Creative, during the game (/gamemode): the inventory and health stay as they are."""
+        self.mode = mode
+        self.player.can_fly = mode == CREATIVE
+        if mode == SURVIVAL:
+            self.player.flying = False
+        self.breaking.reset()
+        self.notify(f"Game mode: {MODE_NAMES[mode]}")
     def new_world_clicked(self):
         if self.world_is_fresh:
             self.start_game(new_world=True)

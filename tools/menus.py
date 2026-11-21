@@ -280,7 +280,7 @@ if __name__ == "__main__":
         app.sim.set_block(*app.target[0], BL.STONE)  # (a lever needs a full block: not leaves)
         frame(); app.target = app.world.raycast(p.eye(), p.forward(), play.REACH)
         spot = app.target[1]
-        app.hotbar[app.selected] = BL.LEVER
+        app.inv.slots[app.selected] = (BL.LEVER, 1, 0)
         frame([K.MOUSE_BUTTON_RIGHT])
         check("a lever is placed", int(app.world.get(*spot)) == BL.LEVER, (spot, int(app.world.get(*spot)), "target", app.target, "blocks", [BL.BLOCK_NAMES[int(app.world.get(*c))] for c in app.target] if app.target else None, "message", app.message, "selected", BL.BLOCK_NAMES[app.hotbar[app.selected]]))
 

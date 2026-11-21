@@ -97,6 +97,18 @@ def load_tiles(path, found, default_tiles):
     return tiles, "", path
 
 
+def load_item_icons(path, found, default_items):
+    """The item icons of the texture pack at path (None: the game's own, default_items). Never raises."""
+    info = next((p for p in found if p.path == path), None) if path else None
+    if info is None:
+        return default_items
+    tiles, missing = packs.load_item_tiles(info, default_items)
+    if missing:
+        print(f"Texture pack {info.name}: {len(missing)} item icons missing, the game's own drawn instead",
+              file=sys.stderr)
+    return tiles
+
+
 def next_pack(current, found, step):
     """The texture pack after (step 1) or before (step -1) the current one: None (the game's own
     textures), then the packs found, round and round. Paths."""

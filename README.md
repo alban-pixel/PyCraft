@@ -63,7 +63,8 @@ a real graphics card driver.
   in the world
 - Redstone that works (see below): levers, stone buttons, pressure plates, redstone dust, redstone
   torches, repeaters, redstone lamps, pistons and sticky pistons, TNT and blocks of redstone
-- Walking, sprinting, jumping, swimming and flying (and flying fast)
+- Two game modes, chosen for each new world: **Survival** and **Creative** (see below)
+- Walking, sprinting, jumping, swimming and flying (and flying fast, in Creative)
 - A day and night cycle, with a sun, a moon and sunsets (20 minutes long, or 10, 40 or 60)
 - A title screen, a pause menu and a block inventory with tabs: Nature, Building, Colors, Plants,
   Redstone and Special
@@ -85,13 +86,13 @@ These are the keys the game starts with. Every one in the first table can be cha
 | Space | Jump, swim up (against a wall: climb out of water), fly up |
 | Left Shift | Fly down |
 | Left Ctrl | Sprint; while flying: fly fast (42 blocks per second) |
-| F | Toggle flying |
+| F | Toggle flying (Creative only) |
 | C | Zoom, for as long as it is held |
-| Left click | Break block (hold to repeat) |
-| Right click | Place block (hold to repeat); on a lever: flip it; on a button: press it; on a repeater: change its delay |
+| Left click | Break block. Creative: at once (hold to repeat). Survival: hold until it breaks |
+| Right click | Place block (hold to repeat); on a lever: flip it; on a button: press it; on a repeater: change its delay; on a crafting table or a furnace: open it |
 | Middle click | Pick the block you look at: its hotbar slot becomes the chosen one, or it takes the chosen slot's place |
-| E | All blocks: click one to put it in the selected slot (click a hotbar slot to select it). Tab / Shift+Tab or a click change the tab. If a tab's blocks don't all fit on the screen, they go on pages: mouse wheel, Left/Right, Page Up/Down or the arrows under the slots turn them |
-| T | Chat: `/tp x y z`, `/time set day\|noon\|sunset\|night\|midnight` |
+| E | Survival: the inventory (see below). Creative: all blocks: click one to put it in the selected slot (click a hotbar slot to select it). Tab / Shift+Tab or a click change the tab. If a tab's blocks don't all fit on the screen, they go on pages: mouse wheel, Left/Right, Page Up/Down or the arrows under the slots turn them |
+| T | Chat: `/tp x y z`, `/time set day\|noon\|sunset\|night\|midnight`, `/gamemode survival\|creative` |
 | Tab | Release / capture the mouse |
 | F3 | FPS, the size the 3D view is drawn at and the graphics card's time, position, altitude, biome, chunks, the levels of the distant terrain on screen and seed |
 | H | Show / hide the controls, with the keys they have now |
@@ -350,6 +351,45 @@ the shader that turns it into palette colors scales it up first, with a Catmull-
 than a bilinear one, from 9 bilinear samples), so the dithering stays at the screen's own
 resolution.
 
+## Survival and Creative
+
+**New world** on the title screen asks for a mode; `/gamemode survival|creative` (or `s`, `c`, `0`,
+`1`) switches it during the game and keeps the inventory. A save from before the modes loads in
+Creative, with its hotbar.
+
+**Creative** is the game as it was: blocks break at once, the hotbar never runs out, you can fly,
+and nothing hurts you.
+
+**Survival** starts with nothing:
+
+- **Breaking takes time**, from the block's hardness and the tool: a bar under the crosshair shows
+  how far it is. The right tool goes faster (pickaxe for stone and ores, axe for wood, shovel for
+  dirt, sand and gravel). Stone and ores need a pickaxe to drop anything, and iron, gold, diamond,
+  emerald, redstone and obsidian need a pickaxe of stone, iron or diamond. Bedrock never breaks.
+- **What breaks goes into the inventory**, with Minecraft 1.8's drops: stone gives cobblestone,
+  coal ore gives coal, lapis 4 to 8 lapis, gravel sometimes flint, leaves sometimes a sapling or an
+  apple, glass and ice nothing. If there's no room, it's lost ("Inventory full").
+- **Tools**: pickaxes, axes and shovels of wood, stone, iron, gold and diamond. They wear out
+  (59 uses for wood, 1561 for diamond) and break.
+- **The inventory** (E): 36 slots, the bottom row is the hotbar, a 2x2 crafting grid. Left click
+  takes or puts a stack (or swaps it); right click takes half, or puts one; Shift+click moves a
+  stack between the hotbar and the rest, or out of the grid. Clicking the result crafts once;
+  Shift+click on it crafts as many as it can. What's left in the grid goes back when you close it.
+- **Crafting**: a crafting table (right click) gives a 3x3 grid. About 60 recipes: planks, sticks,
+  the table, the furnace, the 15 tools, the redstone parts (torch, lever, button, plate, repeater,
+  lamp, piston, sticky piston), blocks of 9 ingots or gems and back, polished and cut stones,
+  sandstone, bricks, note block, jukebox, dropper.
+- **The furnace** (right click): ore, sand, cobblestone, clay, logs... on top, fuel below (coal,
+  charcoal, wood, sticks, wooden tools, a block of coal). One item takes 10 seconds; a coal cooks 8.
+  It lights up while it burns and keeps cooking when you walk away. Breaking it gives you what is in
+  it.
+- **Health**: 10 hearts. A fall of more than 3 blocks hurts (not into water), and under water the
+  air bubbles run out after 15 seconds, then you drown. Health comes back slowly (half a heart every
+  4 seconds). At zero, **Respawn** takes you back to the world's start, inventory kept.
+
+Not there yet: hunger and food, items dropped on the ground (nothing is scattered when you die),
+swords, armor, chests.
+
 ## Redstone
 
 The machines run 20 ticks a second, and only where something changes. A simpler cousin of
@@ -401,7 +441,7 @@ To run the tests: `python -m pip install -e ".[dev]"`, then `python -m pytest`.
 ## Limits
 
 - Water doesn't flow: it stays where it was generated or placed
-- No survival mode (health, hunger, mobs, crafting)
+- Survival has no hunger, no mobs and no items on the ground (see above)
 - Caves get no sunlight, but the light of the sky still reaches them, so they aren't dark
 - The distant terrain shows the shape of the land and its colors, not single blocks or trees: a
   forest is a layer of leaves over the ground, and a building much smaller than the cell it stands
