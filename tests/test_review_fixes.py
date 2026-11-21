@@ -71,7 +71,7 @@ def test_load_tiles_never_raises(tmp_path):
 def test_clear_glass_icons(tmp_path):
     tiles = build_tiles()
     tiles[B.T_GLASS, ..., 3] = 0  # a "clear glass" pack
-    colors, indices = icon_palette(tiles_to_atlas(tiles))
+    colors, indices, _ = icon_palette(tiles_to_atlas(tiles))
     assert len(colors) == 48
 
 

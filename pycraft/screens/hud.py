@@ -1,16 +1,21 @@
 """What is drawn over the world while playing: crosshair, hotbar, notices, the F3 info and
-the list of controls."""
+the list of controls; in Survival, the hearts, the air bubbles and how far a block is from breaking."""
 import math
 
 import pyxel
 
-from pycraft.blocks import BLOCK_NAMES, TILE
+from pycraft import items
+from pycraft.blocks import TILE
+from pycraft.screens.containers import draw_stack
+from pycraft.survival import SURVIVAL, Health
 from pycraft.terrain import SEA_LEVEL
-from pycraft.ui import AMBER, ASH, BLACK, COAL, GOLD, IRON, TEXT, TEXT_HOT, WHITE, text_width
+from pycraft.ui import AMBER, ASH, BLACK, BRICK, COAL, GOLD, IRON, SLATE, TEXT, TEXT_HOT, WHITE, text_width
 
 
 HOTBAR_SLOT = TILE + 6
 NAME_SECONDS = 3.0  # the chosen block's name shows this long above the hotbar
+HURT_FLASH = 0.2  # seconds the screen flashes red when the player is hurt
+HEART = [".##.##.", "#######", "#######", ".#####.", "..###..", "...#..."]  # 7 x 6 UI pixels
 
 
 class Hud:
@@ -24,6 +29,8 @@ class Hud:
         return [(x0 + i * HOTBAR_SLOT, y0, HOTBAR_SLOT, HOTBAR_SLOT) for i in range(n)]
     def draw_hud(self):
         ui = self.ui
+        if self.state == "screen":
+            return  # (a Survival screen has the hotbar in it)
         self.draw_hotbar()
         if self.state == "inventory":
             return  # (the rest would show through the inventory)
@@ -39,12 +46,21 @@ class Hud:
             ui.shade(cx - 2, cy - 2, 4, 4, 0.5)
             ui.rect(cx - 1, cy - 1, 2, 2, WHITE)
 
+        if self.breaking.fraction > 0:  # how far the block is from breaking, under the crosshair
+            ui.rect(cx - 15, cy + 8, 30, 3, BLACK)
+            ui.rect(cx - 14, cy + 9, max(1, round(28 * self.breaking.fraction)), 1, WHITE)
+
         y0 = self.hotbar_rects()[0][1]
+        if self.mode == SURVIVAL:
+            self.draw_health(y0)
+            y0 -= 9  # the names and notices go above the hearts
         if self.state == "playing":  # (the chat line would cover them)
             if self.play_time - self.selected_time < NAME_SECONDS:
-                ui.center_text(y0 - 14, BLOCK_NAMES[self.hotbar[self.selected]], TEXT, shadow=True)
+                ui.center_text(y0 - 14, items.name(self.hotbar[self.selected]), TEXT, shadow=True)
             if self.message and self.play_time - self.message_time < 2.5:
                 ui.toast(y0 - 30, self.message)
+        if self.play_time - self.hurt_time < HURT_FLASH:
+            ui.shade(0, 0, ui.width, ui.height, 0.3, col=BRICK)
 
         y = 2
         if self.show_debug:
@@ -60,13 +76,34 @@ class Hud:
         ui.rect(x0 - 3, y0 - 3, size * len(rects) + 6, size + 6, BLACK)
         ui.rect(x0 - 2, y0 - 2, size * len(rects) + 4, size + 4, COAL)
         ui.rectb(x0 - 2, y0 - 2, size * len(rects) + 4, size + 4, IRON)
-        for i, (block, (x, y, w, h)) in enumerate(zip(self.hotbar, rects)):
+        for i, (stack, (x, y, w, h)) in enumerate(zip(self.inv.slots[:9], rects)):
             ui.slot(x, y, w)
-            self.draw_icon(x + 3, y + 3, block)
+            # (in Creative, a block is always there: no count)
+            draw_stack(ui, self.draw_icon, x + 3, y + 3, stack if self.mode == SURVIVAL else stack[:1] + (1, 0))
             ui.text(x + 2, y + 2, str(i + 1), TEXT_HOT if i == self.selected else ASH, shadow=True)
         x, y, w, h = rects[self.selected]  # the chosen slot: a thick amber frame
         ui.rectb(x - 1, y - 1, w + 2, h + 2, GOLD)
         ui.rectb(x, y, w, h, AMBER)
+    def draw_health(self, y0):
+        """10 hearts above the left half of the hotbar, and the air left (10 bubbles) above its right half."""
+        ui = self.ui
+        rects = self.hotbar_rects()
+        x0, y = rects[0][0], y0 - 9
+        hp = self.health.hp
+        for i in range(10):
+            for row, line in enumerate(HEART):
+                for col, c in enumerate(line):
+                    if c == "#":
+                        full = hp >= 2 * i + 2 or (hp == 2 * i + 1 and col < 4)
+                        ui.rect(x0 + i * 8 + col, y + row, 1, 1, BRICK if full else SLATE)
+        air = self.health.air
+        if air < Health.MAX_AIR or self.player.head_in_water(self.world):
+            right = rects[-1][0] + rects[-1][2]
+            for i in range(math.ceil(air / (Health.MAX_AIR / 10))):
+                bx = right - (i + 1) * 7
+                ui.rect(bx + 1, y, 3, 5, ASH)
+                ui.rect(bx, y + 1, 5, 3, ASH)
+                ui.rect(bx + 1, y + 1, 1, 1, WHITE)
     def draw_text_panel(self, y, lines):
         """(text, color) lines on a see-through panel at the left of the screen. Returns its bottom."""
         ui = self.ui
@@ -101,7 +138,7 @@ class Hud:
         return [
             [("".join(move) if all(len(k) == 1 for k in move) else " ".join(move), "Move"),
              (key("jump"), "Jump, swim, fly up"), (key("down"), "Fly down"), (key("sprint"), "Sprint, fly fast"),
-             (key("fly"), "Fly on/off"), (key("zoom"), "Zoom"), (key("inventory"), "All the blocks"),
+             (key("fly"), "Fly (Creative)"), (key("zoom"), "Zoom"), (key("inventory"), "Inventory"),
              (key("chat"), "Chat, commands")],
             [(key("break"), "Break"), (key("place"), "Place, use"), (key("pick"), "Pick the block"),
              ("1-9, WHEEL", "Choose a block"), (key("mouse"), "Free the mouse"), (key("info"), "Info"),

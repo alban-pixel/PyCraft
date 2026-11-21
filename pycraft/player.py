@@ -31,6 +31,9 @@ class Player:
         self.in_water = False
         self.against_wall = False
         self.walked = 0.0
+        self.fall_distance = 0.0  # blocks fallen since last on the ground (not counted in water or flying)
+        self.landed = None  # (distance, in water) on the frame the player lands from a fall, else None
+        self.can_fly = True  # False in Survival: F does nothing
 
     def eye(self):
         return (self.pos[0], self.pos[1] + EYE_HEIGHT, self.pos[2])
@@ -57,7 +60,10 @@ class Player:
         """Move the player for one frame, with the keys held (controls.Controls). Returns the set
         of sound events: "jump", "step", "splash"."""
         events = set()
-        if keys.pressed("fly"):
+        self.landed = None
+        if not self.can_fly:
+            self.flying = False
+        elif keys.pressed("fly"):
             self.flying = not self.flying
             self.vel_y = 0.0
 
@@ -104,10 +110,12 @@ class Player:
         hit_z = self._move_axis(world, 2, dz)
         self.against_wall = hit_x or hit_z
         self.on_ground = False
+        y_before = self.pos[1]
         if self._move_axis(world, 1, self.vel_y * dt):
             if self.vel_y < 0:
                 self.on_ground = True
             self.vel_y = 0.0
+        self._count_fall(y_before)
 
         if self.on_ground and not self.flying:
             self.walked += math.hypot(self.pos[0] - px, self.pos[2] - pz)
@@ -115,6 +123,18 @@ class Player:
                 self.walked = 0.0
                 events.add("step")
         return events
+
+    def _count_fall(self, y_before):
+        """Add this frame's drop to the fall, and report the landing (on the ground, or into water)."""
+        if self.flying:
+            self.fall_distance = 0.0
+            return
+        drop = y_before - self.pos[1]
+        if drop > 0 and not self.in_water:
+            self.fall_distance += drop
+        if (self.on_ground or self.in_water) and self.fall_distance > 0:
+            self.landed = (self.fall_distance, self.in_water)
+            self.fall_distance = 0.0
 
     def _move_axis(self, world, axis, distance):
         """Move along one axis, then push back out of any block. Returns True on a collision."""

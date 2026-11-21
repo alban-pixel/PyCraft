@@ -1,9 +1,11 @@
-"""The block icons of the hotbar and the inventory: the tiles shrunk to 16x16 pixels and 48 colors
+"""The block and item icons of the hotbar and the inventories: the tiles shrunk to 16x16 pixels and 48 colors
 of Pyxel's palette that suit them."""
 import numpy as np
 
+from pycraft import items
 from pycraft.blocks import ATLAS_TILES, BLOCK_TILES, PLACEABLE, TILE, TINT_ALPHA, T_REDSTONE_DUST, T_WATER
 from pycraft.render import FIXED_COLORS, oklab_to_srgb, srgb_to_oklab
+from pycraft.tiles import tiles_to_atlas
 
 
 ICON_GREEN, ICON_BLUE = (0.5, 0.72, 0.33), (0.25, 0.45, 0.95)  # grass/leaves and water in the inventory
@@ -31,9 +33,35 @@ def _spread(points, weight, count):
     return np.array(centers)
 
 
-def icon_palette(atlas):
-    """The block icons for pyxel.blt: 48 colors that suit them and every pixel as the index of its
-    nearest one, 16-63 (0 where transparent). Texels that take the biome color get a typical green
+def item_atlas(item_tiles):
+    """The item icons laid out as the block icons are (16 per row), padded with empty tiles: (256, 256, 4)."""
+    padded = np.zeros((ATLAS_TILES * ATLAS_TILES, TILE, TILE, 4), dtype=np.uint8)
+    padded[:len(item_tiles)] = item_tiles
+    return tiles_to_atlas(padded)
+
+
+def _summaries(lab, seen, tiles):
+    """Each of these tiles of an atlas summed up in at most 4 colors: (colors, their share of the tile)."""
+    points, weight = [], []
+    for t in tiles:
+        ty, tx = divmod(t, ATLAS_TILES)
+        cell = (slice(ty * TILE, (ty + 1) * TILE), slice(tx * TILE, (tx + 1) * TILE))
+        texels = lab[cell][seen[cell]]
+        if len(texels) == 0:
+            continue  # nothing to see (a pack's clear glass): no colors to keep for it
+        ones = np.ones(len(texels))
+        summary = _kmeans(texels, ones, _spread(texels, ones, 4), 8)
+        share = np.bincount(np.argmin(((texels[:, None] - summary[None]) ** 2).sum(-1), axis=1), minlength=4)
+        points.append(summary[share > 0])
+        weight.append(share[share > 0] / len(texels))
+    return points, weight
+
+
+def icon_palette(atlas, item_atlas=None):
+    """The icons for pyxel.blt: 48 colors that suit them and every pixel as the index of its
+    nearest one, 16-63 (0 where transparent). Returns (colors, block indices, item indices), the
+    last None without an item atlas (items.build_item_tiles laid out by item_atlas): the item icons
+    share the 48 colors with the blocks'. Texels that take the biome color get a typical green
     (blue for water).
     Each icon is first summed up in 4 colors (its main color, darker and lighter texels, specks),
     and the 48 colors are a k-means of those, every icon counting the same: a tile of a rare color
@@ -48,23 +76,25 @@ def icon_palette(atlas):
     rgb = np.where((atlas[..., 3] == TINT_ALPHA)[..., None], rgb * tint, rgb)
     seen = atlas[..., 3] >= 128
     lab = srgb_to_oklab(rgb.reshape(-1, 3)).reshape(rgb.shape)
-    points, weight = [], []
-    for t in sorted({int(BLOCK_TILES[b][0]) for b in PLACEABLE}):  # the tiles drawn as icons
-        ty, tx = divmod(t, ATLAS_TILES)
-        cell = (slice(ty * TILE, (ty + 1) * TILE), slice(tx * TILE, (tx + 1) * TILE))
-        texels = lab[cell][seen[cell]]
-        if len(texels) == 0:
-            continue  # nothing to see (a pack's clear glass): no colors to keep for it
-        ones = np.ones(len(texels))
-        summary = _kmeans(texels, ones, _spread(texels, ones, 4), 8)
-        share = np.bincount(np.argmin(((texels[:, None] - summary[None]) ** 2).sum(-1), axis=1), minlength=4)
-        points.append(summary[share > 0])
-        weight.append(share[share > 0] / len(texels))
+    # (the tiles drawn as icons)
+    points, weight = _summaries(lab, seen, sorted({int(BLOCK_TILES[b][0]) for b in PLACEABLE}))
+    if item_atlas is not None:
+        item_seen = item_atlas[..., 3] >= 128
+        item_rgb = item_atlas[..., :3].astype(float) / 255
+        item_lab = srgb_to_oklab(item_rgb.reshape(-1, 3)).reshape(item_rgb.shape)
+        more_points, more_weight = _summaries(item_lab, item_seen, range(items.NUM_ITEMS))
+        points, weight = points + more_points, weight + more_weight
     points, weight = np.concatenate(points), np.concatenate(weight)
     centers = _kmeans(points, weight, _spread(points, weight, FIXED_COLORS - 16), 20)
     colors = np.rint(oklab_to_srgb(centers) * 255).astype(np.uint8)
-    pixels = lab.reshape(-1, 3)
-    nearest = np.argmin(((pixels[:, None] - srgb_to_oklab(colors / 255)[None]) ** 2).sum(-1), axis=1)
-    indices = (16 + nearest).reshape(seen.shape).astype(np.uint8)
-    indices[~seen] = 0
-    return [int(r) << 16 | int(g) << 8 | int(b) for r, g, b in colors], indices
+    palette = srgb_to_oklab(colors / 255)
+
+    def index(lab_image, visible):
+        pixels = lab_image.reshape(-1, 3)
+        nearest = np.argmin(((pixels[:, None] - palette[None]) ** 2).sum(-1), axis=1)
+        out = (16 + nearest).reshape(visible.shape).astype(np.uint8)
+        out[~visible] = 0
+        return out
+
+    item_indices = None if item_atlas is None else index(item_lab, item_seen)
+    return [int(r) << 16 | int(g) << 8 | int(b) for r, g, b in colors], index(lab, seen), item_indices

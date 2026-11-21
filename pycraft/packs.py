@@ -21,6 +21,7 @@ from pycraft.blocks import TINT_ALPHA
 from pycraft.tiles import resize_tile
 
 TEXTURE_DIRS = {"1.8": "assets/minecraft/textures/blocks/", "1.13": "assets/minecraft/textures/block/"}
+ITEM_DIRS = {"1.8": "assets/minecraft/textures/items/", "1.13": "assets/minecraft/textures/item/"}
 
 
 @dataclass(frozen=True)
@@ -89,10 +90,10 @@ def minecraft_jars():
 
 
 class PackFiles:
-    """The block textures of a pack, read by name (without .png)."""
+    """The block textures of a pack (or its item textures, with items=True), read by name (without .png)."""
 
-    def __init__(self, path, layout):
-        self.prefix = TEXTURE_DIRS[layout]
+    def __init__(self, path, layout, items=False):
+        self.prefix = (ITEM_DIRS if items else TEXTURE_DIRS)[layout]
         self.zip = None
         if os.path.isdir(path):
             self.root = os.path.join(path, *self.prefix.split("/"))
@@ -134,8 +135,8 @@ class PackFiles:
         self.close()
 
 
-def open_pack(info):
-    return PackFiles(info.path, info.layout)
+def open_pack(info, items=False):
+    return PackFiles(info.path, info.layout, items)
 
 
 def _inspect(path, name):
@@ -375,6 +376,7 @@ _TABLE = [
     (B.T_REPEATER_ON, _n("repeater_on"), _n("repeater_on")),
     (B.T_REDSTONE_LAMP_OFF, _n("redstone_lamp_off"), _n("redstone_lamp")),
     (B.T_PISTON_INNER, _n("piston_inner"), _n("piston_inner")),
+    (B.T_FURNACE_FRONT_ON, _n("furnace_front_on"), _n("furnace_front_on")),
 ]
 # The 16 colors: 1.8 calls light gray "silver"
 _COLORS = ["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "light_gray", "cyan",
@@ -498,4 +500,51 @@ def load_pack(info, base):
             # The holes are drawn too (the shaded leaves inside a crown): their color, the leaves'
             tile[~seen, :3] = np.rint(tile[seen][:, :3].astype(float).mean(axis=0))
         tiles[t] = tile
+    return tiles, missing
+
+
+def _item_names():
+    """The item textures: names in textures/items/ (1.8) and textures/item/ (1.13 on). 1.8 has no charcoal of its
+    own (it is coal drawn darker by the game): the generated icon stands in."""
+    from pycraft import items as I
+    names = {I.STICK: ("stick",), I.COAL: ("coal",), I.IRON_INGOT: ("iron_ingot",), I.GOLD_INGOT: ("gold_ingot",),
+             I.DIAMOND: ("diamond",), I.EMERALD: ("emerald",), I.QUARTZ: ("quartz",), I.FLINT: ("flint",),
+             I.APPLE: ("apple",), I.CLAY_BALL: ("clay_ball",), I.BRICK: ("brick",)}
+    table = {item: (n, n) for item, n in names.items()}
+    table[I.CHARCOAL] = ((), ("charcoal",))
+    table[I.LAPIS] = (("dye_powder_blue",), ("lapis_lazuli",))
+    for first, old, new in ((I.WOODEN_PICKAXE, "wood", "wooden"), (I.STONE_PICKAXE, "stone", "stone"),
+                            (I.IRON_PICKAXE, "iron", "iron"), (I.GOLDEN_PICKAXE, "gold", "golden"),
+                            (I.DIAMOND_PICKAXE, "diamond", "diamond")):
+        for i, kind in enumerate(("pickaxe", "axe", "shovel")):
+            table[first + i] = ((f"{old}_{kind}",), (f"{new}_{kind}",))
+    return table
+
+
+ITEM_FILES = _item_names()
+
+
+def load_item_tiles(info, base):
+    """The item icons of a pack: (64, 16, 16, 4) uint8, the generated icons base filling in what it lacks. Icons
+    are brought down to 16 px (they are only ever drawn as icons). Returns (tiles, names of the textures it lacks).
+    Never raises: a pack that can't be opened gives base back, every name missing."""
+    tiles = base.copy()
+    mine = 1 if info.layout == "1.13" else 0
+    missing = []
+    try:
+        files = open_pack(info, items=True)
+    except Exception:  # a missing or damaged file: the game's own icons
+        return tiles, [names[mine][0] for names in ITEM_FILES.values() if names[mine]]
+    with files:
+        for item, names in ITEM_FILES.items():
+            img = None
+            for name in names[mine] + names[1 - mine]:
+                img = _decode(files.read(name))
+                if img is not None:
+                    break
+            if img is None:
+                if names[mine]:
+                    missing.append(names[mine][0])
+                continue
+            tiles[item - 256] = resize_tile(img, B.TILE)
     return tiles, missing
