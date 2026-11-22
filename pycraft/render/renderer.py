@@ -11,7 +11,7 @@ from pycraft.render import shaders
 from pycraft.blocks import BLOCK_TILES
 from pycraft.lod import SamplerProcess
 from pycraft.render.chunks import Chunks
-from pycraft.render.constants import (ATLAS_UNIT, BLOCK_TILES_UNIT, CLOUDS_UNIT, CLOUD_HEIGHT, CLOUD_PERIOD,
+from pycraft.render.constants import (ATLAS_UNIT, BLOCK_TILES_UNIT, CLOUDS_UNIT, CLOUD_PERIOD,
                                       CLOUD_WIND, FAR_LIMIT, LOD_QUALITIES, LOD_QUALITY_NAMES, MSAA_SAMPLES,
                                       SHADOW_UNITS, SIM_DISTANCES, TILE_AVG_UNIT, TINT_UNIT)
 from pycraft.render.far import FarTerrain
@@ -251,7 +251,7 @@ class Renderer:
             "time": now % 3600.0,
             "wave_origin": (cam[0] % 256.0, cam[2] % 256.0),
             "cloud_origin": ((wind[0] / CLOUD_PERIOD) % 1.0, (wind[1] / CLOUD_PERIOD) % 1.0),
-            "cloud_height": CLOUD_HEIGHT - cam[1],
+            "cloud_height": self.chunks.world.gen.cloud_height - cam[1],
             "shadows_on": int(self.fancy),
             "sky_fog": 1.0 if self.underwater else 0.0,
         })

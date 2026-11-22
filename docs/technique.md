@@ -53,6 +53,27 @@ le même code sert au monde jouable et au terrain lointain.
 Les couches lisses sont calculées tous les 8 blocs et interpolées — la
 génération d'une colonne est ~3× plus rapide.
 
+## La vraie Terre (`pycraft/earth/`)
+
+`World(seed, earth=Place)` remplace le générateur par `EarthGenerator`, qui hérite de
+`TerrainGenerator` : grottes, minerais, arbres et blocs restent ceux du jeu, et seuls `climate()` et
+`sample()` changent, donc les blocs proches et le terrain lointain suivent sans autre changement.
+
+- **Grille** (`grid.py`) : la carte Web Mercator des tuiles, mise à l'échelle pour qu'un bloc fasse un
+  mètre à la latitude du lieu. +x est l'est, +z le sud.
+- **Tuiles** (`tiles.py`) : un seul processus télécharge, nettoie (`clean.py`) et écrit sur le disque
+  (`TileStore`, `Downloader`). Tous les autres ne font que lire des fichiers (`TileReader`), donc rien
+  n'attend le réseau. Là où une tuile manque, la plus proche tuile grossière est agrandie.
+- **Nettoyage** : aux zooms 13 et 14, un pixel trop loin du sol vu trois zooms plus haut est remplacé ;
+  aux autres, seulement les pixels isolés (la première règle rabotait l'Everest de 1 500 m au
+  zoom 8). Le fond de la mer vient du zoom 8, et une table rend leur hauteur aux grands sommets.
+- **Pas de gel** : `World.ready` dit si les tuiles d'un chunk sont là. `Chunks` et `FarTerrain` ne
+  demandent que ce qui est prêt, et `Playing.keep_to_ready_ground` retient le joueur au bord.
+- **Climat** (`climate.npz`) : température (ramenée au niveau de la mer) et pluie de CHELSA, tous les
+  1/6 de degré, faites par `tools/make_climate.py`. `biomes.py` en tire le biome.
+- **Sauvegardes** : une par lieu, `earth/<lat><lon>.npz` ; `world2.npz` n'est jamais touché.
+- Temps de `columns()` pour 64 chunks, sur le même ordinateur : 21 ms, contre 36 ms pour le monde normal.
+
 ## Blocs près de la caméra
 
 - Le monde est stocké en **sections 16×16×16**, créées à la demande ; seules

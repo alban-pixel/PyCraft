@@ -11,7 +11,7 @@ from pycraft.blocks import (ACACIA_LEAVES, ACACIA_LOG, AIR, ALLIUM, BEDROCK, BIR
 from pycraft.noise import Noise, smoothstep
 
 CHUNK = 16  # columns and sections are 16 blocks wide
-WORLD_HEIGHT = 4096
+WORLD_HEIGHT = 10240  # Everest, on the real Earth, reaches 9361
 SEA_LEVEL = 512
 LAPSE = 1 / 1500  # temperature drop per block of altitude: tree line, then snow, then glaciers
 
@@ -20,10 +20,10 @@ C_POINTS = [-1.2, -0.55, -0.25, -0.08, 0.0, 0.08, 0.3, 0.7, 1.2]
 C_HEIGHTS = [-300, -220, -90, -20, -2, 5, 30, 85, 120]
 
 (OCEAN, DEEP_OCEAN, FROZEN_OCEAN, BEACH, DESERT, BADLANDS, SAVANNA, JUNGLE, PLAINS, FOREST, BIRCH_FOREST,
- SWAMP, TAIGA, SNOWY_TAIGA, SNOWY_TUNDRA, ALPINE, SNOWY_PEAKS, GLACIER) = range(18)
+ SWAMP, TAIGA, SNOWY_TAIGA, SNOWY_TUNDRA, ALPINE, SNOWY_PEAKS, GLACIER, ROCKY) = range(19)  # (ROCKY: Earth only)
 BIOME_NAMES = ["Ocean", "Deep ocean", "Frozen ocean", "Beach", "Desert", "Badlands", "Savanna", "Jungle",
                "Plains", "Forest", "Birch forest", "Swamp", "Taiga", "Snowy taiga", "Snowy tundra",
-               "Alpine meadow", "Snowy peaks", "Glacier"]
+               "Alpine meadow", "Snowy peaks", "Glacier", "Rocky slopes"]
 
 NOISES = ["warp_x", "warp_z", "continent", "mountain_mask", "ridges", "hilliness", "hills", "detail",
           "river", "river_warp_x", "river_warp_z", "river_width", "lake", "temperature", "humidity",
@@ -31,7 +31,17 @@ NOISES = ["warp_x", "warp_z", "continent", "mountain_mask", "ridges", "hilliness
           "fault", "cliff", "tuya"]
 
 
+def make_generator(seed, earth=None):
+    """The generator of a world: the real Earth's, at a place (earth.Place), or the usual one."""
+    if earth is None:
+        return TerrainGenerator(seed)
+    from pycraft.earth.generator import EarthGenerator  # (here: it imports this module)
+    return EarthGenerator(seed, earth)
+
+
 class TerrainGenerator:
+    cloud_height = SEA_LEVEL + 940.0  # middle of the clouds: high mountains rise through them
+
     def __init__(self, seed):
         self.seed = int(seed)
         for i, name in enumerate(NOISES):
@@ -77,9 +87,14 @@ class TerrainGenerator:
             "lake": self.lake.fbm2(wx / 1900, wz / 1900, 3) * 2.3,
         }
 
-    def sample(self, x, z, clim=None):
+    def shift(self, heights):
+        """How far up the ores and the deepslate of a column are moved, for its heights."""
+        return 0
+
+    def sample(self, x, z, clim=None, spacing=1):
         """Terrain at points (x, z), given as float arrays of the same shape. clim: climate(x, z),
-        when the caller already has it.
+        when the caller already has it. spacing: blocks between the points (the Earth's generator
+        reads coarser data for points far apart).
 
         Returns a dict of arrays: height (top of the ground, float), water (water surface height,
         or -1 where there is none), biome, temperature, humidity and a few values the surface uses."""
@@ -389,6 +404,8 @@ def _surface(s, top, slope, noise):
     put(biome == SNOWY_PEAKS, SNOW, STONE, 1)
     put((biome == SNOWY_PEAKS) & (slope >= 4), STONE)
     put(biome == GLACIER, ICE, ICE, 8)
+    put(biome == ROCKY, STONE, STONE)
+    put((biome == ROCKY) & (noise > 0.2) & ~steep, GRAVEL, GRAVEL, 2)
     put(steep & ~np.isin(biome, (DESERT, BADLANDS, BEACH, GLACIER, SNOWY_PEAKS, ALPINE)), STONE, STONE, 1)
     put(np.isin(biome, (BEACH, DESERT)), SAND, SANDSTONE, 5)
     put((biome == DESERT) & (slope >= 4), SANDSTONE)
@@ -397,6 +414,12 @@ def _surface(s, top, slope, noise):
     # everywhere, and it even clings to the gentler cliffs
     mossy = (s["temperature"] < 0.1) & (s["humidity"] > -0.15) & ~np.isin(
         biome, (SNOWY_TAIGA, SNOWY_TUNDRA, SNOWY_PEAKS, GLACIER))
+    if "moss" in s:  # (on the real Earth, not every cool place is Iceland)
+        mossy = mossy & s["moss"]
+        # Its snow is deep: seen from far, a slope shows mostly the sides of its columns, and thin
+        # snow would make the Alps bare rock. The rock shows on the walls
+        put(biome == SNOWY_PEAKS, SNOW, SNOW, 4)
+        put((biome == SNOWY_PEAKS) & (slope >= 3), STONE, STONE)
     put(mossy & ~steep & (noise > 0.0), MOSS, STONE, 2)
     put(mossy & steep & (slope < 4), MOSS, STONE)
     # The aquatic floor: sand, gravel and clay — mostly under water, on the shore just above the
@@ -460,7 +483,8 @@ def _generate_columns(gen, keys):
         col.biome, col.temperature, col.river = s["biome"][i], s["temperature"][i], s["river"][i]
         col.badlands = col.biome == BADLANDS
         col.ice = (col.water > col.height) & (col.temperature < -0.55)
-        col.deep, col.entrance = deep[i], entrance[i]
+        col.shift = gen.shift(top[i])
+        col.deep, col.entrance = deep[i] + col.shift, entrance[i]
         col.grass = (grass[i] * 255).astype(np.uint8)
         col.foliage = (foliage[i] * 255).astype(np.uint8)
         col.water_tint = (water_tint[i] * 255).astype(np.uint8)
@@ -543,7 +567,7 @@ def _generate_section(gen, cols, cx, cy, cz):
     x0, z0 = cx * CHUNK, cz * CHUNK
     if y0 <= col.height.max() - 2:
         _carve_caves(gen, blocks, x0, y0, z0, col, depth)
-        _add_ores(gen, blocks, cx, cy, cz, y0)
+        _add_ores(gen, blocks, cx, cy, cz, y0 - col.shift)
     if y0 == 0:  # bedrock floor, ragged on top
         rough = _rng(gen.seed, cx, cz, 3).random((CHUNK, 3, CHUNK)) < np.array([1.0, 0.5, 0.2])[None, :, None]
         blocks[:, :3, :][rough] = BEDROCK

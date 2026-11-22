@@ -13,3 +13,4 @@ touches the drawing, the menus or the controls. Everything they write goes to `t
 | `python tools/bench.py` | Frame and graphics card times in 8 fixed views (env: `RES`, `RD`, `LOD`, `FANCY`, `PROF=1` for the distant terrain alone). | 1–2 min |
 | `python tools/render_views.py` | Pictures of the views of a world, with debug shaders (`VARIANT=tag` colors each level of the distant terrain). Used by `holes.py`. | 1 min |
 | `python tools/make_views.py <seed>` | Makes `tools/views/<seed>.json`: views around the spawn and in front of the steepest slopes. | seconds |
+| `python tools/make_climate.py` | Makes the Earth's climate file (`pycraft/earth/climate.npz`). Downloads about 200 MB; the result is in the repository, so there is no need to run it again. | 5 min |

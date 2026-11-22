@@ -1,4 +1,4 @@
-"""The command line: /tp, /time and /gamemode."""
+"""The command line: /tp, /time, /gamemode and /earth."""
 import pyxel
 
 from pycraft.survival import parse_gamemode
@@ -50,6 +50,8 @@ class Chat:
             self.player.pos = coords
             self.player.vel_y = 0.0
             self.notify(f"Teleported to {coords[0]:.0f} {coords[1]:.0f} {coords[2]:.0f}")
+            if not self.ground_ready():
+                self.set_state("loading")
         elif cmd == "time" and len(parts) == 3 and parts[1] == "set":
             named = {"sunrise": 0.0, "day": 0.05, "noon": 0.25, "sunset": 0.5, "night": 0.6,
                      "midnight": 0.75}
@@ -67,12 +69,14 @@ class Chat:
                 self.notify("Usage: /gamemode survival|creative")
                 return
             self.set_mode(mode)
+        elif cmd == "earth":
+            self.earth_command(parts[1:])
         else:
-            self.notify(f"Unknown command: {parts[0]}  (/tp x y z, /time set ..., /gamemode ...)")
+            self.notify(f"Unknown command: {parts[0]}  (/tp x y z, /time set ..., /gamemode ..., /earth lat lon)")
     def draw_chat(self):
         ui = self.ui
         y = self.hotbar_rects()[0][1] - 19
-        ui.text(4, y - 9, "ENTER run  ESC cancel  /tp x y z  /time set day|night  /gamemode s|c", TEXT_DIM, shadow=True)
+        ui.text(4, y - 9, "ENTER run  ESC cancel  /tp x y z  /time set day|night  /gamemode s|c  /earth lat lon", TEXT_DIM, shadow=True)
         ui.glass(2, y - 1, ui.width - 4, 12, 0.85)
         ui.rect(2, y - 1, 2, 12, AMBER)
         cursor = "_" if self.play_time % 1.0 < 0.6 else ""

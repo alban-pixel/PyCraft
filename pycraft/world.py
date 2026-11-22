@@ -1,22 +1,33 @@
-"""The voxel world: endless in x and z, 4096 blocks high, stored in 16x16x16 sections that are
+"""The voxel world: endless in x and z, 10240 blocks high, stored in 16x16x16 sections that are
 generated the first time they are needed. Saving keeps only the sections the player changed: the
 rest comes back the same from the seed."""
 import math
 
 import numpy as np
 
+from pycraft import terrain
 from pycraft.blocks import AIR, ALL_LEAVES, FLAT, ICE, PLANT, SHAPED, SOLID, STONE, TARGETABLE, WATER
+from pycraft.earth import Place
 from pycraft.shapes import selection_box
-from pycraft.terrain import (BIRCH_FOREST, BIOME_NAMES, CHUNK, FOREST, PLAINS, SAVANNA, SEA_LEVEL, TAIGA, WORLD_HEIGHT,
-                             TerrainGenerator)
+from pycraft.terrain import BIRCH_FOREST, BIOME_NAMES, CHUNK, FOREST, PLAINS, SAVANNA, SEA_LEVEL, TAIGA, WORLD_HEIGHT
 
 SAVE_VERSION = 3  # 3: block states; a save of version 2 (no states) still loads
 
 
 class World:
-    def __init__(self, seed):
+    def __init__(self, seed, earth=None):
+        """earth: the earth.Place of a world on the real Earth."""
         self.seed = int(seed)
-        self.gen = TerrainGenerator(self.seed)
+        self.earth = earth
+        self.gen = terrain.make_generator(self.seed, earth)
+        # On Earth, in the game's own process: the tiles the ground is made from (earth.tiles.TileStore).
+        # The game only goes, and only asks for terrain, where they are there (ready)
+        self.store = None
+        self.ready_chunks = set()
+        self.waiting = {}  # chunk not ready yet -> its tiles
+        self.looked = -1  # store.changes when the waiting chunks were last looked at
+        self.looked_at = set()  # those found not ready since then
+        self.prefetched = None  # the tile the player was in at the last prefetch
         self.columns = {}  # (cx, cz) -> terrain.Column
         self.sections = {}  # (cx, cy, cz) -> (16, 16, 16) uint8 array [x, y, z], or one block id
         self.edited = set()  # sections the player changed: saved, and never forgotten
@@ -24,6 +35,47 @@ class World:
         # have a block with a state: (cx, cy, cz) -> (16, 16, 16) uint8 array [x, y, z]
         self.states = {}
         self.edited_columns = {}  # (cx, cz) -> set of cy of its edited sections
+
+    # --- The Earth's tiles ---------------------------------------------------------------------
+
+    def ready(self, cx, cz):
+        """Whether the terrain of a chunk, and of those around it, can be made without waiting. If
+        not, its tiles are on their way."""
+        if self.store is None or (cx, cz) in self.ready_chunks:
+            return True
+        if self.looked != self.store.changes:
+            self.looked = self.store.changes
+            self.looked_at.clear()
+        if (cx, cz) in self.looked_at:
+            return False
+        keys = self.waiting.get((cx, cz))
+        if keys is None:
+            keys = self.waiting[(cx, cz)] = self.gen.column_tiles(cx, cz)
+        missing = self.store.missing(keys)
+        if missing:
+            self.store.want(missing)
+            self.looked_at.add((cx, cz))
+            return False
+        self.ready_chunks.add((cx, cz))
+        del self.waiting[(cx, cz)]
+        return True
+
+    def level_ready(self, x0, z0, x1, z1, step):
+        """The same for a part of the distant terrain, sampled every `step` blocks."""
+        if self.store is None:
+            return True
+        missing = self.store.missing(self.gen.level_tiles(x0, z0, x1, z1, step))
+        self.store.want(missing)
+        return not missing
+
+    def prefetch(self, x, z):
+        """Ask for the tiles around the player before they are needed."""
+        if self.store is None:
+            return
+        tile = self.gen.tile_at(x, z)
+        if tile != self.prefetched:
+            self.prefetched = tile
+            self.store.want(self.gen.tiles_ahead(x, z))
 
     # --- Columns and sections ------------------------------------------------------------------
 
@@ -204,8 +256,11 @@ class World:
 
     def find_spawn(self):
         """Feet position on dry, fairly flat land near (0, 0), in a mild biome, with high mountains
-        in view if possible."""
+        in view if possible. On Earth: near the place the world was made for."""
         gen = self.gen
+        if self.earth is not None:
+            x, z = gen.spawn() or (0, 0)
+            return [x + 0.5, float(max(self.surface_y(x, z), SEA_LEVEL) + 1), z + 0.5]
         for reach in (2000, 6000, 20000):
             step = reach / 40
             g = np.arange(-40, 41) * step
@@ -240,6 +295,8 @@ class World:
         blocks = [self.sections[k] for k in keys]
         blocks = [np.full((CHUNK,) * 3, b, np.uint8) if isinstance(b, int) else b for b in blocks]
         state_keys = sorted(k for k in self.states if k in self.edited)
+        if self.earth is not None:
+            extra["earth"] = np.array([self.earth.lat, self.earth.lon])
         np.savez_compressed(path, version=SAVE_VERSION, seed=self.seed,
                             keys=np.array(keys, dtype=np.int64).reshape(-1, 3),
                             sections=np.array(blocks, dtype=np.uint8).reshape(-1, CHUNK, CHUNK, CHUNK),
@@ -248,13 +305,15 @@ class World:
                                 -1, CHUNK, CHUNK, CHUNK), **extra)
 
     @classmethod
-    def load(cls, path):
-        """Return (world, data) where data holds the extra values given to save()."""
+    def load(cls, path, root=""):
+        """Return (world, data) where data holds the extra values given to save(). root: the folder
+        of the Earth's tiles, for a world on Earth."""
         with np.load(path) as f:
             data = {key: f[key] for key in f.files}
         if int(data.pop("version", 1)) not in (2, SAVE_VERSION):
             raise ValueError("this save is from another version of the game")
-        world = cls(int(data.pop("seed")))
+        earth = data.pop("earth", None)
+        world = cls(int(data.pop("seed")), None if earth is None else Place(float(earth[0]), float(earth[1]), root))
         for key, blocks in zip(data.pop("keys"), data.pop("sections")):
             key = tuple(int(v) for v in key)
             world.sections[key] = blocks.copy()

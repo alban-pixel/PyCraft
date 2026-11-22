@@ -8,7 +8,8 @@ from pycraft.survival import CREATIVE, MODE_NAMES, SURVIVAL
 from pycraft.ui import AMBER, BASE_HEIGHT, BLACK, CREAM, GOLD, RUST, TEXT_DIM, text_width
 
 
-BUTTON_W, BUTTON_H, BUTTON_PITCH = 128, 15, 19  # buttons of the title screen and the pause menu
+BUTTON_W, BUTTON_H, BUTTON_PITCH = 128, 15, 19  # buttons of the pause menu and the like
+TITLE_PITCH = 17  # the title screen's are closer together: there are five of them
 
 
 class Menus:
@@ -19,14 +20,22 @@ class Menus:
         if self.state == "title":
             items = []
             if not self.world_is_fresh:
-                items.append(("Continue", lambda: self.start_game(new_world=False)))
-            items.append(("New world", lambda: self.set_state("newmode")))
+                if self.slot == "normal":
+                    items.append(("Continue", lambda: self.start_game(new_world=False)))
+                else:
+                    items.append(("Normal world", self.continue_normal))
+            items.append(("New world", self.new_normal_world))
+            items.append(("Earth", self.open_places) if self.has_pillow else ("Earth (needs Pillow)", lambda: None))
             items.append(("Settings", self.open_settings))
             items.append(("Quit", pyxel.quit))
             return items
         if self.state == "newmode":
             return [("Survival", lambda: self.choose_mode(SURVIVAL)), ("Creative", lambda: self.choose_mode(CREATIVE)),
-                    ("Back", lambda: self.set_state("title"))]
+                    ("Back", lambda: self.set_state("title" if self.chosen_place is None else "places"))]
+        if self.state == "places":
+            return self.place_items()
+        if self.state == "earth_offline":
+            return self.offline_items()
         if self.state == "dead":
             return [("Respawn", self.respawn)]
         if self.state == "paused":
@@ -37,16 +46,23 @@ class Menus:
                 ("Save and quit", self.save_and_quit),
             ]
         return []
+    def new_normal_world(self):
+        self.chosen_place = None
+        self.set_state("newmode")
     def choose_mode(self, mode):
         self.new_mode = mode
-        self.new_world_clicked()
+        if self.chosen_place is not None:
+            spot, self.chosen_place = self.chosen_place, None
+            self.begin_earth(spot.lat, spot.lon, (spot.look_lat, spot.look_lon))
+        else:
+            self.new_world_clicked()
     def respawn(self):
         """Back to the spawn with full health; the inventory is kept (nothing is dropped on the ground)."""
         self.player = Player(*self.spawn)
         self.player.can_fly = self.mode == CREATIVE
         self.health.reset()
         self.breaking.reset()
-        self.set_state("playing")
+        self.set_state("playing" if self.ground_ready() else "loading")
     def set_mode(self, mode):
         """Survival or Creative, during the game (/gamemode): the inventory and health stay as they are."""
         self.mode = mode
@@ -56,7 +72,7 @@ class Menus:
         self.breaking.reset()
         self.notify(f"Game mode: {MODE_NAMES[mode]}")
     def new_world_clicked(self):
-        if self.world_is_fresh:
+        if self.world_is_fresh and self.slot == "normal":
             self.start_game(new_world=True)
         else:
             self.state = "generating"  # draw a message first, generate on the next update
@@ -90,9 +106,12 @@ class Menus:
             items[chosen][1]()
     def menu_top(self):
         """UI y of the first button of the title screen and the pause menu: below the middle."""
-        return self.ui.height // 2 + 2
+        return self.ui.height // 2 + (-8 if self.state == "title" else 2)
     def button_rect(self, i):
-        return (self.ui.width - BUTTON_W) // 2, self.menu_top() + i * BUTTON_PITCH, BUTTON_W, BUTTON_H
+        if self.state == "places":
+            return self.place_rect(i)
+        pitch = TITLE_PITCH if self.state == "title" else BUTTON_PITCH
+        return (self.ui.width - BUTTON_W) // 2, self.menu_top() + i * pitch, BUTTON_W, BUTTON_H
     def button_at(self, mx, my, count):
         for i in range(count):
             x, y, w, h = self.button_rect(i)
@@ -110,7 +129,7 @@ class Menus:
             pyxel.pal(7, col)
             ui.blt(x + dx, y + dy, 1, 0, 0, 28, 6, 0, scale=logo)
         pyxel.pal()
-        ui.center_text(h // 2 - 22, "A Minecraft-like game made with Pyxel", CREAM, shadow=True)
+        ui.center_text(h // 2 - 23, "A Minecraft-like game made with Pyxel", CREAM, shadow=True)
         self.draw_menu()
         ui.text(3, h - 9, f"Seed {self.world.seed}", TEXT_DIM, shadow=True)
         hint = "Mouse or arrows to choose, ENTER to pick"
