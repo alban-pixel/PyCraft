@@ -416,6 +416,10 @@ def _surface(s, top, slope, noise):
         biome, (SNOWY_TAIGA, SNOWY_TUNDRA, SNOWY_PEAKS, GLACIER))
     if "moss" in s:  # (on the real Earth, not every cool place is Iceland)
         mossy = mossy & s["moss"]
+        # Its snow is deep: seen from far, a slope shows mostly the sides of its columns, and thin
+        # snow would make the Alps bare rock. The rock shows on the walls
+        put(biome == SNOWY_PEAKS, SNOW, SNOW, 4)
+        put((biome == SNOWY_PEAKS) & (slope >= 3), STONE, STONE)
     put(mossy & ~steep & (noise > 0.0), MOSS, STONE, 2)
     put(mossy & steep & (slope < 4), MOSS, STONE)
     # The aquatic floor: sand, gravel and clay — mostly under water, on the shore just above the

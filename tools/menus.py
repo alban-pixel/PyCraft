@@ -343,6 +343,28 @@ if __name__ == "__main__":
         check("ESC: back to the pause menu", app.state == "paused")
         frame([K.KEY_ESCAPE])
         check("ESC: back to the game", app.state == "playing")
+
+        # --- the real Earth's places (nothing is downloaded here) ---
+        app.save_and_title()
+        labels = [label for label, _ in app.menu_items()]
+        click(app.button_rect(labels.index("Earth")))
+        check("Earth: the list of places", app.state == "places" and len(app.menu_items()) == 13, app.state)
+        frame([K.KEY_DOWN]); frame([K.KEY_RIGHT])
+        check("DOWN, RIGHT: the second place of the second column", app.menu_index == 7, app.menu_index)
+        click(app.button_rect(0))
+        check("a new place asks for the mode", app.state == "newmode" and app.chosen_place.name == "Mont Blanc")
+        frame([K.KEY_ESCAPE])
+        check("ESC: back to the places", app.state == "places")
+        click(app.button_rect(12))
+        check("Back: the title screen", app.state == "title")
+        labels = [label for label, _ in app.menu_items()]
+        check("the normal world still continues", labels[0] == "Continue" and app.slot == "normal")
+        click(app.button_rect(0))
+        for _ in range(4000):
+            frame()
+            if app.state == "playing":
+                break
+        check("and plays", app.state == "playing")
         say(f"{len(fails)} failed" + (": " + "; ".join(fails) if fails else ""))
         say("done")
     except BaseException:

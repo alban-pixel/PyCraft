@@ -170,7 +170,10 @@ pente est douce, sinon pics ; zones humides et mangroves → marais ; eau → la
   *(choix)*.
 - Brume `min(1/4500, 1,78 / distance)`, identique à aujourd'hui jusqu'à 8 km. Plan proche du terrain
   lointain à 16 blocs au-delà de 8 km, pour la précision de profondeur.
-- Nuages à `max(mer + 940, sol du départ + 1200)`.
+- Nuages à `max(mer + 940, plus haut sommet à 20 km + 300)` (changé au lot 1 : à `sol + 1200`, ils
+  cachaient les sommets vus d'une vallée).
+- Neige des pics : 4 blocs d'épaisseur, roche à partir d'une pente de 3 (changé au lot 1 : de loin, une
+  pente montre surtout le côté de ses colonnes, et une neige d'un bloc rendait les Alpes grises).
 
 ### Interface
 

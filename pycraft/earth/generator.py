@@ -1,5 +1,7 @@
 """The terrain of the real Earth: the generator's caves, ores, trees and blocks, over heights and a
 climate that come from data instead of noise."""
+import functools
+
 import numpy as np
 
 from pycraft.earth import biomes
@@ -14,6 +16,7 @@ RELIEF_REACH = 500.0  # blocks around a point that tell a country of cliffs from
 RELIEF_ZOOMS = 4  # and how much coarser the tiles are that tell it
 SHORE = 0.5  # metres: the data's sea is at 0 (give or take rounding)
 SHALLOW = 3.0  # metres of water where the data has the sea's surface and no floor
+SKY_REACH, SKY_ZOOM = 20000.0, 9  # how far the summits are that the clouds are above, and where they are read
 REACH_CHUNKS = 3  # chunks around one that building its mesh may generate
 
 
@@ -76,10 +79,16 @@ class EarthGenerator(TerrainGenerator):
     def shift(self, heights):
         return max(0, int(np.median(heights)) - SEA_LEVEL - 64)
 
-    @property
+    @functools.cached_property
     def cloud_height(self):
-        ground = float(self.metres(np.zeros(1), np.zeros(1), self.grid.zoom_for(1))[0])
-        return float(SEA_LEVEL + max(940.0, ground + 1200.0))
+        """Above every summit around the place: seen from a valley, clouds any lower would hide them."""
+        g = np.arange(-SKY_REACH, SKY_REACH + 1, 500.0)
+        x, z = np.meshgrid(g, g, indexing="ij")
+        return float(SEA_LEVEL + max(940.0, self.metres(x, z, SKY_ZOOM).max() + 300.0))
+
+    def sky_tiles(self):
+        """The tiles that tell how high the summits around the place are."""
+        return self.grid.tiles(-SKY_REACH, -SKY_REACH, SKY_REACH, SKY_REACH, SKY_ZOOM)
 
     # --- The tiles the ground is made from ------------------------------------------------------
 
@@ -88,6 +97,10 @@ class EarthGenerator(TerrainGenerator):
         r = RELIEF_REACH
         return (self.grid.tiles(x0, z0, x1 + 8, z1 + 8, zoom)
                 + self.grid.tiles(x0 - r, z0 - r, x1 + r, z1 + r, max(zoom - RELIEF_ZOOMS, 0)))
+
+    def area_tiles(self, x0, z0, x1, z1):
+        """Every tile that the terrain of a rectangle of blocks needs."""
+        return self._tiles(x0, z0, x1, z1, 1)
 
     def column_tiles(self, cx, cz):
         """Every tile that the mesh of a chunk needs."""

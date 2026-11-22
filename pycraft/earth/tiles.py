@@ -229,7 +229,13 @@ def _delete_old(root):
         for name in names:
             path = os.path.join(folder, name)
             try:
-                files.append((os.path.getmtime(path), path))
+                used = os.path.getmtime(path)
+                if name.endswith(".tmp"):  # left by a game that was closed while writing
+                    used = 0.0 if used < time.time() - KEEP_SECONDS else used
+                    if not used:
+                        os.remove(path)
+                    continue
+                files.append((used, path))
             except OSError:
                 pass
     limit = time.time() - KEEP_SECONDS

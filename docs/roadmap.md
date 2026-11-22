@@ -78,6 +78,10 @@ d'origine : elle force à construire le socle d'entrée, mais les textures
 actuelles restent plus longtemps et les objets de survie n'ont pas d'icônes tant
 que les packs ne sont pas là.
 
+**La vraie Terre**, demandée le 21 novembre 2026, est à part : voir
+[`superpowers/specs/2026-11-21-mode-terre-design.md`](superpowers/specs/2026-11-21-mode-terre-design.md).
+Lot 1 (relief, climat, lieux, hors ligne) fait ; restent l'horizon à 65 km, puis le sol et l'eau.
+
 ## Cadre
 
 - **Identité propre.** Le jeu garde son nom et son propre style d'interface

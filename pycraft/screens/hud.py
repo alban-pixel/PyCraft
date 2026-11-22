@@ -112,6 +112,12 @@ class Hud:
         for i, (s, col) in enumerate(lines):
             ui.text(7, y + 3 + i * 8, s, col, shadow=True)
         return y + h
+    def earth_position(self):
+        """Where the player is on Earth, for the information panel."""
+        if self.world.earth is None:
+            return ""
+        lat, lon = self.world.gen.grid.latlon(self.player.pos[0], self.player.pos[2])
+        return f"  Lat {float(lat):.4f}  Lon {float(lon):.4f}"
     def draw_debug(self, y):
         px, py, pz = self.player.pos
         hours = int((self.time_of_day * 24 + 6) % 24)
@@ -126,7 +132,7 @@ class Hud:
                  + ("" if self.settings["fancy"] else "  fast graphics"),
                  f"3D drawn at {sw}x{sh} ({r.render_scale:.0%}{auto}){gpu}",
                  f"XYZ {px:7.1f} {py:6.1f} {pz:7.1f}  Altitude {py - SEA_LEVEL - 1:5.0f}",
-                 f"Biome {biome}",
+                 f"Biome {biome}" + self.earth_position(),
                  f"Chunks {r.drawn} drawn / {len(r.chunks.meshes)} built",
                  f"Distant terrain: {far}",
                  f"Time {hours:02d}:00  Seed {self.world.seed}" + ("  FLY" if self.player.flying else "")]

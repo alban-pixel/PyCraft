@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from pycraft import terrain as T
-from pycraft.blocks import AIR, DEEPSLATE, STONE, WATER
+from pycraft.blocks import AIR, DEEPSLATE, SNOW, STONE, WATER
 from pycraft.earth import Place, biomes
 from pycraft.earth.generator import EarthGenerator
 from pycraft.world import World
@@ -147,9 +147,40 @@ def test_level_tiles_are_enough(tmp_path):
 
 def test_shift_and_clouds(alps):
     write_ground(alps.root, alps, lambda x, z: 5000.0)
+    write_ground(alps.root, alps, lambda x, z: 5000.0, half=21000, zooms=(9,))
     gen = EarthGenerator(7, alps)
     assert gen.shift(np.full((16, 16), T.SEA_LEVEL + 5000)) == 4936 and gen.shift(np.full((16, 16), 500)) == 0
-    assert abs(gen.cloud_height - (T.SEA_LEVEL + 6200)) < 5
+    assert abs(gen.cloud_height - (T.SEA_LEVEL + 5300)) < 5
+
+
+def test_clouds_are_above_the_summits_around(alps):
+    """From a valley, the summit 10 km away shows under the clouds."""
+    write_ground(alps.root, alps, lambda x, z: 1000 + 3800 * np.exp(-(x ** 2 + (z - 10000) ** 2) / 3e6), half=21000,
+                 zooms=(9,))
+    gen = EarthGenerator(7, alps)
+    assert T.SEA_LEVEL + 4800 < gen.cloud_height < T.SEA_LEVEL + 5200
+    assert {k[0] for k in gen.sky_tiles()} == {9}
+
+
+def test_cloud_height_is_read_once(alps):
+    """It is asked for at each frame."""
+    write_ground(alps.root, alps, lambda x, z: 3000.0)
+    gen = EarthGenerator(7, alps)
+    first = gen.cloud_height
+    gen.reader = None
+    assert gen.cloud_height == first
+
+
+def test_snow_is_deep_and_rock_shows_on_the_walls(alps):
+    """Far away a slope shows mostly the sides of its columns: thin snow would look like bare rock."""
+    s = {"biome": np.full((1, 3), T.SNOWY_PEAKS), "water": np.full((1, 3), -1), "temperature": np.full((1, 3), -1.0),
+         "humidity": np.zeros((1, 3)), "moss": np.zeros((1, 3), bool)}
+    surface, filler, depth = T._surface(s, np.full((1, 3), 4000), np.array([[0, 2, 3]]), np.zeros((1, 3)))
+    assert surface.tolist() == [[SNOW, SNOW, STONE]] and filler.tolist() == [[SNOW, SNOW, STONE]]
+    assert (depth[0, :2] >= 4).all()
+    del s["moss"]  # a normal world: as it was
+    surface, filler, _ = T._surface(s, np.full((1, 3), 4000), np.array([[0, 2, 3]]), np.zeros((1, 3)))
+    assert surface.tolist() == [[SNOW] * 3] and filler.tolist() == [[STONE] * 3]
 
 
 def test_clouds_are_never_lower_than_usual(alps):

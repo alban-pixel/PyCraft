@@ -24,6 +24,7 @@ from pycraft.player import Player
 from pycraft.render import Renderer
 from pycraft.furnace import Furnaces
 from pycraft.screens.chat import Chat
+from pycraft.screens.earth import EarthScreens
 from pycraft.screens.hud import Hud
 from pycraft.screens.inventory import Inventory
 from pycraft.screens.menus import Menus
@@ -48,7 +49,7 @@ ZOOM_FOV = 22.0  # field of view while the zoom key is held
 DIM = 0.5  # brightness of the world behind the menus
 
 
-class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
+class App(Sound, Menus, EarthScreens, SettingsScreen, Inventory, Hud, Chat, Playing):
     """The game: its window, its screens (see the classes it inherits from), its world and renderer."""
 
     def __init__(self, headless=False):
@@ -87,7 +88,9 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
         self.packs = self.find_packs()
         self.pack_message = ""  # shown under the settings: a pack that couldn't be read
         self.pack_to_apply = False  # a pack chosen in the settings, applied on the next update
-        self.save_path = os.path.join(data_dir, SAVE_FILE)
+        self.save_path = os.path.join(data_dir, SAVE_FILE)  # the normal world's (see slot_path)
+        self.slot = "normal"  # the save of the world played: the normal one, or one of the Earth's
+        self.init_earth()
         self.settings_path = os.path.join(data_dir, "settings.json")
         self.settings = self.load_settings()
         self.controls = Controls(self.settings["keys"])
@@ -230,7 +233,7 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
     def frame_done(self, work):
         """A frame was made in `work` seconds (without the wait for the next one): with the automatic
         render scale, draw the 3D view smaller if frames are too slow, or bigger if they have time to spare."""
-        if self.settings["render_scale"] != "auto" or self.state in ("loading", "generating"):
+        if self.settings["render_scale"] != "auto" or self.state in ("loading", "generating", "earth_loading"):
             return  # (while loading, the frames are slow building the world, not drawing it)
         scale = self.scaler.update(work, self.renderer.gpu_time, 1 / self.settings["fps"])
         self.renderer.set_render_scale(scale)
@@ -278,41 +281,70 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
         before, sim.occupied = sim.occupied, {cell}
         if cell not in before and self.world.get(*cell) == STONE_PRESSURE_PLATE:
             sim.notify(cell)
+    def slot_path(self):
+        """The file of the world played."""
+        return self.save_path if self.slot == "normal" else self.earth_path(self.slot)
     def save(self):
-        tmp = self.save_path + ".tmp.npz"
+        path = self.slot_path()
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp.npz"
         self.world.save(tmp, **self.snapshot())
-        os.replace(tmp, self.save_path)  # replace the old save only once the new one is complete
+        os.replace(tmp, path)  # replace the old save only once the new one is complete
         self.last_save = self.play_time
-        self.world_is_fresh = False
+        if self.slot == "normal":
+            self.world_is_fresh = False
+    def use_world(self, world, slot):
+        """Go to another world, saved in another file."""
+        if self.world is not None and self.world is not world and self.world.store is not None:
+            self.world.store.close()
+        self.world, self.slot = world, slot
+        self.renderer.set_world(world)
+    def continue_normal(self):
+        """Back to the normal world from one of the Earth's."""
+        try:
+            world, data = World.load(self.save_path)
+        except (OSError, ValueError, KeyError):
+            self.notify("This save can't be read")
+            return
+        self.use_world(world, "normal")
+        self.save_data = data
+        self.start_game(new_world=False)
     def start_game(self, new_world):
         if new_world:
-            if not self.world_is_fresh:
-                self.world = World(seed=random.randrange(1 << 30))
-                self.renderer.set_world(self.world)
+            if not self.world_is_fresh or self.slot != "normal":
+                self.use_world(World(seed=random.randrange(1 << 30)), "normal")
                 self.spawn = self.world.find_spawn()
-            self.player = Player(*self.spawn)
-            self.selected, self.time_of_day = 0, 0.05
-            self.mode = self.new_mode
-            self.inv = Slots() if self.mode == SURVIVAL else creative_inventory()
-            self.health.reset()
-            self.new_simulation()
-            self.save()
+            self.begin_new()
         elif self.save_data is not None:
-            data = self.save_data
-            x, y, z, yaw, pitch, flying = data["player"].tolist()
-            self.player = Player(x, y, z)
-            self.player.yaw, self.player.pitch, self.player.flying = yaw, pitch, bool(flying)
-            self.time_of_day = float(data["time_of_day"])
-            self.mode, self.inv = convert_old_save(data)
-            self.selected = int(data["selected"])
-            self.health.reset()
-            if "health" in data:  # (a save from before Survival: full health)
-                self.health.hp = int(data["health"])
-                self.health.air = float(data["air"])
-            if "spawn" in data:
-                self.spawn = tuple(float(v) for v in np.asarray(data["spawn"]).tolist())
-            furnaces = Furnaces.from_array(data["furnaces"]) if "furnaces" in data else None
-            self.new_simulation(data.get("ticks"), furnaces)
+            self.resume(self.save_data)
+        self.started()
+    def begin_new(self):
+        """A new player at the spawn of a new world."""
+        self.player = Player(*self.spawn)
+        self.selected, self.time_of_day = 0, 0.05
+        self.mode = self.new_mode
+        self.inv = Slots() if self.mode == SURVIVAL else creative_inventory()
+        self.health.reset()
+        self.new_simulation()
+        self.save()
+    def resume(self, data):
+        """The player of a saved world, as they left it."""
+        x, y, z, yaw, pitch, flying = data["player"].tolist()
+        self.player = Player(x, y, z)
+        self.player.yaw, self.player.pitch, self.player.flying = yaw, pitch, bool(flying)
+        self.time_of_day = float(data["time_of_day"])
+        self.mode, self.inv = convert_old_save(data)
+        self.selected = int(data["selected"])
+        self.health.reset()
+        if "health" in data:  # (a save from before Survival: full health)
+            self.health.hp = int(data["health"])
+            self.health.air = float(data["air"])
+        if "spawn" in data:
+            self.spawn = tuple(float(v) for v in np.asarray(data["spawn"]).tolist())
+        furnaces = Furnaces.from_array(data["furnaces"]) if "furnaces" in data else None
+        self.new_simulation(data.get("ticks"), furnaces)
+    def started(self):
+        """The world and the player are there: wait for the blocks around, then play."""
         self.save_data = None
         self.player.can_fly = self.mode == CREATIVE
         self.breaking.reset()
@@ -335,7 +367,10 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
         self.last_mouse = (pyxel.mouse_x, pyxel.mouse_y)
     def on_title(self):
         """True on the title screen and on the settings screen opened from it."""
-        return self.state in ("title", "newmode") or (self.state == "settings" and self.settings_parent == "title")
+        if self.state in ("earth_loading", "earth_offline"):
+            return self.arriving.back == "title"
+        return self.state in ("title", "newmode", "places") or (
+            self.state == "settings" and self.settings_parent == "title")
     def ground_ready(self):
         """Whether the terrain where the player is can be read (on Earth, its tiles may be on their way)."""
         x, _, z = self.player.pos
@@ -356,7 +391,10 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
         # Build the world around the camera a little every frame (much more while loading)
         budget = 0.06 if self.state == "loading" else 0.3 / self.settings["fps"]
         if self.world.store is not None:
+            online = not self.world.store.offline
             self.world.store.poll()
+            if online and self.world.store.offline and self.state == "playing":
+                self.notify("No internet: less detail ahead")
             if not self.on_title():
                 self.world.prefetch(self.player.pos[0], self.player.pos[2])
         if self.state != "generating":
@@ -369,11 +407,17 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
                 self.set_state("playing")
         elif self.state == "settings":
             self.update_settings()
+        elif self.state == "earth_loading":
+            if not self.earth_keys():
+                self.update_earth_loading()
+        elif self.state in ("places", "earth_offline"):
+            if not self.earth_keys():
+                self.update_menu()
         elif self.state in ("title", "paused", "newmode", "dead"):
             if self.state == "paused" and pyxel.btnp(pyxel.KEY_ESCAPE):
                 self.set_state("playing")
             elif self.state == "newmode" and pyxel.btnp(pyxel.KEY_ESCAPE):
-                self.set_state("title")
+                self.set_state("title" if self.chosen_place is None else "places")
             else:
                 self.update_menu()
         elif self.state == "inventory":
@@ -403,6 +447,12 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
         self.draw_world()
         if self.state in ("title", "newmode"):
             self.draw_title()
+        elif self.state == "places":
+            self.draw_places()
+        elif self.state == "earth_loading":
+            self.draw_earth_loading()
+        elif self.state == "earth_offline":
+            self.draw_offline()
         elif self.state == "loading":
             done = self.renderer.progress(self.player.eye(), LOADING_RADIUS)
             self.draw_message_box(f"Generating terrain... {done * 100:.0f}%", done)
@@ -423,7 +473,7 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
                 self.open_screen.draw(ui, self.draw_icon, ui.mouse_x, ui.mouse_y, ui.width, ui.height)
             elif self.state == "chat":
                 self.draw_chat()
-        if not self.mouse_captured and self.state != "loading":
+        if not self.mouse_captured and self.state not in ("loading", "earth_loading"):
             ui.cursor()
     def draw_message_box(self, text, progress=None):
         """A small panel in the middle of the screen with a line of text (and a progress bar)."""
@@ -455,7 +505,7 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
             fog = (env["horizon"], HAZE, FOG_START * end, end)
         self.renderer.set_environment(**env, fog_color=fog[0], fog_density=fog[1], fog_start=fog[2], fog_end=fog[3])
         self.renderer.underwater = underwater
-        dimmed = ("loading", "paused", "settings", "inventory", "screen", "dead")
+        dimmed = ("loading", "paused", "settings", "inventory", "screen", "dead", "earth_loading", "earth_offline")
         self.renderer.dim = DIM if self.state in dimmed else 1.0
         self.renderer.render(self.screen, eye, forward, target)
         self.use_palette()

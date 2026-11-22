@@ -92,7 +92,7 @@ These are the keys the game starts with. Every one in the first table can be cha
 | Right click | Place block (hold to repeat); on a lever: flip it; on a button: press it; on a repeater: change its delay; on a crafting table or a furnace: open it |
 | Middle click | Pick the block you look at: its hotbar slot becomes the chosen one, or it takes the chosen slot's place |
 | E | Survival: the inventory (see below). Creative: all blocks: click one to put it in the selected slot (click a hotbar slot to select it). Tab / Shift+Tab or a click change the tab. If a tab's blocks don't all fit on the screen, they go on pages: mouse wheel, Left/Right, Page Up/Down or the arrows under the slots turn them |
-| T | Chat: `/tp x y z`, `/time set day\|noon\|sunset\|night\|midnight`, `/gamemode survival\|creative` |
+| T | Chat: `/tp x y z`, `/time set day\|noon\|sunset\|night\|midnight`, `/gamemode survival\|creative`, `/earth lat lon` |
 | Tab | Release / capture the mouse |
 | F3 | FPS, the size the 3D view is drawn at and the graphics card's time, position, altitude, biome, chunks, the levels of the distant terrain on screen and seed |
 | H | Show / hide the controls, with the keys they have now |
@@ -389,6 +389,22 @@ and nothing hurts you.
 
 Not there yet: hunger and food, items dropped on the ground (nothing is scattered when you die),
 swords, armor, chests.
+
+## The real Earth
+
+**Earth** on the title screen goes to a famous place of the real Earth, at one block per metre: Mont
+Blanc, Everest, K2, the Matterhorn, the Grand Canyon, Yosemite, Mount Fuji, Geirangerfjord,
+Kilimanjaro, Torres del Paine, Reunion and Na Pali. `/earth lat lon` goes anywhere else (latitudes up to 84).
+The relief, the sea and the climate are real; the caves, the ores, the trees and the plants are the
+game's own. There are no lakes, rivers, towns or roads, and land under the level of the sea is
+under water.
+
+- The first visit downloads the place (a few MB), then it plays without internet. While you play,
+  the ground ahead comes by itself; if it is late, you are held at its edge for a moment.
+- Without internet at a new place, the game offers a usual world instead.
+- Each place has its own world and its own save (the `earth` folder beside your save, with at most
+  2 GB of tiles). Your normal world is never touched: it is **Normal world** on the title screen.
+- It needs Pillow. The data's credits are in [`docs/CREDITS.md`](docs/CREDITS.md).
 
 ## Redstone
 
