@@ -290,6 +290,7 @@ class TileStore:
         self.failed = set()  # this session: coarser tiles take their place
         self.asked = set()
         self.offline = False
+        self.changes = 0  # counts the answers: what wasn't ready may be, once it has changed
         self.sent = []  # without a process (tests): what would have been asked of it
         self.process = None
         if start:
@@ -332,6 +333,7 @@ class TileStore:
 
     def landed(self, key, ok, offline=False):
         self.offline = offline
+        self.changes += 1
         if ok:
             self.have.add(key)
             self.failed.discard(key)

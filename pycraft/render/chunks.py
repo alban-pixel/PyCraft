@@ -168,7 +168,8 @@ class Chunks:
         # The game's own world needs the columns around the player (walking, aiming): ask a worker
         # for them ahead of time, so the game doesn't have to generate them itself
         around = [(pcx + dx, pcz + dz) for dx in range(-3, 4) for dz in range(-3, 4)]
-        missing = [k for k in around if k not in self.world.columns and k not in self.asked_columns]
+        missing = [k for k in around if k not in self.world.columns and k not in self.asked_columns
+                   and self.world.ready(*k)]
         if missing:
             self.asked_columns.update(missing)
             self.builders.request_columns(missing)
@@ -182,7 +183,7 @@ class Chunks:
             done = self.built.get(key)
             if done is not None and not (near and not caves <= done):
                 continue
-            if key in self.pending or self.builders.busy(key):
+            if key in self.pending or self.builders.busy(key) or not self.world.ready(*key):
                 continue
             jobs.append((key, self.versions.get(key, 0), done or set(), caves if near else set()))
             if len(jobs) >= WORKERS * IN_FLIGHT:

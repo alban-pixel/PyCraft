@@ -4,7 +4,7 @@ import numpy as np
 
 from pycraft.earth import biomes
 from pycraft.earth.climate import LAPSE, Climate
-from pycraft.earth.grid import EarthGrid
+from pycraft.earth.grid import TILE, EarthGrid
 from pycraft.earth.tiles import TileReader
 from pycraft.noise import smoothstep
 from pycraft.terrain import CHUNK, SEA_LEVEL, WORLD_HEIGHT, TerrainGenerator
@@ -98,6 +98,18 @@ class EarthGenerator(TerrainGenerator):
     def level_tiles(self, x0, z0, x1, z1, step):
         """Every tile that a part of the distant terrain needs, its points `step` blocks apart."""
         return self._tiles(x0 - 2 * step, z0 - 2 * step, x1 + 2 * step, z1 + 2 * step, step)
+
+    def tile_at(self, x, z):
+        """The finest tile a block is in."""
+        px, py = self.grid.pixels(x, z, self.grid.zoom_for(1))
+        return int(px // TILE), int(py // TILE)
+
+    def tiles_ahead(self, x, z):
+        """The tiles of the ground around a block, as far as the second one from its own: 3 to 5 km,
+        more than a minute of fast flight."""
+        zoom = self.grid.zoom_for(1)
+        r = 2 * self.grid.around / 2 ** zoom
+        return self._tiles(x - r, z - r, x + r, z + r, 1)
 
     # --- Where to start --------------------------------------------------------------------------
 

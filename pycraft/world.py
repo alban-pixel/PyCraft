@@ -20,6 +20,14 @@ class World:
         self.seed = int(seed)
         self.earth = earth
         self.gen = terrain.make_generator(self.seed, earth)
+        # On Earth, in the game's own process: the tiles the ground is made from (earth.tiles.TileStore).
+        # The game only goes, and only asks for terrain, where they are there (ready)
+        self.store = None
+        self.ready_chunks = set()
+        self.waiting = {}  # chunk not ready yet -> its tiles
+        self.looked = -1  # store.changes when the waiting chunks were last looked at
+        self.looked_at = set()  # those found not ready since then
+        self.prefetched = None  # the tile the player was in at the last prefetch
         self.columns = {}  # (cx, cz) -> terrain.Column
         self.sections = {}  # (cx, cy, cz) -> (16, 16, 16) uint8 array [x, y, z], or one block id
         self.edited = set()  # sections the player changed: saved, and never forgotten
@@ -27,6 +35,47 @@ class World:
         # have a block with a state: (cx, cy, cz) -> (16, 16, 16) uint8 array [x, y, z]
         self.states = {}
         self.edited_columns = {}  # (cx, cz) -> set of cy of its edited sections
+
+    # --- The Earth's tiles ---------------------------------------------------------------------
+
+    def ready(self, cx, cz):
+        """Whether the terrain of a chunk, and of those around it, can be made without waiting. If
+        not, its tiles are on their way."""
+        if self.store is None or (cx, cz) in self.ready_chunks:
+            return True
+        if self.looked != self.store.changes:
+            self.looked = self.store.changes
+            self.looked_at.clear()
+        if (cx, cz) in self.looked_at:
+            return False
+        keys = self.waiting.get((cx, cz))
+        if keys is None:
+            keys = self.waiting[(cx, cz)] = self.gen.column_tiles(cx, cz)
+        missing = self.store.missing(keys)
+        if missing:
+            self.store.want(missing)
+            self.looked_at.add((cx, cz))
+            return False
+        self.ready_chunks.add((cx, cz))
+        del self.waiting[(cx, cz)]
+        return True
+
+    def level_ready(self, x0, z0, x1, z1, step):
+        """The same for a part of the distant terrain, sampled every `step` blocks."""
+        if self.store is None:
+            return True
+        missing = self.store.missing(self.gen.level_tiles(x0, z0, x1, z1, step))
+        self.store.want(missing)
+        return not missing
+
+    def prefetch(self, x, z):
+        """Ask for the tiles around the player before they are needed."""
+        if self.store is None:
+            return
+        tile = self.gen.tile_at(x, z)
+        if tile != self.prefetched:
+            self.prefetched = tile
+            self.store.want(self.gen.tiles_ahead(x, z))
 
     # --- Columns and sections ------------------------------------------------------------------
 

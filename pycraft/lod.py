@@ -99,6 +99,11 @@ class Cancelled(Exception):
     """The job being done is not wanted any more (another world, another LOD quality)."""
 
 
+def sample_step(spacing):
+    """Blocks between the points sampled for cells `spacing` blocks wide: no finer than a block."""
+    return spacing // min(LOD_SUB, spacing)
+
+
 class Sampler:
     """Makes the texels of a distant terrain of `levels` grids of size x size cells, the finest
     ones `spacing` blocks wide. It remembers what every level knows about each of its cells (see

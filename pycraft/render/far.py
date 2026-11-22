@@ -13,6 +13,7 @@ from pycraft.render.constants import (ATLAS_UNIT, COARSE_UNIT, COLORS_UNIT, COLU
                                       LOD_TILES, READY_UNIT, TILE_AVG_UNIT, TINT_UNIT)
 from pycraft.render.gl import boxes_visible, frustum_planes, matrix_bytes, set_uniforms
 from pycraft.render.textures import tile_averages
+from pycraft.lod import sample_step
 from pycraft.terrain import CHUNK
 
 
@@ -113,16 +114,23 @@ class FarTerrain:
             spacing = self.spacing << level
             old = self.origins[level]
             new = (math.floor(cam[0] / spacing) - n // 2, math.floor(cam[2] / spacing) - n // 2)
-            if old is None or max(abs(new[0] - old[0]), abs(new[1] - old[1])) >= n // 2:
-                # A whole level (a new world, a jump far away). Texel (u, v) holds grid point
-                # (x, z) with x & (n - 1) == u and z & (n - 1) == v
-                batch.append((level, new[0] + (np.arange(n) - new[0]) % n, new[1] + (np.arange(n) - new[1]) % n))
-            else:
+            whole = old is None or max(abs(new[0] - old[0]), abs(new[1] - old[1])) >= n // 2
+            if not whole:
                 # Only the new columns (x) and rows (z) that come into view, a few steps at a time
                 new = tuple(o + (max(-LOD_STEP_MAX, min(LOD_STEP_MAX, v - o)) if abs(v - o) >= LOD_STEP_MIN else 0)
                             for o, v in zip(old, new))
-                xs = new[0] + (np.arange(n) - new[0]) % n  # grid x of each texel column
-                zs = new[1] + (np.arange(n) - new[1]) % n  # grid z of each texel row
+            # On Earth, the grid stays where it is until the tiles of its new place are there
+            if new != old and not self.world.level_ready(new[0] * spacing, new[1] * spacing, (new[0] + n) * spacing,
+                                                         (new[1] + n) * spacing, sample_step(spacing)):
+                origins[level] = old
+                continue
+            xs = new[0] + (np.arange(n) - new[0]) % n  # grid x of each texel column
+            zs = new[1] + (np.arange(n) - new[1]) % n  # grid z of each texel row
+            if whole:
+                # A whole level (a new world, a jump far away). Texel (u, v) holds grid point
+                # (x, z) with x & (n - 1) == u and z & (n - 1) == v
+                batch.append((level, xs, zs))
+            else:
                 gx = range(old[0] + n, new[0] + n) if new[0] > old[0] else range(new[0], old[0])
                 batch += [(level, np.array([x]), zs) for x in gx]
                 gz = range(old[1] + n, new[1] + n) if new[1] > old[1] else range(new[1], old[1])

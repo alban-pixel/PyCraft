@@ -46,7 +46,7 @@ class Menus:
         self.player.can_fly = self.mode == CREATIVE
         self.health.reset()
         self.breaking.reset()
-        self.set_state("playing")
+        self.set_state("playing" if self.ground_ready() else "loading")
     def set_mode(self, mode):
         """Survival or Creative, during the game (/gamemode): the inventory and health stay as they are."""
         self.mode = mode

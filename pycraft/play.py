@@ -1,5 +1,7 @@
 """Playing: moving and looking around, breaking, placing and picking blocks, working levers and
 buttons; in Survival, mining, health, and the inventory, crafting table and furnace screens."""
+import math
+
 import numpy as np
 import pyxel
 
@@ -69,6 +71,14 @@ PICKS.update({version: block for block, versions in FACING.items() for version i
 class Playing:
     """The App while playing."""
 
+    def keep_to_ready_ground(self, before):
+        """On Earth, undo the player's move into a place whose tiles haven't come yet: a wall for a
+        moment, rather than a game that stops to wait for them."""
+        pos = self.player.pos
+        if not self.world.ready(math.floor(pos[0]) >> 4, math.floor(pos[2]) >> 4):
+            pos[0], pos[2] = before[0], before[2]
+            self.notify("Loading the terrain...")
+
     def update_playing(self):
         dt = self.dt
         keys = self.controls
@@ -113,7 +123,9 @@ class Playing:
         self.update_look()
         creative = self.mode == CREATIVE
         self.player.can_fly = creative
+        before = list(self.player.pos)
         events = self.player.update(self.world, dt, keys)
+        self.keep_to_ready_ground(before)
         for event, sound in (("jump", SND_JUMP), ("step", SND_STEP), ("splash", SND_SPLASH)):
             if event in events:
                 self.sfx(sound)

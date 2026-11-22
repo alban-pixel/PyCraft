@@ -336,6 +336,10 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
     def on_title(self):
         """True on the title screen and on the settings screen opened from it."""
         return self.state in ("title", "newmode") or (self.state == "settings" and self.settings_parent == "title")
+    def ground_ready(self):
+        """Whether the terrain where the player is can be read (on Earth, its tiles may be on their way)."""
+        x, _, z = self.player.pos
+        return self.world.ready(math.floor(x) >> 4, math.floor(z) >> 4)
     def camera(self):
         """(eye, forward) of the view: the player's, or a slow look around on the title screen."""
         if self.on_title():
@@ -351,13 +355,17 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
             self.save_settings()
         # Build the world around the camera a little every frame (much more while loading)
         budget = 0.06 if self.state == "loading" else 0.3 / self.settings["fps"]
+        if self.world.store is not None:
+            self.world.store.poll()
+            if not self.on_title():
+                self.world.prefetch(self.player.pos[0], self.player.pos[2])
         if self.state != "generating":
             self.renderer.update(self.camera()[0], budget)
         if self.state == "generating":
             self.world_is_fresh = False
             self.start_game(new_world=True)
         elif self.state == "loading":
-            if self.renderer.progress(self.player.eye(), LOADING_RADIUS) >= 1:
+            if self.ground_ready() and self.renderer.progress(self.player.eye(), LOADING_RADIUS) >= 1:
                 self.set_state("playing")
         elif self.state == "settings":
             self.update_settings()
@@ -439,7 +447,7 @@ class App(Sound, Menus, SettingsScreen, Inventory, Hud, Chat, Playing):
         else:
             env, day = environment(self.time_of_day)
             target = self.target[0] if self.target and self.state == "playing" else None
-        underwater = not self.on_title() and self.player.head_in_water(self.world)
+        underwater = not self.on_title() and self.ground_ready() and self.player.head_in_water(self.world)
         if underwater:
             fog = (scale(UNDERWATER_FOG, 0.38 + 0.62 * day), 0.0, 0.0, 9.0)
         else:

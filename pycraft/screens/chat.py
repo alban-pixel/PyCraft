@@ -50,6 +50,8 @@ class Chat:
             self.player.pos = coords
             self.player.vel_y = 0.0
             self.notify(f"Teleported to {coords[0]:.0f} {coords[1]:.0f} {coords[2]:.0f}")
+            if not self.ground_ready():
+                self.set_state("loading")
         elif cmd == "time" and len(parts) == 3 and parts[1] == "set":
             named = {"sunrise": 0.0, "day": 0.05, "noon": 0.25, "sunset": 0.5, "night": 0.6,
                      "midnight": 0.75}
