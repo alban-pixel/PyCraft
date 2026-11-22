@@ -2,7 +2,6 @@
 shadow maps, the clouds, the palette, and the texture unit each texture is bound to."""
 
 
-
 LOD_QUALITIES = {  # name -> (width of a column on the finest level in blocks, grid points per side, levels)
     "low": (2, 128, 7),  # what the distant terrain always was
     "medium": (2, 256, 7),  # same columns, but every level reaches twice as far

@@ -18,8 +18,11 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 
-[tool.setuptools]
-packages = ["pycraft"]
+[tool.setuptools.packages.find]
+include = ["pycraft*"]
+
+[tool.setuptools.package-data]
+pycraft = ["earth/*.npz"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
