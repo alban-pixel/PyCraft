@@ -207,8 +207,11 @@ class World:
 
     def find_spawn(self):
         """Feet position on dry, fairly flat land near (0, 0), in a mild biome, with high mountains
-        in view if possible."""
+        in view if possible. On Earth: near the place the world was made for."""
         gen = self.gen
+        if self.earth is not None:
+            x, z = gen.spawn() or (0, 0)
+            return [x + 0.5, float(max(self.surface_y(x, z), SEA_LEVEL) + 1), z + 0.5]
         for reach in (2000, 6000, 20000):
             step = reach / 40
             g = np.arange(-40, 41) * step

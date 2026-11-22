@@ -29,3 +29,19 @@ def png(heights):
     out = io.BytesIO()
     Image.fromarray(np.stack([v >> 16, v >> 8 & 255, v & 255], axis=-1).astype(np.uint8)).save(out, "PNG")
     return out.getvalue()
+
+
+def write_ground(root, place, ground, half=700, zooms=(14, 10), keys=None):
+    """Put on disk the tiles around a place's block (0, 0), of a ground given as metres(x, z)."""
+    from pycraft.earth.grid import EarthGrid
+    from pycraft.earth.tiles import save_tile
+    grid = EarthGrid(place.lat, place.lon)
+    if keys is None:
+        keys = [k for zoom in zooms for k in grid.tiles(-half, -half, half, half, zoom)]
+    for zoom, tx, ty in keys:
+        size = 256 * 2 ** zoom
+        x = ((tx * 256 + np.arange(256) + 0.5) / size - grid.u0) * grid.around
+        z = ((ty * 256 + np.arange(256) + 0.5) / size - grid.v0) * grid.around
+        heights = ground(*np.meshgrid(x, z))
+        save_tile(root, (zoom, tx, ty), np.asarray(heights) + np.zeros((256, 256)))
+    return keys
