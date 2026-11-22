@@ -198,3 +198,16 @@ def test_spawn_is_dry(alps):
 def test_spawn_in_the_middle_of_the_sea(alps):
     write_ground(alps.root, alps, lambda x, z: -3000.0)
     assert World(7, alps).find_spawn() == [0.5, T.SEA_LEVEL + 1.0, 0.5]
+
+
+@pytest.mark.parametrize("lat, lon, x", [(-16.5, 179.99, 0), (-16.5, 179.99, 3000), (-16.5, 179.99, 2_000_000),
+                                         (83.9, 0.0, 0), (-83.9, -179.99, -3000)])
+def test_date_line_and_poles(tmp_path, lat, lon, x):
+    """Both sides of the date line, far from the start, and near the poles: land everywhere."""
+    place = Place(lat, lon, str(tmp_path))
+    gen = EarthGenerator(7, place)
+    cx = x // 16
+    write_ground(place.root, place, lambda px, pz: 300.0, keys=gen.column_tiles(cx, 0))
+    col = gen.columns([(cx, 0)])[0]
+    assert np.abs(col.height - (T.SEA_LEVEL + 300)).max() <= 1
+    assert all(0 <= tx < 2 ** z and 0 <= ty < 2 ** z for z, tx, ty in gen.column_tiles(cx, 0))

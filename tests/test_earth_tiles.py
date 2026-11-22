@@ -1,4 +1,5 @@
 """The Earth's tiles on disk, and their download."""
+import http.client
 import os
 import ssl
 
@@ -99,10 +100,24 @@ def test_retries_then_offline(tmp_path, error):
     assert len(calls) == 9
 
 
-def test_a_broken_answer_is_a_failure(tmp_path):
-    """A hotel's sign-in page instead of a tile: not a tile, and not a crash."""
-    assert not Downloader(tmp_path, lambda url: b"<html>sign in</html>", pause=0).fetch_one((6, 1, 5))
+GOOD = png(np.random.default_rng(1).random((256, 256)) * 4000)
+
+
+@pytest.mark.parametrize("answer", [b"<html>sign in</html>", b""] + [GOOD[:n] for n in (4, 20, 40, 200, 30000, len(GOOD) - 30)]
+                         + [GOOD[:100] + bytes(50) + GOOD[150:]])
+def test_a_broken_answer_is_a_failure(tmp_path, answer):
+    """A hotel's sign-in page or a piece of a tile: not a tile, and not a crash."""
+    assert not Downloader(tmp_path, lambda url: answer, pause=0).fetch_one((6, 1, 5))
     assert load_tile(tmp_path, (6, 1, 5)) is None
+
+
+@pytest.mark.parametrize("error", [http.client.IncompleteRead(b"half"), http.client.BadStatusLine("?"),
+                                   http.client.RemoteDisconnected("gone"), TimeoutError("late")])
+def test_the_network_drops_in_the_middle_of_a_tile(tmp_path, error):
+    def get(url):
+        raise error
+
+    assert not Downloader(tmp_path, get, pause=0).fetch_one((6, 1, 5))
 
 
 def test_back_online(tmp_path):

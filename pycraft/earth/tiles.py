@@ -156,6 +156,10 @@ def http_get(url):
         return answer.read()
 
 
+class TileError(OSError):
+    """A tile that could not be had."""
+
+
 class Downloader:
     """Gets tiles, mends them and writes them. Several threads can use one at once."""
 
@@ -184,7 +188,7 @@ class Downloader:
             return False
         try:
             save_tile(self.root, key, clean.clean(key, self._raw))
-        except (OSError, ValueError, SyntaxError):  # (ssl's errors are OSErrors; Pillow raises the others)
+        except OSError:  # (TileError, or the disk)
             with self.lock:
                 self.failures += 1
                 if self.offline:
@@ -210,9 +214,9 @@ class Downloader:
                     if heights.shape != (TILE, TILE):
                         raise ValueError("not a tile")
                     break
-                except (OSError, ValueError, SyntaxError) as error:
+                except Exception as error:  # noqa: BLE001 - half an answer can break anything that reads it
                     if attempt == TRIES - 1:
-                        raise error
+                        raise TileError(f"{key}: {error}") from error
                     time.sleep(self.pause * (attempt + 1))
             with self.lock:
                 self.in_flight.pop(key, None)
