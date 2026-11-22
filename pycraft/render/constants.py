@@ -1,7 +1,6 @@
 """Numbers the renderer's parts share: the qualities of the distant terrain, the sizes of the
 shadow maps, the clouds, the palette, and the texture unit each texture is bound to."""
 
-from pycraft.terrain import SEA_LEVEL
 
 
 LOD_QUALITIES = {  # name -> (width of a column on the finest level in blocks, grid points per side, levels)
@@ -35,7 +34,6 @@ SHADOW_DEPTH = 4500.0  # the shadow maps hold what is less than this far from th
 # distant terrain's two): while the player flies, new meshes and new cells land many times a second
 SHADOW_EVERY = (0.1, 0.5, 0.5)
 TERRAIN_SHADOW_HALF = (1024.0, 8192.0)  # half the width of the two shadow maps of the distant terrain
-CLOUD_HEIGHT = SEA_LEVEL + 940.0  # high mountains rise through the clouds
 CLOUD_PERIOD = 4096.0  # the cloud pattern repeats every 4096 blocks
 CLOUD_WIND = (6.0, 2.0)  # blocks per second
 CLOUD_EXTENT = 24000.0  # half the width of the cloud layer drawn around the camera

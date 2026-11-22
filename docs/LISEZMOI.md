@@ -1,6 +1,6 @@
 # PyCraft
 
-Jeu de type Minecraft en mode créatif, en vrai 3D : un monde de blocs **infini**, 4096 blocs de
+Jeu de type Minecraft en mode créatif, en vrai 3D : un monde de blocs **infini**, 10240 blocs de
 haut, que l'on explore à pied, à la nage ou en volant. Le monde est dessiné par la carte graphique
 (OpenGL via `moderngl`), éclairé par le soleil avec des ombres, puis chaque image terminée est
 convertie dans la palette de 256 couleurs de **Pyxel**, qui gère la fenêtre, les entrées, les

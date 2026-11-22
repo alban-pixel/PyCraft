@@ -1,6 +1,6 @@
 # PyCraft
 
-A Minecraft-like game in creative mode, in an endless world 4096 blocks high, with mountain ranges
+A Minecraft-like game in creative mode, in an endless world 10240 blocks high, with mountain ranges
 that rise more than 3,000 blocks above the sea. The 3D world is drawn by the graphics card (OpenGL
 through `moderngl`), lit by the sun with shadows, and each finished frame is turned into Pyxel's
 256 colors and copied into Pyxel's screen. Pyxel runs the window, keyboard, mouse, menus, HUD, sound
@@ -24,7 +24,7 @@ a real graphics card driver.
 
 ## What's in the game
 
-- An endless world, 4096 blocks high, with the sea at height 512
+- An endless world, 10240 blocks high, with the sea at height 512
 - Continents and oceans; long mountain ranges up to about 3,500 blocks above the sea, with tree
   lines, snow lines and glaciers on the highest peaks; rivers in their own valleys; lakes; hills,
   beaches, steep rocky coasts and badlands mesas
