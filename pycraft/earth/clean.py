@@ -51,11 +51,14 @@ def _coarse(key, zoom, fetch, smooth=False):
     scale = 2 ** (z - zoom)
     cx, cy = tx // scale, ty // scale
     m = _nearby(zoom, cx, cy, fetch)
+    u = (tx - cx * scale + (np.arange(TILE) + 0.5) / TILE) * TILE / scale + TILE - 0.5
+    v = (ty - cy * scale + (np.arange(TILE) + 0.5) / TILE) * TILE / scale + TILE - 0.5
+    left, top = int(u[0]) - 4, int(v[0]) - 4  # (the rest of these 9 tiles is never read)
+    m = m[top:int(v[-1]) + 6, left:int(u[-1]) + 6]
+    u, v = u - left, v - top
     if smooth:
         for _ in range(2):  # the coarse tiles have broken pixels too
             m = np.median(_around(m), axis=0)
-    u = (tx - cx * scale + (np.arange(TILE) + 0.5) / TILE) * TILE / scale + TILE - 0.5
-    v = (ty - cy * scale + (np.arange(TILE) + 0.5) / TILE) * TILE / scale + TILE - 0.5
     j, i = np.floor(u).astype(int), np.floor(v).astype(int)
     fu, fv = (u - j)[None, :], (v - i)[:, None]
     g = {(a, b): m[np.ix_(i + a, j + b)] for a in (-1, 0, 1, 2) for b in (-1, 0, 1, 2)}
@@ -78,9 +81,9 @@ def _mend_runs(key, h, fetch):
 
 
 def _mend_pixels(h):
-    others = _around(h, middle=False)
-    middle = np.median(others, axis=0)
-    low, high = np.percentile(others, (25, 75), axis=0)
+    others = np.sort(_around(h, middle=False), axis=0)  # its 8 neighbors: their median and quartiles
+    middle = (others[3] + others[4]) / 2
+    low, high = 0.25 * others[1] + 0.75 * others[2], 0.75 * others[5] + 0.25 * others[6]
     return np.where(np.abs(h - middle) > 400 + 4 * (high - low), middle, h)
 
 
