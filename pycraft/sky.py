@@ -21,6 +21,12 @@ SUN_TILT = 0.5  # the sun's path leans to one side (63 degrees up at most), so w
 CLOUD_COVER = 0.56  # share of the sky without clouds (about)
 
 
+def haze(view_distance):
+    """The haze for a view this far: past 8 km it thins, so the farthest mountains still show
+    through it (at 8 km and under, HAZE as always)."""
+    return min(HAZE, 1.78 / view_distance)
+
+
 def mix(a, b, t):
     return tuple(float(x + (y - x) * t) for x, y in zip(a, b))
 

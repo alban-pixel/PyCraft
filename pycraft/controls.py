@@ -21,6 +21,7 @@ ACTIONS = [  # (name in the settings file, name in the menus, default key)
     ("mouse", "Free the mouse", "TAB"),
     ("info", "Info", "F3"),
     ("help", "Show the controls", "H"),
+    ("screenshot", "Take a screenshot", "F2"),
 ]
 LABELS = {action: label for action, label, _ in ACTIONS}
 DEFAULTS = {action: key for action, _, key in ACTIONS}

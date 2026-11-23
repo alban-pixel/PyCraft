@@ -325,6 +325,34 @@ couvert dans la seconde, à toutes les qualités.
    palette change ; une palette stable = pas de scintillement).
 4. Le résultat est copié dans `pyxel.screen`, puis Pyxel dessine HUD et menus.
 
+## Mode capture (F2)
+
+Une capture d'écran se fait en dehors du chemin normal de l'image :
+
+- **Portée** : `Renderer.set_reach(61440)` donne au terrain lointain les niveaux qu'il lui faut
+  pour 60 km (`levels_for` : 10, 9, 10, 9 pour low, medium, high, ultra) et dessine les vrais blocs
+  jusqu'à 24 chunks (12 en jeu ; la carte des colonnes en blocs couvre 64×64 chunks). Au-delà de
+  8 km, le plan lointain de la projection suit la vue (`far_planes`), et la brume s'éclaircit
+  (`sky.haze`) pour que les montagnes à 60 km restent visibles.
+- **Attente** : l'état `screenshot` fige le jeu (ni temps, ni machines, ni joueur) et construit
+  avec le budget du chargement, jusqu'à ce que `reach_progress` vaille 1 (tout construit et plus
+  rien en route) ou 180 s. Échap annule.
+- **Image** : `Renderer.capture` dessine la scène en 3840×2160 (réduite si la carte ne peut pas),
+  16 fois avec un décalage de projection de moins d'un pixel (suite de Halton 2, 3), et additionne
+  les passes dans une texture `f4` (`render/accumulate.py`) : un suréchantillonnage 16× des bords,
+  des textures, des feuilles et des ombres, sans MSAA. Le temps des vagues et des nuages est fixé
+  pour toutes les passes.
+- **Shaders `hq`** : un uniforme `hq` (0 en jeu) active des cartes d'ombre 4096², un filtrage des
+  ombres à 16 points sur un disque de Poisson, et 32 pas dans les nuages, dont le seuil monte vers
+  le haut et le bas de la couche (des nuages bombés au lieu de parois verticales, visibles une
+  fois la brume éclaircie).
+- **Sans palette** : la moyenne passe par le même `finish()` que le jeu, puis elle est relue en RGB
+  et écrite en PNG avec `zlib` (aucune dépendance). La palette de 256 couleurs et le tramage ne
+  servent qu'à l'écran de Pyxel.
+- Ensuite `set_reach(None)` remet la portée des réglages (le terrain lointain est reconstruit) et
+  l'échelle automatique du rendu est remise à zéro : l'image longue de la capture ne compte pas.
+- Vérification : `python tools/screenshot.py`.
+
 ## Cadence et résolution
 
 Pyxel ne permet pas de changer le FPS une fois la fenêtre ouverte : le jeu

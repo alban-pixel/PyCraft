@@ -148,7 +148,8 @@ class Hud:
              (key("chat"), "Chat, commands")],
             [(key("break"), "Break"), (key("place"), "Place, use"), (key("pick"), "Pick the block"),
              ("1-9, WHEEL", "Choose a block"), (key("mouse"), "Free the mouse"), (key("info"), "Info"),
-             (key("help"), "Hide this help"), ("ESC", "Menu, settings")],
+             (key("help"), "Hide this help"), ("ESC", "Menu, settings"),
+             (key("screenshot"), "Screenshot")],
         ]
     def draw_help(self, y):
         """The controls in two columns: the keys in amber, what they do in white."""

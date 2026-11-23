@@ -13,17 +13,41 @@ from pycraft.lod import SamplerProcess
 from pycraft.render.chunks import Chunks
 from pycraft.render.constants import (ATLAS_UNIT, BLOCK_TILES_UNIT, CLOUDS_UNIT, CLOUD_PERIOD,
                                       CLOUD_WIND, FAR_LIMIT, LOD_QUALITIES, LOD_QUALITY_NAMES, MSAA_SAMPLES,
-                                      SHADOW_UNITS, SIM_DISTANCES, TILE_AVG_UNIT, TINT_UNIT)
-from pycraft.render.far import FarTerrain
-from pycraft.render.gl import depth_half, look_at, matrix_bytes, perspective, set_uniforms
+                                      SCREENSHOT_PASSES, SCREENSHOT_SHADOW_SIZE, SCREENSHOT_SIM_DISTANCE,
+                                      SCREENSHOT_SIZE, SHADOW_UNITS, SIM_DISTANCES, TILE_AVG_UNIT,
+                                      TINT_UNIT)
+from pycraft.render.accumulate import Accumulator
+from pycraft.render.far import FarTerrain, levels_for
+from pycraft.render.gl import depth_half, jittered, look_at, matrix_bytes, perspective, set_uniforms
 from pycraft.render.palette import Palette
 from pycraft.render.shadows import Shadows
 from pycraft.render.textures import cloud_texture, make_tile_textures
+from pycraft.screenshot import fit_size, halton_offsets
 from pycraft.shapes import selection_box
 from pycraft.terrain import CHUNK
 
 
 CUBE_EDGES = [(0, 1), (1, 3), (3, 2), (2, 0), (4, 5), (5, 7), (7, 6), (6, 4), (0, 4), (1, 5), (2, 6), (3, 7)]
+
+
+def view_distance(render_distance, reach):
+    """Where the fog has hidden everything, in blocks: the screenshot's reach when it has one."""
+    return float(reach) if reach is not None else min(render_distance * CHUNK, FAR_LIMIT)
+
+
+def sim_distance(render_distance, reach):
+    """Radius, in chunks, of the columns drawn as real blocks: grows with the render distance, but
+    slowly (meshing them is the costly part); the coarser terrain takes over beyond. Farther for
+    a screenshot, which waits for them."""
+    return SCREENSHOT_SIM_DISTANCE if reach is not None else SIM_DISTANCES.get(render_distance, 12)
+
+
+def far_planes(view):
+    """(near, far) of the distant terrain's projection: past 8 km the far plane follows the view,
+    and the near plane moves out to keep the depth buffer's precision (the blocks draw what is near)."""
+    return (1.0, 30000.0) if view <= 8192 else (16.0, 2.0 * view)
+
+
 class Renderer:
     def __init__(self, ctx, world, tiles, width, height, fixed_colors, fov=70):
         """ctx must be created before pyxel.init, so Pyxel's own OpenGL context ends up current.
@@ -35,6 +59,7 @@ class Renderer:
         self.gpu_time = None  # seconds the graphics card spent on the last frame (None if it can't tell)
         self.fbos = []
         self.render_distance = 256  # how far the world is seen, in chunks (blocks, then coarser and coarser)
+        self.reach = None  # blocks seen for a screenshot (None: as the settings say)
         self.fancy = True  # shadows and anti-aliasing
         self.drawn = 0  # block columns drawn in the last frame
         self.dim = 1.0  # darker behind the menus
@@ -118,6 +143,27 @@ class Renderer:
         if fancy != self.fancy:
             self.fancy = fancy
             self.make_framebuffers()
+
+    def set_reach(self, reach):
+        """See `reach` blocks far, with real blocks farther too (a screenshot), or as the settings say
+        again (None). The distant terrain is rebuilt when it needs another number of levels."""
+        self.reach = reach
+        far = self.far
+        quality = next(q for q, (sp, sz, _) in LOD_QUALITIES.items() if (sp, sz) == (far.spacing, far.size))
+        levels = LOD_QUALITIES[quality][2]
+        if reach is not None:
+            levels = max(levels, levels_for(far.spacing, far.size, reach))
+        if levels != far.n_levels:
+            self._rebuild_far(far.tiles, levels=levels)
+
+    def reach_progress(self, cam):
+        """Share of what the view needs that is built (blocks and distant terrain); 1 only once
+        nothing is left on its way either."""
+        done = self.progress(cam, self.sim_distance)
+        ch, far = self.chunks, self.far
+        if ch.pending or ch.preparing or far.working or far.pending or far.edits:
+            done = min(done, 0.99)
+        return done
 
     def set_lod_quality(self, quality):
         """The LOD quality setting: rebuild the distant terrain at another resolution."""
@@ -206,14 +252,11 @@ class Renderer:
 
     @property
     def sim_distance(self):
-        """Radius, in chunks, of the columns drawn as real blocks: grows with the render distance,
-        but slowly (meshing them is the costly part); the coarser terrain takes over beyond."""
-        return SIM_DISTANCES.get(self.render_distance, 12)
+        return sim_distance(self.render_distance, self.reach)
 
     @property
     def view_distance(self):
-        """Where the fog has hidden everything, in blocks."""
-        return min(self.render_distance * CHUNK, FAR_LIMIT)
+        return view_distance(self.render_distance, self.reach)
 
     def progress(self, cam, radius=3):
         """Share of the world around the camera that is ready to be seen (for the loading screen):
@@ -240,34 +283,10 @@ class Renderer:
         width, height = self.size
         aspect = width / height
         view = look_at((0, 0, 0), forward)
-        far_vp = perspective(self.fov, aspect, 1.0, 30000) @ view
+        far_vp = perspective(self.fov, aspect, *far_planes(self.view_distance)) @ view
         near_vp = perspective(self.fov, aspect, 0.05, 6000) @ view
-        cam = tuple(float(c) for c in eye)
-        now = time.perf_counter() - self.start
-        env = self.environment
-        wind = (cam[0] + CLOUD_WIND[0] * now, cam[2] + CLOUD_WIND[1] * now)
-        values = dict(env)
-        values.update({
-            "time": now % 3600.0,
-            "wave_origin": (cam[0] % 256.0, cam[2] % 256.0),
-            "cloud_origin": ((wind[0] / CLOUD_PERIOD) % 1.0, (wind[1] / CLOUD_PERIOD) % 1.0),
-            "cloud_height": self.chunks.world.gen.cloud_height - cam[1],
-            "shadows_on": int(self.fancy),
-            "sky_fog": 1.0 if self.underwater else 0.0,
-        })
-        # The blocks give way to the distant terrain between these distances: from half-way to the
-        # edge of the columns drawn as blocks (a chunk short of it, wherever the camera is in its chunk)
-        fade_end = (self.sim_distance - 1) * CHUNK
-        self.far.block_reach = float((self.sim_distance + 3) * CHUNK)  # (past the corner of the farthest mesh)
-        cell = (math.floor(cam[0] / 2), math.floor(cam[2] / 2))
-        values.update({
-            "block_fade": (0.5 * fade_end, float(fade_end)), "cam_cell": cell,
-            "cam_in_cell": (float(cam[0] - 2 * cell[0]), float(cam[2] - 2 * cell[1])),
-            "cam_frac": (float(cam[0] % 256.0), float(cam[2] % 256.0)), "cam_x": float(cam[0]),
-            "px_per_block": self.scene_size[1] / (2 * math.tan(math.radians(self.fov) / 2)),
-        })
-        self.far.view_distance = self.view_distance
-        finish = {"dim": float(self.dim), "tint": (0.75, 0.9, 1.0) if self.underwater else (1.0, 1.0, 1.0)}
+        values, cam = self.frame_values(eye, time.perf_counter() - self.start)
+        finish = self.finish_values()
         # Every OpenGL call, setting shader values included, must happen inside `with self.ctx`:
         # outside it, Pyxel's own context is the current one (with a window; not in headless tests)
         with self.ctx:
@@ -285,9 +304,65 @@ class Renderer:
             # (read after the frame: the graphics card has finished it)
             self.gpu_time = self.timer.elapsed / 1e9 if self.timer is not None else None
 
+    def frame_values(self, eye, now):
+        """The shaders' values for a frame seen from eye, `now` seconds into the game (the waves'
+        and the clouds' time), and the camera as floats."""
+        cam = tuple(float(c) for c in eye)
+        env = self.environment
+        wind = (cam[0] + CLOUD_WIND[0] * now, cam[2] + CLOUD_WIND[1] * now)
+        values = dict(env)
+        values.update({
+            "time": now % 3600.0,
+            "wave_origin": (cam[0] % 256.0, cam[2] % 256.0),
+            "cloud_origin": ((wind[0] / CLOUD_PERIOD) % 1.0, (wind[1] / CLOUD_PERIOD) % 1.0),
+            "cloud_height": self.chunks.world.gen.cloud_height - cam[1],
+            "shadows_on": int(self.fancy),
+            "sky_fog": 1.0 if self.underwater else 0.0,
+            "hq": 0,
+        })
+        # The blocks give way to the distant terrain between these distances: from half-way to the
+        # edge of the columns drawn as blocks (a chunk short of it, wherever the camera is in its chunk)
+        fade_end = (self.sim_distance - 1) * CHUNK
+        self.far.block_reach = float((self.sim_distance + 3) * CHUNK)  # (past the corner of the farthest mesh)
+        cell = (math.floor(cam[0] / 2), math.floor(cam[2] / 2))
+        values.update({
+            "block_fade": (0.5 * fade_end, float(fade_end)), "cam_cell": cell,
+            "cam_in_cell": (float(cam[0] - 2 * cell[0]), float(cam[2] - 2 * cell[1])),
+            "cam_frac": (float(cam[0] % 256.0), float(cam[2] % 256.0)), "cam_x": float(cam[0]),
+            "px_per_block": self.scene_size[1] / (2 * math.tan(math.radians(self.fov) / 2)),
+        })
+        self.far.view_distance = self.view_distance
+        return values, cam
+
+    def finish_values(self):
+        return {"dim": float(self.dim), "tint": (0.75, 0.9, 1.0) if self.underwater else (1.0, 1.0, 1.0)}
+
     def draw_frame(self, values, finish, far_vp, near_vp, cam, target):
         """The OpenGL work of render(): the frame in palette indices into self.index_fbo. Returns
         whether the palette sampled it (to adapt once the frame is read back)."""
+        ctx = self.ctx
+        self.draw_scene(values, far_vp, near_vp, cam, target, self.shadows if self.fancy else None)
+        fbo = self.scene_fbo
+        # Down to one color per pixel, then to Pyxel's palette
+        ctx.disable(moderngl.DEPTH_TEST)
+        if fbo is not self.resolved_fbo:
+            ctx.copy_framebuffer(self.resolved_fbo, fbo)
+        self.scene_texture.use(0)
+        self.palette.texture.use(1)
+        self.palette.lut.use(2)
+        set_uniforms(self.post_program, {"scene": 0, "palette": 1, "lut": 2,
+                                         "out_size": tuple(map(float, self.size)), **finish})
+        self.index_fbo.use()
+        self.post_vao.render(moderngl.TRIANGLE_STRIP)
+        adapt = self.palette.wants_samples()
+        if adapt:
+            self.palette.sample(self.scene_texture, finish)
+        return adapt
+
+    def draw_scene(self, values, far_vp, near_vp, cam, target, shadows):
+        """The world in full color into self.scene_fbo: the sky, the blocks, the distant terrain,
+        the water, the clouds and the outline of the target. shadows: the Shadows to draw and
+        use (None: no shadows)."""
         ctx = self.ctx
         env = self.environment
         self.palette.apply()
@@ -295,10 +370,10 @@ class Renderer:
         if self.chunks.ready_changed:
             self.chunks.ready_texture.write(self.chunks.ready.tobytes())
             self.chunks.ready_changed = False
-        if self.fancy:
-            values.update(self.shadows.update(cam, env["light_dir"], self.chunks, self.far, self.program,
-                                              self.lod_program))
-            self.shadows.use()
+        if shadows is not None:
+            values.update(shadows.update(cam, env["light_dir"], self.chunks, self.far, self.program,
+                                         self.lod_program))
+            shadows.use()
         for p in (self.program, self.lod_program, self.sky_program, self.cloud_program):
             set_uniforms(p, values)
         self.clouds.use(CLOUDS_UNIT)
@@ -352,21 +427,44 @@ class Renderer:
             self.outline_program["vp"].write(matrix_bytes(near_draw))
             self.outline_vao.render(moderngl.LINES)
 
-        # Down to one color per pixel, then to Pyxel's palette
-        ctx.disable(moderngl.DEPTH_TEST)
-        if fbo is not self.resolved_fbo:
-            ctx.copy_framebuffer(self.resolved_fbo, fbo)
-        self.scene_texture.use(0)
-        self.palette.texture.use(1)
-        self.palette.lut.use(2)
-        set_uniforms(self.post_program, {"scene": 0, "palette": 1, "lut": 2,
-                                         "out_size": tuple(map(float, self.size)), **finish})
-        self.index_fbo.use()
-        self.post_vao.render(moderngl.TRIANGLE_STRIP)
-        adapt = self.palette.wants_samples()
-        if adapt:
-            self.palette.sample(self.scene_texture, finish)
-        return adapt
+    def capture(self, eye, forward, size=SCREENSHOT_SIZE, passes=SCREENSHOT_PASSES):
+        """The world seen from eye, for a screenshot: (height, width, 3) uint8, top row first, in full
+        color. Drawn `passes` times, each moved by a fraction of a pixel, and averaged (every edge and
+        texture smoothed), with the high-quality shaders and bigger shadow maps. The game's own
+        frames are drawn as before afterward, whatever happens."""
+        ctx = self.ctx
+        with ctx:
+            width, height = fit_size(size, ctx.info["GL_MAX_TEXTURE_SIZE"], tuple(ctx.info["GL_MAX_VIEWPORT_DIMS"]))
+            saved = (self.size, self.render_scale)
+            made = []
+            try:
+                self.size, self.render_scale = (width, height), 1.0
+                self.scene_texture = ctx.texture((width, height), 4, dtype="f2")
+                depth = ctx.depth_renderbuffer((width, height))
+                self.scene_fbo = self.resolved_fbo = ctx.framebuffer(color_attachments=[self.scene_texture],
+                                                                     depth_attachment=depth)
+                made += [self.scene_fbo, self.scene_texture, depth]
+                shadows = Shadows(ctx, self.texture, self.tint_texture, size=SCREENSHOT_SHADOW_SIZE)
+                made.append(shadows)
+                accumulator = Accumulator(ctx, (width, height))
+                made.append(accumulator)
+                # One time for every pass: the waves and the clouds stand still between them
+                values, cam = self.frame_values(eye, time.perf_counter() - self.start)
+                values.update({"hq": 1, "shadows_on": 1})
+                view = look_at((0, 0, 0), forward)
+                far = perspective(self.fov, width / height, *far_planes(self.view_distance))
+                near = perspective(self.fov, width / height, 0.05, 6000)
+                for dx, dy in halton_offsets(passes):
+                    far_vp = jittered(far, dx, dy, width, height) @ view
+                    near_vp = jittered(near, dx, dy, width, height) @ view
+                    self.draw_scene(values, far_vp, near_vp, cam, None, shadows)
+                    accumulator.add(self.scene_texture)
+                return accumulator.resolve(1.0, self.finish_values()["tint"])
+            finally:
+                for obj in made:
+                    obj.release()
+                self.size, self.render_scale = saved
+                self.make_framebuffers()  # (the game's own: capture only pointed the attributes elsewhere)
 
     def render_clouds(self, vp, near_radius, near_pass):
         ctx = self.ctx

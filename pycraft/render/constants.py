@@ -35,7 +35,7 @@ SHADOW_EVERY = (0.1, 0.5, 0.5)
 TERRAIN_SHADOW_HALF = (1024.0, 8192.0)  # half the width of the two shadow maps of the distant terrain
 CLOUD_PERIOD = 4096.0  # the cloud pattern repeats every 4096 blocks
 CLOUD_WIND = (6.0, 2.0)  # blocks per second
-CLOUD_EXTENT = 24000.0  # half the width of the cloud layer drawn around the camera
+CLOUD_EXTENT = 65536.0  # half the width of the cloud layer drawn around the camera (past a screenshot's horizon)
 MSAA_SAMPLES = 4  # anti-aliasing: samples per pixel with "fancy" graphics
 FIXED_COLORS = 64  # palette entries that never change: Pyxel's 16 (HUD) and 48 for the block icons
 SAMPLES = 64  # the frame is sampled at 64 x 64 points to adapt the palette
@@ -53,3 +53,11 @@ BLOCK_TILES_UNIT = 10
 COARSE_UNIT = 11
 FINE_UNIT = 12
 TINT_UNIT = 13  # which texels of the tiles take the biome color (a texture array too)
+# The screenshot (F2): its size, the jittered passes averaged into it, its shadow maps, how far it
+# sees, the radius drawn as real blocks for it (chunks), and how long it waits for them (seconds)
+SCREENSHOT_SIZE = (3840, 2160)
+SCREENSHOT_PASSES = 16
+SCREENSHOT_SHADOW_SIZE = 4096
+SCREENSHOT_REACH = 61440.0
+SCREENSHOT_SIM_DISTANCE = 24
+SCREENSHOT_WAIT = 180.0

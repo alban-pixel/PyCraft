@@ -96,6 +96,7 @@ These are the keys the game starts with. Every one in the first table can be cha
 | Tab | Release / capture the mouse |
 | F3 | FPS, the size the 3D view is drawn at and the graphics card's time, position, altitude, biome, chunks, the levels of the distant terrain on screen and seed |
 | H | Show / hide the controls, with the keys they have now |
+| F2 | Screenshot: the game stands still while the world is built up to 60 km away (real blocks up to 384 blocks), then the picture is drawn at 3840x2160 in full color, with smooth edges, finer shadows and clouds, and saved as a PNG in the `screenshots` folder beside your save. ESC while it waits cancels it |
 
 These stay as they are:
 

@@ -54,11 +54,11 @@ uniform float cloud_height; // middle of the cloud slab above the camera
 uniform float cloud_cover;  // noise level where the clouds begin
 const float CLOUD_THICK = 80.0;  // the clouds are a slab this many blocks thick
 const float CLOUD_HALF = CLOUD_THICK / 2.0;
-float cloud_density(vec2 xz) {  // xz relative to the camera
+float cloud_noise(vec2 xz) {  // xz relative to the camera
     vec2 uv = cloud_origin + xz / %(period).1f;
-    float n = 0.72 * texture(clouds, uv).r + 0.28 * texture(clouds, uv * 6.0).r;
-    return smoothstep(cloud_cover, cloud_cover + 0.16, n);
+    return 0.72 * texture(clouds, uv).r + 0.28 * texture(clouds, uv * 6.0).r;
 }
+float cloud_density(vec2 xz) { return smoothstep(cloud_cover, cloud_cover + 0.16, cloud_noise(xz)); }
 float cloud_shadow(vec3 pos) {
     if (light_dir.y < 0.03 || pos.y > cloud_height + CLOUD_HALF) return 1.0;
     return 1.0 - 0.55 * cloud_density(pos.xz + light_dir.xz * ((cloud_height - pos.y) / light_dir.y));
@@ -73,7 +73,23 @@ uniform mat4 shadow_vp0;              // position relative to the camera -> plac
 uniform mat4 shadow_vp1;
 uniform mat4 shadow_vp2;
 uniform vec3 shadow_texel;            // size of a texel of each map, in blocks
+uniform int hq;                       // 1 for a screenshot: the slower, finer versions
+// A Poisson disk (from NVIDIA's "Percentage-Closer Soft Shadows" sample): 16 lookups spread evenly
+// over a disk, for a screenshot's soft and smooth shadow edges
+const vec2 POISSON[16] = vec2[](
+    vec2(-0.94201624, -0.39906216), vec2(0.94558609, -0.76890725), vec2(-0.09418410, -0.92938870),
+    vec2(0.34495938, 0.29387760), vec2(-0.91588581, 0.45771432), vec2(-0.81544232, -0.87912464),
+    vec2(-0.38277543, 0.27676845), vec2(0.97484398, 0.75648379), vec2(0.44323325, -0.97511554),
+    vec2(0.53742981, -0.47373420), vec2(-0.26496911, -0.41893023), vec2(0.79197514, 0.19090188),
+    vec2(-0.24188840, 0.99706507), vec2(-0.81409955, 0.91437590), vec2(0.19984126, 0.78641367),
+    vec2(0.14383161, -0.14100790));
 float pcf(sampler2DShadow map, vec3 p) {  // 4 filtered lookups: soft edges
+    if (hq == 1) {
+        vec2 r = 1.5 / vec2(textureSize(map, 0));
+        float sum = 0.0;
+        for (int i = 0; i < 16; i++) sum += texture(map, vec3(p.xy + POISSON[i] * r, p.z));
+        return sum / 16.0;
+    }
     vec2 t = 0.5 / vec2(textureSize(map, 0));
     return 0.25 * (texture(map, vec3(p.xy + vec2(-t.x, -t.y), p.z)) + texture(map, vec3(p.xy + vec2(t.x, -t.y), p.z))
                  + texture(map, vec3(p.xy + vec2(-t.x, t.y), p.z)) + texture(map, vec3(p.xy + vec2(t.x, t.y), p.z)));
@@ -645,6 +661,7 @@ CLOUD_FRAGMENT_SHADER = """
 #version 330
 uniform int near_pass;      // drawn twice: far away with the distant terrain, nearby after the blocks
 uniform float near_radius;
+uniform int hq;             // 1 for a screenshot: more steps through the slab
 in vec3 v_pos;
 out vec4 out_color;
 """ + LIGHT + CLOUDS + """
@@ -658,12 +675,22 @@ void main() {
     float lo = max(min(a, b), 0.0), hi = min(max(a, b), lo + 4.0 * CLOUD_THICK);
     if (hi <= lo) discard;
     float d = 0.0;
-    for (int i = 0; i < 6; i++) {
-        vec3 p = dir * mix(lo, hi, (float(i) + 0.5) / 6.0);
+    int steps = hq == 1 ? 32 : 6;
+    for (int i = 0; i < steps; i++) {
+        vec3 p = dir * mix(lo, hi, (float(i) + 0.5) / float(steps));
         float u = clamp((p.y - cloud_height + CLOUD_HALF) / CLOUD_THICK, 0.0, 1.0);
-        d += cloud_density(p.xz) * u * (1.0 - u) * 4.0;
+        if (hq == 1) {
+            // Only the thick middle of a cloud reaches the top and the bottom of the slab: rounded
+            // puffs, not the straight walls of a flat pattern pulled up (which the many steps of a
+            // screenshot would show as streaks toward the horizon)
+            float edge = (2.0 * u - 1.0) * (2.0 * u - 1.0);
+            float start = cloud_cover + 0.2 * edge;
+            d += smoothstep(start, start + 0.16, cloud_noise(p.xz)) * 1.5;
+        } else {
+            d += cloud_density(p.xz) * u * (1.0 - u) * 4.0;
+        }
     }
-    float tau = d / 6.0 * clamp((hi - lo) / CLOUD_THICK, 0.0, 1.5);
+    float tau = d / float(steps) * clamp((hi - lo) / CLOUD_THICK, 0.0, 1.5);
     d = 1.0 - exp(-tau * 3.5);
     if (d < 0.005) discard;
     vec3 lit = sky_light * 1.1 + light_color * (0.4 + 0.8 * max(light_dir.y, 0.0));
@@ -831,4 +858,25 @@ in vec4 v_square;
 layout(location = 0) out vec4 sum;     // added up: OKLab of the samples, and their number
 layout(location = 1) out vec4 square;  // their squares, and their squared distance to the color
 void main() { sum = v_sum; square = v_square; }
+"""
+# --- Screenshot: its passes added up, then their average finished like the game's frame ---------
+
+ACCUMULATE_SCENE_FRAGMENT_SHADER = """
+#version 330
+uniform sampler2D scene;
+out vec4 out_color;
+void main() { out_color = vec4(texelFetch(scene, ivec2(gl_FragCoord.xy), 0).rgb, 1.0); }
+"""
+RESOLVE_FRAGMENT_SHADER = """
+#version 330
+uniform sampler2D sum;
+uniform float count;
+out vec4 out_color;
+""" + FINISH + """
+void main() {
+    // Upside down, like the game's last pass: the rows read back are top-down, as in a PNG
+    ivec2 size = textureSize(sum, 0);
+    ivec2 at = ivec2(int(gl_FragCoord.x), size.y - 1 - int(gl_FragCoord.y));
+    out_color = vec4(finish(texelFetch(sum, at, 0).rgb / count), 1.0);
+}
 """

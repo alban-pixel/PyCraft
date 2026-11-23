@@ -17,6 +17,14 @@ from pycraft.lod import sample_step
 from pycraft.terrain import CHUNK
 
 
+def levels_for(spacing, size, reach):
+    """The fewest levels that reach `reach` blocks (the rule of FarTerrain.levels)."""
+    levels = 1
+    while (size // 2 - LOD_MARGIN) * (spacing << (levels - 1)) < reach:
+        levels += 1
+    return levels
+
+
 class FarTerrain:
     """The terrain beyond the blocks, as `levels` square grids of (size - 1)^2 columns around the
     camera, each twice as coarse and twice as wide as the one before (spacing to spacing x 2^levels
