@@ -1,0 +1,59 @@
+# Biomes logiques — plan
+
+**Goal:** In the usual (procedural) world, every biome is where it makes sense: the climate follows
+the land and the sea, one snow line holds everywhere, beaches are at the sea, swamps in wet
+lowland, badlands terraces only in badlands, no specks. The Earth mode has its own rules
+(`pycraft/earth/biomes.py`) and is out of scope.
+
+**Measure:** `python tools/biomes.py` gives 11 measures for the four seeds of `tools/views/`, each
+with a goal, against `tools/biomes_baseline.json` (the generator before this work).
+`tests/test_biomes.py` checks the same goals on a 32 km square of seed 424242; the goals not met yet
+are in its `NOT_YET` set, marked as expected failures. A step is done when its goals are met
+and their names have left `NOT_YET`.
+
+## What was wrong (baseline, four seeds)
+
+| Measure | Goal | Baseline |
+|---|---|---|
+| `humidity_vs_coast`: correlation of humidity with the distance to the sea | ≤ −0.3 | −0.07 to +0.05: no link |
+| `snow_near_hot`: snowy lowland within 1500 blocks of a hot biome | ≤ 1% | 15–25% |
+| `snowy_share`: land under snow or ice | ≤ 25% | 24–28% |
+| `dry_share`: desert and badlands | ≥ 4% | 3.7–6% |
+| `ice_off_cold_coast`: frozen ocean whose ice field touches no cold coast | ≤ 5% | 0.1–7% |
+| `snow_line_conflict`: land on the wrong side of the best single snow line | ≤ 2% | 8–11% |
+| `beach_inland`: beach more than 64 blocks from the sea | ≤ 5% | 47–56% |
+| `swamp_high`: swamp more than 8 blocks above the sea | ≤ 5% | 32–37% |
+| `terraces_outside_badlands`: badlands terraces outside badlands | ≤ 10% | 27–35% |
+| `specks`: land with no neighbor of its own biome (48-block grid) | ≤ 0.2% | 0.9% |
+| `hot_touches_snow`: hot and snowy biomes side by side | 0 | 0 (keep it) |
+
+Speed: `TerrainGenerator.sample()` takes about 3.2–4.3 µs a column. It must not grow by more than
+about 15%: the distant terrain samples millions of columns.
+
+## Steps
+
+1. **Measure first** (done): `tools/biomes.py`, the baseline, `tests/test_biomes.py`.
+   `sample()` also returns `terraces`, the strength of the badlands terracing.
+2. **Climate with geography.** Humidity falls with the distance to the sea and behind mountain
+   ranges (rain shadow), plus noise. Temperature in larger, ordered zones (hot, temperate, cold)
+   instead of free blobs. The sea's temperature follows the nearby land's, so sea ice forms only
+   off cold coasts. Retune the shares of snow and desert.
+   Goals: `humidity_vs_coast`, `snow_near_hot`, `snowy_share`, `dry_share`, `ice_off_cold_coast`.
+3. **One biome table.** Biome from a temperature × humidity table, with one snow line and one tree
+   line used in the lowlands and the mountains alike (no `high` switch): alpine meadow is above the
+   trees and below the snow. Goal: `snow_line_conflict`.
+4. **Landform biomes from the land.** Beaches from the distance to the coast (sand on flat shores,
+   gravel or stone on steep ones, snow on cold ones); lake and river banks get their own sand,
+   gravel and clay and are no longer "Beach"; swamps in flat, wet lowland by rivers and lakes, not
+   under a height line. Goals: `beach_inland`, `swamp_high`.
+5. **Terrain follows the biome.** Badlands terraces only where the final biome is badlands.
+   Goal: `terraces_outside_badlands`.
+6. **Borders.** Blend surface blocks and trees across a border; no specks. Goal: `specks`. The
+   distant terrain uses the same `sample()`, so it follows.
+7. **Old worlds.** The save records the generator's version; old worlds keep the old generator so
+   that their new chunks don't leave seams. New worlds get the new one.
+8. **Check.** `tools/biomes.py` meets every goal on the four seeds; pytest; `tools/holes.py`,
+   `tools/render_views.py`, a play-test; the speed budget.
+
+Open questions for the owner: add River and Stony shore biomes in step 4, or keep the 18? Keep the
+old generator for old worlds (step 7), or accept a seam?

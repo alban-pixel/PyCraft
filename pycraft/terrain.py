@@ -185,7 +185,8 @@ class TerrainGenerator:
         temp_here = temperature - altitude * LAPSE
         biome = self._biome(top, water, c, temp_here, humidity, mesa, (mask > 0.12) | (top > SEA_LEVEL + 600))
         return {"height": height, "water": water, "biome": biome, "temperature": temp_here,
-                "humidity": humidity, "continent": c, "mask": mask, "river": in_bed & (water > SEA_LEVEL)}
+                "humidity": humidity, "continent": c, "mask": mask, "river": in_bed & (water > SEA_LEVEL),
+                "terraces": mesa}
 
     @staticmethod
     def _biome(top, water, c, temp, humidity, mesa, high):
