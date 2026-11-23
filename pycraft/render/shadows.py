@@ -17,7 +17,7 @@ class ShadowMap:
     """How one shadow map was drawn: the light's direction and the map's square, fixed in the world
     (so it can be used as the camera moves, until it is drawn again)."""
 
-    def __init__(self, light, half, cam, key, version):
+    def __init__(self, light, half, cam, key, version, size=SHADOW_SIZE):
         self.key, self.version, self.half, self.cam = key, version, half, cam
         self.time = time.perf_counter()  # when it was drawn
         # Axes of the light's view: right, up, and toward the light
@@ -26,7 +26,7 @@ class ShadowMap:
         right /= np.linalg.norm(right)
         self.rotation = np.array([right, np.cross(light, right), light])
         # The square's center: the camera, snapped to whole texels so the shadows' edges stay still
-        texel = 2 * half / SHADOW_SIZE
+        texel = 2 * half / size
         center = self.rotation @ np.array(cam, dtype=np.float64)
         center[:2] = np.round(center[:2] / texel) * texel
         self.center = center
@@ -49,11 +49,12 @@ class Shadows:
     light moved a little (its direction is rounded), the camera went far from the map's center, or
     the meshes or the distant terrain changed."""
 
-    def __init__(self, ctx, atlas, tint):
-        self.ctx, self.atlas, self.tint = ctx, atlas, tint
+    def __init__(self, ctx, atlas, tint, size=SHADOW_SIZE):
+        """size: texels per side of each map (bigger for a screenshot)."""
+        self.ctx, self.atlas, self.tint, self.size = ctx, atlas, tint, size
         self.textures, self.fbos = [], []
         for _ in range(3):
-            tex = ctx.depth_texture((SHADOW_SIZE, SHADOW_SIZE))
+            tex = ctx.depth_texture((size, size))
             tex.compare_func = "<="  # lookups return 1 where the point is no farther from the light
             tex.filter = (moderngl.LINEAR, moderngl.LINEAR)
             tex.repeat_x = tex.repeat_y = False
@@ -81,10 +82,10 @@ class Shadows:
                 continue
             if i > 0 and far.drawn_levels(cam)[1] < 0:
                 continue  # (no level of the distant terrain has landed yet)
-            new = ShadowMap(light, halves[i], cam, key, versions[i])
+            new = ShadowMap(light, halves[i], cam, key, versions[i], self.size)
             self.maps[i] = new
             self.draw(i, new.matrix(cam), cam, chunks, far, block_program, lod_program)
-        values = {"shadow_texel": tuple(2 * h / SHADOW_SIZE for h in halves)}
+        values = {"shadow_texel": tuple(2 * h / self.size for h in halves)}
         outside = np.zeros((4, 4))
         outside[:, 3] = (-1.0, -1.0, -1.0, 1.0)  # before a map is first drawn, its lookups land outside it
         for i, m in enumerate(self.maps):
@@ -108,6 +109,10 @@ class Shadows:
         else:
             far.render(vp, cam, chunks, shadow=True)
         ctx.polygon_offset = (0.0, 0.0)
+
+    def release(self):
+        for obj in (*self.fbos, *self.textures, self.placeholder):
+            obj.release()
 
     def use(self):
         for tex, unit in zip(self.textures, SHADOW_UNITS):
