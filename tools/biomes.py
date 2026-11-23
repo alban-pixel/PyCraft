@@ -33,9 +33,9 @@ COLD_COAST = (T.TAIGA, T.SNOWY_TAIGA, T.SNOWY_TUNDRA, T.SNOWY_PEAKS, T.GLACIER, 
 GOALS = {
     "humidity_vs_coast": ("correlation of the humidity with the distance to the sea, on land", "<=", -0.3, 2),
     "snow_near_hot": ("share of the snowy lowland (snowy taiga, tundra) less than 1500 blocks from a hot "
-                      "biome", "<=", 0.01, 2),
+                      "biome", "<=", 0.01, 3),
     "hot_touches_snow": ("borders between a hot biome and a snowy one", "<=", 0, 2),
-    "snowy_share": ("share of the land under snow or ice", "<=", 0.25, 2),
+    "snowy_share": ("share of the land under snow or ice", "<=", 0.25, 3),
     "dry_share": ("share of the land that is desert or badlands", ">=", 0.04, 2),
     "ice_off_cold_coast": ("share of the frozen ocean in ice fields that touch no cold coast", "<=", 0.05, 2),
     "snow_line_conflict": ("share of the land on the wrong side of the best single snow line "

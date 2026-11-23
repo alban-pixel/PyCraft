@@ -72,16 +72,28 @@ class TerrainGenerator:
         t = self.tuya.fbm2(wx / 24000, wz / 24000, 2) * 2.3
         t_grad = np.hypot(self.tuya.fbm2((wx + 16) / 24000, wz / 24000, 2) * 2.3 - t,
                           self.tuya.fbm2(wx / 24000, (wz + 16) / 24000, 2) * 2.3 - t) / 16
+        continent = self.continent.fbm2(wx / 9000, wz / 9000, 5) * 2.4 + 0.2
+        half_width = 3400 + 1600 * self.hilliness.noise2(wx / 10000 + 50, wz / 10000)
+        strength = smoothstep(-0.28, 0.25, self.mountain_mask.fbm2(wx / 12000 + 300, wz / 12000, 2) * 2.3)
+        # Humidity comes from the sea: the land dries away from the coast, and more behind a mountain
+        # range, where the wind (from -x) has left its rain on the far side (a rain shadow). The
+        # noise makes wetter and drier regions on top of that
+        inland = smoothstep(0.0, 1.0, continent)
+        m_up = self.mountain_mask.fbm2((wx - 3000) / 22000, wz / 22000, 3)
+        range_upwind = np.clip(1 - np.abs(m_up) / np.maximum(m_grad, 1e-9) / half_width, 0, 1) * strength
+        humidity = (self.humidity.fbm2(wx / 6000, wz / 6000, 3) * 1.38 + 0.45 - inland
+                    - 0.6 * range_upwind)
         return {
             "wx": wx, "wz": wz, "m": m, "m_grad": m_grad, "r": r, "r_grad": r_grad,
             "fault": f, "f_grad": f_grad, "tuya": t, "t_grad": t_grad,
             "cliff": self.cliff.fbm2(wx / 8000, wz / 8000, 2) * 2.3,
-            "continent": self.continent.fbm2(wx / 9000, wz / 9000, 5) * 2.4 + 0.2,
-            "temperature": self.temperature.fbm2(wx / 6800, wz / 6800, 3) * 2.3,
-            "humidity": self.humidity.fbm2(wx / 6000, wz / 6000, 3) * 2.3,
+            "continent": continent,
+            # Climate zones some 15 km across, so that hot and cold lands lie far apart
+            "temperature": self.temperature.fbm2(wx / 13600, wz / 13600, 3) * 2.3 + 0.1,
+            "humidity": humidity,
             "hilliness": smoothstep(-0.3, 0.45, self.hilliness.fbm2(wx / 3500, wz / 3500, 2) * 2.3),
-            "half_width": 3400 + 1600 * self.hilliness.noise2(wx / 10000 + 50, wz / 10000),
-            "strength": smoothstep(-0.28, 0.25, self.mountain_mask.fbm2(wx / 12000 + 300, wz / 12000, 2) * 2.3),
+            "half_width": half_width,
+            "strength": strength,
             "badlands": self.badlands.fbm2(wx / 2700, wz / 2700, 2) * 2.3,
             "river_width": self.river_width.noise2(x / 600, z / 600),
             "lake": self.lake.fbm2(wx / 1900, wz / 1900, 3) * 2.3,
@@ -183,10 +195,13 @@ class TerrainGenerator:
 
         altitude = np.maximum(top - SEA_LEVEL - 30, 0)
         temp_here = temperature - altitude * LAPSE
+        # Ice on cold water: the rivers, the lakes and the shallow sea by the coasts; the deep sea
+        # stays open
+        ice = (top < water) & (temp_here < -0.55) & (top >= SEA_LEVEL - 60)
         biome = self._biome(top, water, c, temp_here, humidity, mesa, (mask > 0.12) | (top > SEA_LEVEL + 600))
         return {"height": height, "water": water, "biome": biome, "temperature": temp_here,
                 "humidity": humidity, "continent": c, "mask": mask, "river": in_bed & (water > SEA_LEVEL),
-                "terraces": mesa}
+                "terraces": mesa, "ice": ice}
 
     @staticmethod
     def _biome(top, water, c, temp, humidity, mesa, high):
@@ -195,7 +210,7 @@ class TerrainGenerator:
         underwater = top < water
         ocean = top < SEA_LEVEL - 1
         rules = [
-            (ocean & (temp < -0.55), FROZEN_OCEAN),
+            (ocean & (temp < -0.55) & (top >= SEA_LEVEL - 60), FROZEN_OCEAN),
             (ocean & (top < SEA_LEVEL - 60), DEEP_OCEAN),
             (ocean, OCEAN),
             ((top <= SEA_LEVEL + 2) & (c < 0.15) & ~underwater & (temp > -0.55), BEACH),
@@ -483,7 +498,7 @@ def _generate_columns(gen, keys):
         col.surface, col.filler, col.depth = surface[i], filler[i], depth[i]
         col.biome, col.temperature, col.river = s["biome"][i], s["temperature"][i], s["river"][i]
         col.badlands = col.biome == BADLANDS
-        col.ice = (col.water > col.height) & (col.temperature < -0.55)
+        col.ice = s["ice"][i] if "ice" in s else (col.water > col.height) & (col.temperature < -0.55)
         col.shift = gen.shift(top[i])
         col.deep, col.entrance = deep[i] + col.shift, entrance[i]
         col.grass = (grass[i] * 255).astype(np.uint8)

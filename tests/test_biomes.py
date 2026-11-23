@@ -8,8 +8,8 @@ from tools.biomes import GOALS, measures, meets, sample_grid
 
 SEED = 424242
 # Goals not met yet, with the step of the plan that fixes them (see GOALS)
-NOT_YET = {"humidity_vs_coast", "snow_near_hot", "snowy_share", "ice_off_cold_coast", "snow_line_conflict",
-           "beach_inland", "swamp_high", "terraces_outside_badlands", "specks"}
+NOT_YET = {"snow_near_hot", "snow_line_conflict", "beach_inland", "swamp_high", "terraces_outside_badlands",
+           "specks"}
 
 
 @pytest.fixture(scope="module")

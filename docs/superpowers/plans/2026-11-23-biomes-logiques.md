@@ -34,14 +34,18 @@ about 15%: the distant terrain samples millions of columns.
 
 1. **Measure first** (done): `tools/biomes.py`, the baseline, `tests/test_biomes.py`.
    `sample()` also returns `terraces`, the strength of the badlands terracing.
-2. **Climate with geography.** Humidity falls with the distance to the sea and behind mountain
-   ranges (rain shadow), plus noise. Temperature in larger, ordered zones (hot, temperate, cold)
-   instead of free blobs. The sea's temperature follows the nearby land's, so sea ice forms only
-   off cold coasts. Retune the shares of snow and desert.
-   Goals: `humidity_vs_coast`, `snow_near_hot`, `snowy_share`, `dry_share`, `ice_off_cold_coast`.
+2. **Climate with geography** (done). Humidity falls with the continentalness (inland) and behind
+   mountain ranges (rain shadow, wind from −x), plus noise. Temperature zones twice as large
+   (13600 instead of 6800 blocks) and 0.1 warmer. Only shallow sea freezes (by the coasts), and
+   `sample()` returns that `ice` mask for the blocks and the distant terrain. Met on the four
+   seeds: `humidity_vs_coast` (−0.55 to −0.63), `dry_share`, `ice_off_cold_coast` (0–0.1%);
+   `snowy_share` on three. `sample()` is 3–4% slower. What is left of `snow_near_hot` (4–9%) and
+   of `snowy_share` (26% on seed 137206379) is the "cold and dry" rule, which makes snowy tundra
+   from −0.3 on dry mountains around 1000–1200 blocks up (about 95% of the snow near hot biomes):
+   both goals move to step 3.
 3. **One biome table.** Biome from a temperature × humidity table, with one snow line and one tree
    line used in the lowlands and the mountains alike (no `high` switch): alpine meadow is above the
-   trees and below the snow. Goal: `snow_line_conflict`.
+   trees and below the snow. Goals: `snow_line_conflict`, `snow_near_hot`, `snowy_share`.
 4. **Landform biomes from the land.** Beaches from the distance to the coast (sand on flat shores,
    gravel or stone on steep ones, snow on cold ones); lake and river banks get their own sand,
    gravel and clay and are no longer "Beach"; swamps in flat, wet lowland by rivers and lakes, not
