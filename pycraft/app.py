@@ -34,7 +34,7 @@ from pycraft.sim import Simulation
 from pycraft.survival import (CREATIVE, SURVIVAL, BreakProgress, Health, convert_old_save,
                               creative_inventory)
 from pycraft.inventory import Inventory as Slots
-from pycraft.sky import FOG_START, HAZE, UNDERWATER_FOG, environment, scale
+from pycraft.sky import FOG_START, UNDERWATER_FOG, environment, haze, scale
 from pycraft.sound import Sound
 from pycraft.terrain import SEA_LEVEL
 from pycraft.tiles import build_tiles, tiles_to_atlas
@@ -502,7 +502,7 @@ class App(Sound, Menus, EarthScreens, SettingsScreen, Inventory, Hud, Chat, Play
             fog = (scale(UNDERWATER_FOG, 0.38 + 0.62 * day), 0.0, 0.0, 9.0)
         else:
             end = self.renderer.view_distance
-            fog = (env["horizon"], HAZE, FOG_START * end, end)
+            fog = (env["horizon"], haze(end), FOG_START * end, end)
         self.renderer.set_environment(**env, fog_color=fog[0], fog_density=fog[1], fog_start=fog[2], fog_end=fog[3])
         self.renderer.underwater = underwater
         dimmed = ("loading", "paused", "settings", "inventory", "screen", "dead", "earth_loading", "earth_offline")

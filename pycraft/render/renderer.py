@@ -13,8 +13,9 @@ from pycraft.lod import SamplerProcess
 from pycraft.render.chunks import Chunks
 from pycraft.render.constants import (ATLAS_UNIT, BLOCK_TILES_UNIT, CLOUDS_UNIT, CLOUD_PERIOD,
                                       CLOUD_WIND, FAR_LIMIT, LOD_QUALITIES, LOD_QUALITY_NAMES, MSAA_SAMPLES,
-                                      SHADOW_UNITS, SIM_DISTANCES, TILE_AVG_UNIT, TINT_UNIT)
-from pycraft.render.far import FarTerrain
+                                      SCREENSHOT_SIM_DISTANCE, SHADOW_UNITS, SIM_DISTANCES, TILE_AVG_UNIT,
+                                      TINT_UNIT)
+from pycraft.render.far import FarTerrain, levels_for
 from pycraft.render.gl import depth_half, look_at, matrix_bytes, perspective, set_uniforms
 from pycraft.render.palette import Palette
 from pycraft.render.shadows import Shadows
@@ -24,6 +25,26 @@ from pycraft.terrain import CHUNK
 
 
 CUBE_EDGES = [(0, 1), (1, 3), (3, 2), (2, 0), (4, 5), (5, 7), (7, 6), (6, 4), (0, 4), (1, 5), (2, 6), (3, 7)]
+
+
+def view_distance(render_distance, reach):
+    """Where the fog has hidden everything, in blocks: the screenshot's reach when it has one."""
+    return float(reach) if reach is not None else min(render_distance * CHUNK, FAR_LIMIT)
+
+
+def sim_distance(render_distance, reach):
+    """Radius, in chunks, of the columns drawn as real blocks: grows with the render distance, but
+    slowly (meshing them is the costly part); the coarser terrain takes over beyond. Farther for
+    a screenshot, which waits for them."""
+    return SCREENSHOT_SIM_DISTANCE if reach is not None else SIM_DISTANCES.get(render_distance, 12)
+
+
+def far_planes(view):
+    """(near, far) of the distant terrain's projection: past 8 km the far plane follows the view,
+    and the near plane moves out to keep the depth buffer's precision (the blocks draw what is near)."""
+    return (1.0, 30000.0) if view <= 8192 else (16.0, 2.0 * view)
+
+
 class Renderer:
     def __init__(self, ctx, world, tiles, width, height, fixed_colors, fov=70):
         """ctx must be created before pyxel.init, so Pyxel's own OpenGL context ends up current.
@@ -35,6 +56,7 @@ class Renderer:
         self.gpu_time = None  # seconds the graphics card spent on the last frame (None if it can't tell)
         self.fbos = []
         self.render_distance = 256  # how far the world is seen, in chunks (blocks, then coarser and coarser)
+        self.reach = None  # blocks seen for a screenshot (None: as the settings say)
         self.fancy = True  # shadows and anti-aliasing
         self.drawn = 0  # block columns drawn in the last frame
         self.dim = 1.0  # darker behind the menus
@@ -118,6 +140,27 @@ class Renderer:
         if fancy != self.fancy:
             self.fancy = fancy
             self.make_framebuffers()
+
+    def set_reach(self, reach):
+        """See `reach` blocks far, with real blocks farther too (a screenshot), or as the settings say
+        again (None). The distant terrain is rebuilt when it needs another number of levels."""
+        self.reach = reach
+        far = self.far
+        quality = next(q for q, (sp, sz, _) in LOD_QUALITIES.items() if (sp, sz) == (far.spacing, far.size))
+        levels = LOD_QUALITIES[quality][2]
+        if reach is not None:
+            levels = max(levels, levels_for(far.spacing, far.size, reach))
+        if levels != far.n_levels:
+            self._rebuild_far(far.tiles, levels=levels)
+
+    def reach_progress(self, cam):
+        """Share of what the view needs that is built (blocks and distant terrain); 1 only once
+        nothing is left on its way either."""
+        done = self.progress(cam, self.sim_distance)
+        ch, far = self.chunks, self.far
+        if ch.pending or ch.preparing or far.working or far.pending or far.edits:
+            done = min(done, 0.99)
+        return done
 
     def set_lod_quality(self, quality):
         """The LOD quality setting: rebuild the distant terrain at another resolution."""
@@ -206,14 +249,11 @@ class Renderer:
 
     @property
     def sim_distance(self):
-        """Radius, in chunks, of the columns drawn as real blocks: grows with the render distance,
-        but slowly (meshing them is the costly part); the coarser terrain takes over beyond."""
-        return SIM_DISTANCES.get(self.render_distance, 12)
+        return sim_distance(self.render_distance, self.reach)
 
     @property
     def view_distance(self):
-        """Where the fog has hidden everything, in blocks."""
-        return min(self.render_distance * CHUNK, FAR_LIMIT)
+        return view_distance(self.render_distance, self.reach)
 
     def progress(self, cam, radius=3):
         """Share of the world around the camera that is ready to be seen (for the loading screen):
@@ -240,7 +280,7 @@ class Renderer:
         width, height = self.size
         aspect = width / height
         view = look_at((0, 0, 0), forward)
-        far_vp = perspective(self.fov, aspect, 1.0, 30000) @ view
+        far_vp = perspective(self.fov, aspect, *far_planes(self.view_distance)) @ view
         near_vp = perspective(self.fov, aspect, 0.05, 6000) @ view
         cam = tuple(float(c) for c in eye)
         now = time.perf_counter() - self.start
