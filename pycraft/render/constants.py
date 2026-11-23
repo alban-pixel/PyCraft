@@ -53,3 +53,11 @@ BLOCK_TILES_UNIT = 10
 COARSE_UNIT = 11
 FINE_UNIT = 12
 TINT_UNIT = 13  # which texels of the tiles take the biome color (a texture array too)
+# The screenshot (F2): its size, the jittered passes averaged into it, its shadow maps, how far it
+# sees, the radius drawn as real blocks for it (chunks), and how long it waits for them (seconds)
+SCREENSHOT_SIZE = (3840, 2160)
+SCREENSHOT_PASSES = 16
+SCREENSHOT_SHADOW_SIZE = 4096
+SCREENSHOT_REACH = 61440.0
+SCREENSHOT_SIM_DISTANCE = 24
+SCREENSHOT_WAIT = 180.0

@@ -60,3 +60,10 @@ def set_uniforms(program, values):
             uniform.write(matrix_bytes(value))
         else:
             uniform.value = value
+def jittered(proj, dx, dy, width, height):
+    """A copy of a projection whose picture moves by (dx, dy) pixels (right and up): the screenshot
+    averages frames moved by fractions of a pixel, which smooths every edge and texture."""
+    m = np.array(proj, dtype="f4")
+    m[0] += (2.0 * dx / width) * m[3]  # (in clip space: x / w moves by that much)
+    m[1] += (2.0 * dy / height) * m[3]
+    return m
