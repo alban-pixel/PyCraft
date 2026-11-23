@@ -115,6 +115,9 @@ class Playing:
             self.show_help = not self.show_help
         if keys.pressed("info"):
             self.show_debug = not self.show_debug
+        if keys.pressed("screenshot"):
+            self.start_screenshot()
+            return
         if keys.pressed("chat") or pyxel.btnp(pyxel.KEY_SLASH):
             self.chat_text = "/" if pyxel.btnp(pyxel.KEY_SLASH) else ""
             self.set_state("chat")

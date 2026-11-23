@@ -28,6 +28,7 @@ from pycraft.screens.earth import EarthScreens
 from pycraft.screens.hud import Hud
 from pycraft.screens.inventory import Inventory
 from pycraft.screens.menus import Menus
+from pycraft.screens.screenshot import Screenshots
 from pycraft.screens.settings import SettingsScreen
 from pycraft.settings import load_item_icons, load_tiles, parse_settings
 from pycraft.sim import Simulation
@@ -49,7 +50,7 @@ ZOOM_FOV = 22.0  # field of view while the zoom key is held
 DIM = 0.5  # brightness of the world behind the menus
 
 
-class App(Sound, Menus, EarthScreens, SettingsScreen, Inventory, Hud, Chat, Playing):
+class App(Sound, Menus, EarthScreens, SettingsScreen, Inventory, Hud, Chat, Screenshots, Playing):
     """The game: its window, its screens (see the classes it inherits from), its world and renderer."""
 
     def __init__(self, headless=False):
@@ -92,6 +93,7 @@ class App(Sound, Menus, EarthScreens, SettingsScreen, Inventory, Hud, Chat, Play
         self.slot = "normal"  # the save of the world played: the normal one, or one of the Earth's
         self.init_earth()
         self.settings_path = os.path.join(data_dir, "settings.json")
+        self.screenshot_dir = os.path.join(data_dir, "screenshots")
         self.settings = self.load_settings()
         self.controls = Controls(self.settings["keys"])
         self.settings["keys"] = self.controls.to_settings()
@@ -389,7 +391,7 @@ class App(Sound, Menus, EarthScreens, SettingsScreen, Inventory, Hud, Chat, Play
             self.pack_message = self.apply_pack(path)
             self.save_settings()
         # Build the world around the camera a little every frame (much more while loading)
-        budget = 0.06 if self.state == "loading" else 0.3 / self.settings["fps"]
+        budget = 0.06 if self.state in ("loading", "screenshot") else 0.3 / self.settings["fps"]
         if self.world.store is not None:
             online = not self.world.store.offline
             self.world.store.poll()
@@ -405,6 +407,8 @@ class App(Sound, Menus, EarthScreens, SettingsScreen, Inventory, Hud, Chat, Play
         elif self.state == "loading":
             if self.ground_ready() and self.renderer.progress(self.player.eye(), LOADING_RADIUS) >= 1:
                 self.set_state("playing")
+        elif self.state == "screenshot":
+            self.update_screenshot(pyxel.btnp(pyxel.KEY_ESCAPE))
         elif self.state == "settings":
             self.update_settings()
         elif self.state == "earth_loading":
@@ -463,6 +467,8 @@ class App(Sound, Menus, EarthScreens, SettingsScreen, Inventory, Hud, Chat, Play
             ui.shade(0, 0, ui.width, ui.height, 0.35, col=BRICK)
             ui.center_text(self.menu_top() - 26, "You died!", TEXT, shadow=True, size=2)
             self.draw_menu()
+        elif self.state == "screenshot":
+            self.draw_screenshot()
         elif self.state == "settings":
             self.draw_settings()
         else:
@@ -473,7 +479,7 @@ class App(Sound, Menus, EarthScreens, SettingsScreen, Inventory, Hud, Chat, Play
                 self.open_screen.draw(ui, self.draw_icon, ui.mouse_x, ui.mouse_y, ui.width, ui.height)
             elif self.state == "chat":
                 self.draw_chat()
-        if not self.mouse_captured and self.state not in ("loading", "earth_loading"):
+        if not self.mouse_captured and self.state not in ("loading", "earth_loading", "screenshot"):
             ui.cursor()
     def draw_message_box(self, text, progress=None):
         """A small panel in the middle of the screen with a line of text (and a progress bar)."""
