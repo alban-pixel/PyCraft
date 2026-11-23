@@ -54,11 +54,11 @@ uniform float cloud_height; // middle of the cloud slab above the camera
 uniform float cloud_cover;  // noise level where the clouds begin
 const float CLOUD_THICK = 80.0;  // the clouds are a slab this many blocks thick
 const float CLOUD_HALF = CLOUD_THICK / 2.0;
-float cloud_density(vec2 xz) {  // xz relative to the camera
+float cloud_noise(vec2 xz) {  // xz relative to the camera
     vec2 uv = cloud_origin + xz / %(period).1f;
-    float n = 0.72 * texture(clouds, uv).r + 0.28 * texture(clouds, uv * 6.0).r;
-    return smoothstep(cloud_cover, cloud_cover + 0.16, n);
+    return 0.72 * texture(clouds, uv).r + 0.28 * texture(clouds, uv * 6.0).r;
 }
+float cloud_density(vec2 xz) { return smoothstep(cloud_cover, cloud_cover + 0.16, cloud_noise(xz)); }
 float cloud_shadow(vec3 pos) {
     if (light_dir.y < 0.03 || pos.y > cloud_height + CLOUD_HALF) return 1.0;
     return 1.0 - 0.55 * cloud_density(pos.xz + light_dir.xz * ((cloud_height - pos.y) / light_dir.y));
@@ -679,7 +679,16 @@ void main() {
     for (int i = 0; i < steps; i++) {
         vec3 p = dir * mix(lo, hi, (float(i) + 0.5) / float(steps));
         float u = clamp((p.y - cloud_height + CLOUD_HALF) / CLOUD_THICK, 0.0, 1.0);
-        d += cloud_density(p.xz) * u * (1.0 - u) * 4.0;
+        if (hq == 1) {
+            // Only the thick middle of a cloud reaches the top and the bottom of the slab: rounded
+            // puffs, not the straight walls of a flat pattern pulled up (which the many steps of a
+            // screenshot would show as streaks toward the horizon)
+            float edge = (2.0 * u - 1.0) * (2.0 * u - 1.0);
+            float start = cloud_cover + 0.2 * edge;
+            d += smoothstep(start, start + 0.16, cloud_noise(p.xz)) * 1.5;
+        } else {
+            d += cloud_density(p.xz) * u * (1.0 - u) * 4.0;
+        }
     }
     float tau = d / float(steps) * clamp((hi - lo) / CLOUD_THICK, 0.0, 1.5);
     d = 1.0 - exp(-tau * 3.5);
