@@ -43,9 +43,14 @@ about 15%: the distant terrain samples millions of columns.
    of `snowy_share` (26% on seed 137206379) is the "cold and dry" rule, which makes snowy tundra
    from −0.3 on dry mountains around 1000–1200 blocks up (about 95% of the snow near hot biomes):
    both goals move to step 3.
-3. **One biome table.** Biome from a temperature × humidity table, with one snow line and one tree
-   line used in the lowlands and the mountains alike (no `high` switch): alpine meadow is above the
-   trees and below the snow. Goals: `snow_line_conflict`, `snow_near_hot`, `snowy_share`.
+3. **One snow line** (done). Named climate lines in `terrain.py`, the same in the lowlands and the
+   mountains: `CONIFERS` (−0.3), `SNOW_LINE` (−0.7: snow on the ground and ice on the water,
+   everywhere), `TREE_LINE` (−1.05: tundra), `ICE_CAP` (−1.5: glaciers). `high` remains, but only
+   picks the mountain form of a band (alpine meadow instead of taiga, snowy peaks instead of
+   snowy taiga), never whether there is snow. The "cold and dry" snowy tundra at −0.3 became a cold
+   steppe (plains). Met on the four seeds: `snow_line_conflict` 0 (was 8–11%), `snow_near_hot` 0
+   (was 15–25%), `snowy_share` 14–20%. Snowy peaks grow (6–9% of the map), alpine meadows move
+   about 300 blocks up.
 4. **Landform biomes from the land.** Beaches from the distance to the coast (sand on flat shores,
    gravel or stone on steep ones, snow on cold ones); lake and river banks get their own sand,
    gravel and clay and are no longer "Beach"; swamps in flat, wet lowland by rivers and lakes, not

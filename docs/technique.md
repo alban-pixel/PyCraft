@@ -48,7 +48,9 @@ le même code sert au monde jouable et au terrain lointain.
    champ de lave hummocky), volcans tables (tuyas), strata de lave en
    terrasses, et un bloc **moss** qui verdit les roches froides et humides.
 5. **Climat** : température + humidité → 18 biomes ; la température chute avec
-   l'altitude (forêt → alpage → neige → glacier). Les zones de température font
+   l'altitude (forêt → alpage → neige → glacier). Une seule limite des neiges
+   (`SNOW_LINE`) vaut en plaine comme en montagne : en dessous, tout est enneigé
+   et l'eau gèle ; au-dessus, rien. Les zones de température font
    une quinzaine de km. L'humidité vient de la mer : elle baisse vers
    l'intérieur des terres (continentalité) et derrière une chaîne de montagnes
    (ombre pluviométrique, vent venant de −x). La mer ne gèle qu'en eau peu

@@ -14,6 +14,11 @@ CHUNK = 16  # columns and sections are 16 blocks wide
 WORLD_HEIGHT = 10240  # Everest, on the real Earth, reaches 9361
 SEA_LEVEL = 512
 LAPSE = 1 / 1500  # temperature drop per block of altitude: tree line, then snow, then glaciers
+# The climate lines, the same in the lowlands and in the mountains (temperature, lower with altitude)
+CONIFERS = -0.3  # below: spruces in the lowlands, alpine meadows (bare of trees) in the mountains
+SNOW_LINE = -0.7  # below: snow on the ground, ice on the water
+TREE_LINE = -1.05  # below: no more trees (tundra)
+ICE_CAP = -1.5  # below: glaciers
 
 # Continentalness -> base height above sea level (oceans, coasts, lowlands, inland plateaus)
 C_POINTS = [-1.2, -0.55, -0.25, -0.08, 0.0, 0.08, 0.3, 0.7, 1.2]
@@ -197,7 +202,7 @@ class TerrainGenerator:
         temp_here = temperature - altitude * LAPSE
         # Ice on cold water: the rivers, the lakes and the shallow sea by the coasts; the deep sea
         # stays open
-        ice = (top < water) & (temp_here < -0.55) & (top >= SEA_LEVEL - 60)
+        ice = (top < water) & (temp_here < SNOW_LINE) & (top >= SEA_LEVEL - 60)
         biome = self._biome(top, water, c, temp_here, humidity, mesa, (mask > 0.12) | (top > SEA_LEVEL + 600))
         return {"height": height, "water": water, "biome": biome, "temperature": temp_here,
                 "humidity": humidity, "continent": c, "mask": mask, "river": in_bed & (water > SEA_LEVEL),
@@ -206,21 +211,25 @@ class TerrainGenerator:
     @staticmethod
     def _biome(top, water, c, temp, humidity, mesa, high):
         """Biome from climate: temperature (lower with altitude) and humidity. The first rule that
-        matches wins. high: in the mountains, where the cold comes from altitude, not climate."""
+        matches wins. The snow line is the same everywhere: every biome under it is snowy, none
+        above it is. high: in the mountains, where the land between the snow and the conifers is
+        alpine meadow instead of forest."""
         underwater = top < water
         ocean = top < SEA_LEVEL - 1
         rules = [
-            (ocean & (temp < -0.55) & (top >= SEA_LEVEL - 60), FROZEN_OCEAN),
+            (ocean & (temp < SNOW_LINE) & (top >= SEA_LEVEL - 60), FROZEN_OCEAN),
             (ocean & (top < SEA_LEVEL - 60), DEEP_OCEAN),
             (ocean, OCEAN),
-            ((top <= SEA_LEVEL + 2) & (c < 0.15) & ~underwater & (temp > -0.55), BEACH),
-            (temp < -1.5, GLACIER),
-            ((temp < -0.85) & high, SNOWY_PEAKS),
-            ((temp < -0.5) & high, ALPINE),
-            ((temp < -0.5) & (humidity < 0), SNOWY_TUNDRA),
-            (temp < -0.5, SNOWY_TAIGA),
-            ((temp < -0.3) & (humidity < -0.3), SNOWY_TUNDRA),
-            (temp < -0.3, TAIGA),
+            ((top <= SEA_LEVEL + 2) & (c < 0.15) & ~underwater & (temp >= SNOW_LINE), BEACH),
+            # Under the snow line
+            (temp < ICE_CAP, GLACIER),
+            ((temp < SNOW_LINE) & high, SNOWY_PEAKS),
+            ((temp < TREE_LINE) | ((temp < SNOW_LINE) & (humidity < 0)), SNOWY_TUNDRA),
+            (temp < SNOW_LINE, SNOWY_TAIGA),
+            # Between the snow line and the conifers' limit: no snow
+            ((temp < CONIFERS) & high, ALPINE),
+            ((temp < CONIFERS) & (humidity < -0.3), PLAINS),  # (cold steppe)
+            (temp < CONIFERS, TAIGA),
             ((temp > 0.35) & (mesa > 0.3), BADLANDS),
             ((temp > 0.35) & (humidity < -0.3), DESERT),
             ((temp > 0.35) & (humidity < 0.15), SAVANNA),
