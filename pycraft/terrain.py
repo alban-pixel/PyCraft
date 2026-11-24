@@ -203,24 +203,45 @@ class TerrainGenerator:
         # Ice on cold water: the rivers, the lakes and the shallow sea by the coasts; the deep sea
         # stays open
         ice = (top < water) & (temp_here < SNOW_LINE) & (top >= SEA_LEVEL - 60)
-        biome = self._biome(top, water, c, temp_here, humidity, mesa, (mask > 0.12) | (top > SEA_LEVEL + 600))
+        # The coast: how far inland the smooth ground level reaches the sea, in blocks (< 0 out at
+        # sea), from how fast it rises. Only near the sea level, where beaches and swamps may be
+        coast = np.full(top.shape, np.inf)
+        low = (top >= SEA_LEVEL - 1) & (top <= SEA_LEVEL + 5)
+        if low.any():
+            lx, lz = wx[low] / 9000, wz[low] / 9000
+            here = self.continent.fbm2(lx, lz, 5)
+            grad = np.hypot(self.continent.fbm2(lx + 16 / 9000, lz, 5) - here,
+                            self.continent.fbm2(lx, lz + 16 / 9000, 5) - here) * 2.4 / 16
+            cl = c[low]
+            rise = (np.interp(cl + 0.01, C_POINTS, C_HEIGHTS) - np.interp(cl - 0.01, C_POINTS, C_HEIGHTS)) / 0.02
+            coast[low] = (base[low] - SEA_LEVEL + 1) / np.maximum(rise * grad, 1e-6)
+        by_fresh_water = (dist < width + 12) | (lake > 0.7)
+        # Beaches: a strip along the sea, not along the rivers and lakes (their banks have their own sand and
+        # gravel, see _surface). Swamps: low, wet ground by the sea, a river or a lake
+        beach = (coast < 32) & ~by_fresh_water & (top <= SEA_LEVEL + 3)
+        wetland = (top <= SEA_LEVEL + 5) & ((coast < 300) | (dist < width + 80) | (lake > 0.65))
+        # The shore, where the ground is sand or gravel: the beach strip, and the banks just above a
+        # river or a lake
+        shore = beach | (((dist < width + 6) | (lake > 0.75)) & (top <= river_level + 2))
+        biome = self._biome(top, water, temp_here, humidity, mesa, (mask > 0.12) | (top > SEA_LEVEL + 600),
+                            beach, wetland)
         return {"height": height, "water": water, "biome": biome, "temperature": temp_here,
                 "humidity": humidity, "continent": c, "mask": mask, "river": in_bed & (water > SEA_LEVEL),
-                "terraces": mesa, "ice": ice}
+                "terraces": mesa, "ice": ice, "shore": shore}
 
     @staticmethod
-    def _biome(top, water, c, temp, humidity, mesa, high):
+    def _biome(top, water, temp, humidity, mesa, high, beach, wetland):
         """Biome from climate: temperature (lower with altitude) and humidity. The first rule that
         matches wins. The snow line is the same everywhere: every biome under it is snowy, none
         above it is. high: in the mountains, where the land between the snow and the conifers is
-        alpine meadow instead of forest."""
+        alpine meadow instead of forest. beach, wetland: where a beach or a swamp may be."""
         underwater = top < water
         ocean = top < SEA_LEVEL - 1
         rules = [
             (ocean & (temp < SNOW_LINE) & (top >= SEA_LEVEL - 60), FROZEN_OCEAN),
             (ocean & (top < SEA_LEVEL - 60), DEEP_OCEAN),
             (ocean, OCEAN),
-            ((top <= SEA_LEVEL + 2) & (c < 0.15) & ~underwater & (temp >= SNOW_LINE), BEACH),
+            (beach & ~underwater & (temp >= SNOW_LINE), BEACH),
             # Under the snow line
             (temp < ICE_CAP, GLACIER),
             ((temp < SNOW_LINE) & high, SNOWY_PEAKS),
@@ -234,7 +255,7 @@ class TerrainGenerator:
             ((temp > 0.35) & (humidity < -0.3), DESERT),
             ((temp > 0.35) & (humidity < 0.15), SAVANNA),
             (temp > 0.35, JUNGLE),
-            ((humidity > 0.38) & (top < SEA_LEVEL + 14), SWAMP),
+            ((humidity > 0.38) & wetland, SWAMP),
             (humidity < -0.25, PLAINS),
             ((humidity > 0.1) & (temp < 0.1), BIRCH_FOREST),
         ]
@@ -448,11 +469,16 @@ def _surface(s, top, slope, noise):
     put(mossy & ~steep & (noise > 0.0), MOSS, STONE, 2)
     put(mossy & steep & (slope < 4), MOSS, STONE)
     # The aquatic floor: sand, gravel and clay — mostly under water, on the shore just above the
-    # waterline, and in pockets buried in the ground
+    # waterline, and in pockets buried in the ground. Steep shores are shingle, cliffs bare rock,
+    # and cold shores stay under their snow
     under = top < water
-    wet = under | (top <= SEA_LEVEL + 2)
+    shore = s["shore"] & ~under if "shore" in s else (top <= SEA_LEVEL + 2) & ~under
+    wet = under | shore
     put(wet, SAND, SAND, 3)
     put(wet & (noise > 0.3), GRAVEL, GRAVEL)
+    put(shore & steep, GRAVEL, GRAVEL, 2)
+    put(shore & (slope >= 4), STONE, STONE)
+    put(shore & np.isin(biome, (SNOWY_TAIGA, SNOWY_TUNDRA, SNOWY_PEAKS)), SNOW)
     put(under & (noise < -0.35) & (water > SEA_LEVEL), CLAY, CLAY)
     put(wet & (top < SEA_LEVEL - 30), GRAVEL, GRAVEL)
     put(under & (biome == SWAMP), MUD, MUD)

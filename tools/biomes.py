@@ -109,7 +109,9 @@ def distance(mask, cap):
 def measures(grid):
     """The measures of GOALS (and a few more) for a sampled grid."""
     b, top, step = grid["biome"], grid["top"], grid["step"]
-    ocean = np.isin(b, OCEANS)
+    # The sea: the ocean biomes, and the shallow water at sea level by the shore (land biomes, as the
+    # generator calls the first block of depth)
+    ocean = np.isin(b, OCEANS) | ((grid["water"] == T.SEA_LEVEL) & (top < 0))
     land = ~ocean
     snowy = np.isin(b, SNOWY) & land
     hot = np.isin(b, HOT)

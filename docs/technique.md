@@ -55,7 +55,10 @@ le même code sert au monde jouable et au terrain lointain.
    l'intérieur des terres (continentalité) et derrière une chaîne de montagnes
    (ombre pluviométrique, vent venant de −x). La mer ne gèle qu'en eau peu
    profonde, le long des côtes ; `sample()` renvoie ce masque `ice`, que
-   suivent les blocs et le terrain lointain. `python tools/biomes.py` mesure la
+   suivent les blocs et le terrain lointain. Les plages bordent la mer (moins de
+   32 blocs de la côte, distance estimée comme celle des rivières), les marais
+   sont les terres humides et basses près de la mer, d'une rivière ou d'un lac,
+   et le sable ou les galets suivent le masque `shore` (plage, berges). `python tools/biomes.py` mesure la
    logique de la carte des biomes (voir `docs/superpowers/plans/2026-11-23-biomes-logiques.md`).
 
 Les couches lisses sont calculées tous les 8 blocs et interpolées — la

@@ -21,10 +21,10 @@ and their names have left `NOT_YET`.
 | `dry_share`: desert and badlands | ≥ 4% | 3.7–6% |
 | `ice_off_cold_coast`: frozen ocean whose ice field touches no cold coast | ≤ 5% | 0.1–7% |
 | `snow_line_conflict`: land on the wrong side of the best single snow line | ≤ 2% | 8–11% |
-| `beach_inland`: beach more than 64 blocks from the sea | ≤ 5% | 47–56% |
+| `beach_inland`: beach more than 64 blocks from the sea | ≤ 5% | 25–31% |
 | `swamp_high`: swamp more than 8 blocks above the sea | ≤ 5% | 32–37% |
 | `terraces_outside_badlands`: badlands terraces outside badlands | ≤ 10% | 27–35% |
-| `specks`: land with no neighbor of its own biome (48-block grid) | ≤ 0.2% | 0.9% |
+| `specks`: land with no neighbor of its own biome (48-block grid) | ≤ 0.2% | 0.7% |
 | `hot_touches_snow`: hot and snowy biomes side by side | 0 | 0 (keep it) |
 
 Speed: `TerrainGenerator.sample()` takes about 3.2–4.3 µs a column. It must not grow by more than
@@ -51,10 +51,18 @@ about 15%: the distant terrain samples millions of columns.
    steppe (plains). Met on the four seeds: `snow_line_conflict` 0 (was 8–11%), `snow_near_hot` 0
    (was 15–25%), `snowy_share` 14–20%. Snowy peaks grow (6–9% of the map), alpine meadows move
    about 300 blocks up.
-4. **Landform biomes from the land.** Beaches from the distance to the coast (sand on flat shores,
-   gravel or stone on steep ones, snow on cold ones); lake and river banks get their own sand,
-   gravel and clay and are no longer "Beach"; swamps in flat, wet lowland by rivers and lakes, not
-   under a height line. Goals: `beach_inland`, `swamp_high`.
+4. **Landform biomes from the land** (done). `sample()` estimates the distance to the coast like
+   the rivers' distance: the smooth ground level's height above the sea over how fast it rises
+   (the continentalness's gradient, computed only for points within a few blocks of sea level,
+   so it costs about 3%). Beaches: within 32 blocks of the coast, not on river or lake banks.
+   Swamps: humid ground at most 5 blocks above the sea, within 300 blocks of the coast or by a
+   river or a lake. `sample()` also returns `shore` (the beach strip, and the banks just above
+   a river or a lake), and the sand, gravel and clay follow it instead of covering every column
+   within 2 blocks of sea level: shingle on steep shores, rock on cliffs, snow on cold ones. No
+   new biome (River, Stony shore): the surface does it. Met on the four seeds: `beach_inland`
+   1.6–3.2%, `swamp_high` 0. The measure now counts the first block of shallow sea as sea (the
+   generator gives it a land biome); with it, the old generator's `beach_inland` is 25–31%, not
+   the 47–56% first reported, and the baseline was recomputed from the step 1 generator.
 5. **Terrain follows the biome.** Badlands terraces only where the final biome is badlands.
    Goal: `terraces_outside_badlands`.
 6. **Borders.** Blend surface blocks and trees across a border; no specks. Goal: `specks`. The
