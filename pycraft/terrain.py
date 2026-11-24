@@ -14,6 +14,11 @@ CHUNK = 16  # columns and sections are 16 blocks wide
 WORLD_HEIGHT = 10240  # Everest, on the real Earth, reaches 9361
 SEA_LEVEL = 512
 LAPSE = 1 / 1500  # temperature drop per block of altitude: tree line, then snow, then glaciers
+# The climate lines, the same in the lowlands and in the mountains (temperature, lower with altitude)
+CONIFERS = -0.3  # below: spruces in the lowlands, alpine meadows (bare of trees) in the mountains
+SNOW_LINE = -0.7  # below: snow on the ground, ice on the water
+TREE_LINE = -1.05  # below: no more trees (tundra)
+ICE_CAP = -1.5  # below: glaciers
 
 # Continentalness -> base height above sea level (oceans, coasts, lowlands, inland plateaus)
 C_POINTS = [-1.2, -0.55, -0.25, -0.08, 0.0, 0.08, 0.3, 0.7, 1.2]
@@ -72,16 +77,28 @@ class TerrainGenerator:
         t = self.tuya.fbm2(wx / 24000, wz / 24000, 2) * 2.3
         t_grad = np.hypot(self.tuya.fbm2((wx + 16) / 24000, wz / 24000, 2) * 2.3 - t,
                           self.tuya.fbm2(wx / 24000, (wz + 16) / 24000, 2) * 2.3 - t) / 16
+        continent = self.continent.fbm2(wx / 9000, wz / 9000, 5) * 2.4 + 0.2
+        half_width = 3400 + 1600 * self.hilliness.noise2(wx / 10000 + 50, wz / 10000)
+        strength = smoothstep(-0.28, 0.25, self.mountain_mask.fbm2(wx / 12000 + 300, wz / 12000, 2) * 2.3)
+        # Humidity comes from the sea: the land dries away from the coast, and more behind a mountain
+        # range, where the wind (from -x) has left its rain on the far side (a rain shadow). The
+        # noise makes wetter and drier regions on top of that
+        inland = smoothstep(0.0, 1.0, continent)
+        m_up = self.mountain_mask.fbm2((wx - 3000) / 22000, wz / 22000, 3)
+        range_upwind = np.clip(1 - np.abs(m_up) / np.maximum(m_grad, 1e-9) / half_width, 0, 1) * strength
+        humidity = (self.humidity.fbm2(wx / 6000, wz / 6000, 3) * 1.38 + 0.45 - inland
+                    - 0.6 * range_upwind)
         return {
             "wx": wx, "wz": wz, "m": m, "m_grad": m_grad, "r": r, "r_grad": r_grad,
             "fault": f, "f_grad": f_grad, "tuya": t, "t_grad": t_grad,
             "cliff": self.cliff.fbm2(wx / 8000, wz / 8000, 2) * 2.3,
-            "continent": self.continent.fbm2(wx / 9000, wz / 9000, 5) * 2.4 + 0.2,
-            "temperature": self.temperature.fbm2(wx / 6800, wz / 6800, 3) * 2.3,
-            "humidity": self.humidity.fbm2(wx / 6000, wz / 6000, 3) * 2.3,
+            "continent": continent,
+            # Climate zones some 15 km across, so that hot and cold lands lie far apart
+            "temperature": self.temperature.fbm2(wx / 13600, wz / 13600, 3) * 2.3 + 0.1,
+            "humidity": humidity,
             "hilliness": smoothstep(-0.3, 0.45, self.hilliness.fbm2(wx / 3500, wz / 3500, 2) * 2.3),
-            "half_width": 3400 + 1600 * self.hilliness.noise2(wx / 10000 + 50, wz / 10000),
-            "strength": smoothstep(-0.28, 0.25, self.mountain_mask.fbm2(wx / 12000 + 300, wz / 12000, 2) * 2.3),
+            "half_width": half_width,
+            "strength": strength,
             "badlands": self.badlands.fbm2(wx / 2700, wz / 2700, 2) * 2.3,
             "river_width": self.river_width.noise2(x / 600, z / 600),
             "lake": self.lake.fbm2(wx / 1900, wz / 1900, 3) * 2.3,
@@ -183,33 +200,62 @@ class TerrainGenerator:
 
         altitude = np.maximum(top - SEA_LEVEL - 30, 0)
         temp_here = temperature - altitude * LAPSE
-        biome = self._biome(top, water, c, temp_here, humidity, mesa, (mask > 0.12) | (top > SEA_LEVEL + 600))
+        # Ice on cold water: the rivers, the lakes and the shallow sea by the coasts; the deep sea
+        # stays open
+        ice = (top < water) & (temp_here < SNOW_LINE) & (top >= SEA_LEVEL - 60)
+        # The coast: how far inland the smooth ground level reaches the sea, in blocks (< 0 out at
+        # sea), from how fast it rises. Only near the sea level, where beaches and swamps may be
+        coast = np.full(top.shape, np.inf)
+        low = (top >= SEA_LEVEL - 1) & (top <= SEA_LEVEL + 5)
+        if low.any():
+            lx, lz = wx[low] / 9000, wz[low] / 9000
+            here = self.continent.fbm2(lx, lz, 5)
+            grad = np.hypot(self.continent.fbm2(lx + 16 / 9000, lz, 5) - here,
+                            self.continent.fbm2(lx, lz + 16 / 9000, 5) - here) * 2.4 / 16
+            cl = c[low]
+            rise = (np.interp(cl + 0.01, C_POINTS, C_HEIGHTS) - np.interp(cl - 0.01, C_POINTS, C_HEIGHTS)) / 0.02
+            coast[low] = (base[low] - SEA_LEVEL + 1) / np.maximum(rise * grad, 1e-6)
+        by_fresh_water = (dist < width + 12) | (lake > 0.7)
+        # Beaches: a strip along the sea, not along the rivers and lakes (their banks have their own sand and
+        # gravel, see _surface). Swamps: low, wet ground by the sea, a river or a lake
+        beach = (coast < 32) & ~by_fresh_water & (top <= SEA_LEVEL + 3)
+        wetland = (top <= SEA_LEVEL + 5) & ((coast < 300) | (dist < width + 80) | (lake > 0.65))
+        # The shore, where the ground is sand or gravel: the beach strip, and the banks just above a
+        # river or a lake
+        shore = beach | (((dist < width + 6) | (lake > 0.75)) & (top <= river_level + 2))
+        biome = self._biome(top, water, temp_here, humidity, mesa, (mask > 0.12) | (top > SEA_LEVEL + 600),
+                            beach, wetland)
         return {"height": height, "water": water, "biome": biome, "temperature": temp_here,
-                "humidity": humidity, "continent": c, "mask": mask, "river": in_bed & (water > SEA_LEVEL)}
+                "humidity": humidity, "continent": c, "mask": mask, "river": in_bed & (water > SEA_LEVEL),
+                "terraces": mesa, "ice": ice, "shore": shore}
 
     @staticmethod
-    def _biome(top, water, c, temp, humidity, mesa, high):
+    def _biome(top, water, temp, humidity, mesa, high, beach, wetland):
         """Biome from climate: temperature (lower with altitude) and humidity. The first rule that
-        matches wins. high: in the mountains, where the cold comes from altitude, not climate."""
+        matches wins. The snow line is the same everywhere: every biome under it is snowy, none
+        above it is. high: in the mountains, where the land between the snow and the conifers is
+        alpine meadow instead of forest. beach, wetland: where a beach or a swamp may be."""
         underwater = top < water
         ocean = top < SEA_LEVEL - 1
         rules = [
-            (ocean & (temp < -0.55), FROZEN_OCEAN),
+            (ocean & (temp < SNOW_LINE) & (top >= SEA_LEVEL - 60), FROZEN_OCEAN),
             (ocean & (top < SEA_LEVEL - 60), DEEP_OCEAN),
             (ocean, OCEAN),
-            ((top <= SEA_LEVEL + 2) & (c < 0.15) & ~underwater & (temp > -0.55), BEACH),
-            (temp < -1.5, GLACIER),
-            ((temp < -0.85) & high, SNOWY_PEAKS),
-            ((temp < -0.5) & high, ALPINE),
-            ((temp < -0.5) & (humidity < 0), SNOWY_TUNDRA),
-            (temp < -0.5, SNOWY_TAIGA),
-            ((temp < -0.3) & (humidity < -0.3), SNOWY_TUNDRA),
-            (temp < -0.3, TAIGA),
+            (beach & ~underwater & (temp >= SNOW_LINE), BEACH),
+            # Under the snow line
+            (temp < ICE_CAP, GLACIER),
+            ((temp < SNOW_LINE) & high, SNOWY_PEAKS),
+            ((temp < TREE_LINE) | ((temp < SNOW_LINE) & (humidity < 0)), SNOWY_TUNDRA),
+            (temp < SNOW_LINE, SNOWY_TAIGA),
+            # Between the snow line and the conifers' limit: no snow
+            ((temp < CONIFERS) & high, ALPINE),
+            ((temp < CONIFERS) & (humidity < -0.3), PLAINS),  # (cold steppe)
+            (temp < CONIFERS, TAIGA),
             ((temp > 0.35) & (mesa > 0.3), BADLANDS),
             ((temp > 0.35) & (humidity < -0.3), DESERT),
             ((temp > 0.35) & (humidity < 0.15), SAVANNA),
             (temp > 0.35, JUNGLE),
-            ((humidity > 0.38) & (top < SEA_LEVEL + 14), SWAMP),
+            ((humidity > 0.38) & wetland, SWAMP),
             (humidity < -0.25, PLAINS),
             ((humidity > 0.1) & (temp < 0.1), BIRCH_FOREST),
         ]
@@ -423,11 +469,16 @@ def _surface(s, top, slope, noise):
     put(mossy & ~steep & (noise > 0.0), MOSS, STONE, 2)
     put(mossy & steep & (slope < 4), MOSS, STONE)
     # The aquatic floor: sand, gravel and clay — mostly under water, on the shore just above the
-    # waterline, and in pockets buried in the ground
+    # waterline, and in pockets buried in the ground. Steep shores are shingle, cliffs bare rock,
+    # and cold shores stay under their snow
     under = top < water
-    wet = under | (top <= SEA_LEVEL + 2)
+    shore = s["shore"] & ~under if "shore" in s else (top <= SEA_LEVEL + 2) & ~under
+    wet = under | shore
     put(wet, SAND, SAND, 3)
     put(wet & (noise > 0.3), GRAVEL, GRAVEL)
+    put(shore & steep, GRAVEL, GRAVEL, 2)
+    put(shore & (slope >= 4), STONE, STONE)
+    put(shore & np.isin(biome, (SNOWY_TAIGA, SNOWY_TUNDRA, SNOWY_PEAKS)), SNOW)
     put(under & (noise < -0.35) & (water > SEA_LEVEL), CLAY, CLAY)
     put(wet & (top < SEA_LEVEL - 30), GRAVEL, GRAVEL)
     put(under & (biome == SWAMP), MUD, MUD)
@@ -482,7 +533,7 @@ def _generate_columns(gen, keys):
         col.surface, col.filler, col.depth = surface[i], filler[i], depth[i]
         col.biome, col.temperature, col.river = s["biome"][i], s["temperature"][i], s["river"][i]
         col.badlands = col.biome == BADLANDS
-        col.ice = (col.water > col.height) & (col.temperature < -0.55)
+        col.ice = s["ice"][i] if "ice" in s else (col.water > col.height) & (col.temperature < -0.55)
         col.shift = gen.shift(top[i])
         col.deep, col.entrance = deep[i] + col.shift, entrance[i]
         col.grass = (grass[i] * 255).astype(np.uint8)

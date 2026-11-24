@@ -48,7 +48,18 @@ le même code sert au monde jouable et au terrain lointain.
    champ de lave hummocky), volcans tables (tuyas), strata de lave en
    terrasses, et un bloc **moss** qui verdit les roches froides et humides.
 5. **Climat** : température + humidité → 18 biomes ; la température chute avec
-   l'altitude (forêt → alpage → neige → glacier).
+   l'altitude (forêt → alpage → neige → glacier). Une seule limite des neiges
+   (`SNOW_LINE`) vaut en plaine comme en montagne : en dessous, tout est enneigé
+   et l'eau gèle ; au-dessus, rien. Les zones de température font
+   une quinzaine de km. L'humidité vient de la mer : elle baisse vers
+   l'intérieur des terres (continentalité) et derrière une chaîne de montagnes
+   (ombre pluviométrique, vent venant de −x). La mer ne gèle qu'en eau peu
+   profonde, le long des côtes ; `sample()` renvoie ce masque `ice`, que
+   suivent les blocs et le terrain lointain. Les plages bordent la mer (moins de
+   32 blocs de la côte, distance estimée comme celle des rivières), les marais
+   sont les terres humides et basses près de la mer, d'une rivière ou d'un lac,
+   et le sable ou les galets suivent le masque `shore` (plage, berges). `python tools/biomes.py` mesure la
+   logique de la carte des biomes (voir `docs/superpowers/plans/2026-11-23-biomes-logiques.md`).
 
 Les couches lisses sont calculées tous les 8 blocs et interpolées — la
 génération d'une colonne est ~3× plus rapide.

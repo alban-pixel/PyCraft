@@ -156,7 +156,7 @@ class Sampler:
         gen = self.world.gen
         top = np.floor(s["height"]).astype(np.int32)
         wet = top < s["water"]
-        ice = wet & (s["temperature"] < -0.55)
+        ice = s["ice"] if "ice" in s else wet & (s["temperature"] < -0.55)
         # The column is the ground itself — the aquatic floor too, under the water. The water is
         # another column on top of it, see-through like the blocks' (a solid ice column where the
         # water is frozen, a full block tall like the ice blocks are)
