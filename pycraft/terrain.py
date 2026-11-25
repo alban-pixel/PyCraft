@@ -119,8 +119,10 @@ class TerrainGenerator:
         wx, wz, c, hilliness = k["wx"], k["wz"], k["continent"], k["hilliness"]
         base = np.interp(c, C_POINTS, C_HEIGHTS) + SEA_LEVEL  # smooth "ground level" without relief
         land = smoothstep(-0.02, 0.25, c)
-        temperature = k["temperature"] + 0.05 * self.surface.noise2(x / 90, z / 90)
-        humidity = k["humidity"] + 0.06 * self.surface.noise2(x / 70 + 500, z / 70)
+        # The borders between biomes wander, but over hundreds of blocks: a finer noise would make
+        # dotted borders, with specks of one biome in the other
+        temperature = k["temperature"] + 0.05 * self.surface.noise2(x / 400, z / 400)
+        humidity = k["humidity"] + 0.06 * self.surface.noise2(x / 350 + 500, z / 350)
 
         # Relief on top of the base level, always >= 0 on land: hills, mountains, small bumps
         hills = np.maximum(self.hills.fbm2(x / 850, z / 850, 5) * 2.2 + 0.45, 0) * (12 + 110 * hilliness)

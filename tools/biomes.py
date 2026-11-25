@@ -43,7 +43,8 @@ GOALS = {
     "beach_inland": ("share of the beach more than 64 blocks from the sea", "<=", 0.05, 4),
     "swamp_high": ("share of the swamp more than 8 blocks above the sea", "<=", 0.05, 4),
     "terraces_outside_badlands": ("share of the land with badlands terraces that is not badlands", "<=", 0.1, 5),
-    "specks": ("share of the land in a patch smaller than two points (no neighbor of its biome)", "<=", 0.002, 6),
+    "specks": ("share of the land in a patch smaller than two points (no neighbor of its biome; "
+               "beaches aside)", "<=", 0.002, 6),
 }
 
 
@@ -150,7 +151,7 @@ def measures(grid):
     terraced = (grid["terraces"] > 0.3) & land
     m["terraces_outside_badlands"] = float((terraced & (b != T.BADLANDS)).sum() / max(terraced.sum(), 1))
 
-    alone = land.copy()
+    alone = land & (b != T.BEACH)  # (a beach is a strip narrower than the grid, by design)
     alone[1:] &= b[1:] != b[:-1]
     alone[:-1] &= b[:-1] != b[1:]
     alone[:, 1:] &= b[:, 1:] != b[:, :-1]

@@ -68,8 +68,12 @@ about 15%: the distant terrain samples millions of columns.
    biomes, and the biome is badlands exactly where it passes 0.3. Met on the four seeds:
    `terraces_outside_badlands` 0–0.1% (was 27–35%: plains at 0.25–0.35 and the mountains of hot
    countries); badlands 0.9–2.5% of the map.
-6. **Borders.** Blend surface blocks and trees across a border; no specks. Goal: `specks`. The
-   distant terrain uses the same `sample()`, so it follows.
+6. **Borders** (done for the specks). The small noise on the temperature and the humidity varied
+   every 70–90 blocks, so borders came out dotted; it now varies over 350–400 blocks, so they
+   wander without specks. The measure leaves beaches out (a strip narrower than its grid, by
+   design). Met on the four seeds: `specks` 0.1% (was 0.6–0.7%). Not done: blending trees and
+   ground blocks across a border (tints already change smoothly); it would need a second,
+   finer biome map for every chunk.
 7. **Old worlds.** The save records the generator's version; old worlds keep the old generator so
    that their new chunks don't leave seams. New worlds get the new one.
 8. **Check.** `tools/biomes.py` meets every goal on the four seeds; pytest; `tools/holes.py`,

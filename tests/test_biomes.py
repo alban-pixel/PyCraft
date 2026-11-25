@@ -8,7 +8,7 @@ from tools.biomes import GOALS, measures, meets, sample_grid
 
 SEED = 424242
 # Goals not met yet, with the step of the plan that fixes them (see GOALS)
-NOT_YET = {"specks"}
+NOT_YET = set()
 
 
 @pytest.fixture(scope="module")
