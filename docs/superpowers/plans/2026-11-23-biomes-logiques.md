@@ -63,8 +63,11 @@ about 15%: the distant terrain samples millions of columns.
    1.6–3.2%, `swamp_high` 0. The measure now counts the first block of shallow sea as sea (the
    generator gives it a land biome); with it, the old generator's `beach_inland` is 25–31%, not
    the 47–56% first reported, and the baseline was recomputed from the step 1 generator.
-5. **Terrain follows the biome.** Badlands terraces only where the final biome is badlands.
-   Goal: `terraces_outside_badlands`.
+5. **Terrain follows the biome** (done). The terracing strength (`mesa`) uses the temperature at
+   the height of the ground (the biomes' cooling with altitude) and starts at 0.35 like the hot
+   biomes, and the biome is badlands exactly where it passes 0.3. Met on the four seeds:
+   `terraces_outside_badlands` 0–0.1% (was 27–35%: plains at 0.25–0.35 and the mountains of hot
+   countries); badlands 0.9–2.5% of the map.
 6. **Borders.** Blend surface blocks and trees across a border; no specks. Goal: `specks`. The
    distant terrain uses the same `sample()`, so it follows.
 7. **Old worlds.** The save records the generator's version; old worlds keep the old generator so

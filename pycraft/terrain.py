@@ -136,8 +136,11 @@ class TerrainGenerator:
         detail = (self.detail.fbm2(x / 45, z / 45, 3) + 0.6) * (2.0 + 5 * hilliness + 9 * mask)
         relief = (hills * (0.4 + 0.6 * land) + np.maximum(detail, 0)) * land + mountains
 
-        # Badlands: in hot and dry places, the relief turns into stepped mesas
-        mesa = smoothstep(0.25, 0.45, temperature) * smoothstep(-0.25, -0.45, humidity) * smoothstep(
+        # Badlands: in hot and dry places, the relief turns into stepped mesas. Hot at the height of
+        # the ground (the same cooling with altitude as the biomes'), so the mountains of a hot
+        # country stay unstepped; the biome is badlands exactly where mesa > 0.3
+        warmth = temperature - np.maximum(base + relief - SEA_LEVEL - 30, 0) * LAPSE
+        mesa = smoothstep(0.35, 0.5, warmth) * smoothstep(-0.25, -0.45, humidity) * smoothstep(
             -0.1, 0.25, k["badlands"])
         step = 9.0
         stepped = np.floor(relief / step) * step + step * smoothstep(0.7, 1.0, (relief / step) % 1.0)
@@ -251,7 +254,7 @@ class TerrainGenerator:
             ((temp < CONIFERS) & high, ALPINE),
             ((temp < CONIFERS) & (humidity < -0.3), PLAINS),  # (cold steppe)
             (temp < CONIFERS, TAIGA),
-            ((temp > 0.35) & (mesa > 0.3), BADLANDS),
+            (mesa > 0.3, BADLANDS),
             ((temp > 0.35) & (humidity < -0.3), DESERT),
             ((temp > 0.35) & (humidity < 0.15), SAVANNA),
             (temp > 0.35, JUNGLE),

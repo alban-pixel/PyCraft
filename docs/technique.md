@@ -58,7 +58,10 @@ le même code sert au monde jouable et au terrain lointain.
    suivent les blocs et le terrain lointain. Les plages bordent la mer (moins de
    32 blocs de la côte, distance estimée comme celle des rivières), les marais
    sont les terres humides et basses près de la mer, d'une rivière ou d'un lac,
-   et le sable ou les galets suivent le masque `shore` (plage, berges). `python tools/biomes.py` mesure la
+   et le sable ou les galets suivent le masque `shore` (plage, berges).
+   Les mesas en gradins des badlands suivent la même température (refroidie par
+   l'altitude) que le biome : il y a des gradins là où le biome est badlands, et
+   nulle part ailleurs. `python tools/biomes.py` mesure la
    logique de la carte des biomes (voir `docs/superpowers/plans/2026-11-23-biomes-logiques.md`).
 
 Les couches lisses sont calculées tous les 8 blocs et interpolées — la
