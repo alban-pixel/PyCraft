@@ -74,8 +74,17 @@ about 15%: the distant terrain samples millions of columns.
    design). Met on the four seeds: `specks` 0.1% (was 0.6–0.7%). Not done: blending trees and
    ground blocks across a border (tints already change smoothly); it would need a second,
    finer biome map for every chunk.
-7. **Old worlds.** The save records the generator's version; old worlds keep the old generator so
-   that their new chunks don't leave seams. New worlds get the new one.
+7. **Old worlds** (done). A save holds only the sections the player changed; the rest comes back
+   from the seed, so a new generator would change all the untouched land of an old world and
+   leave seams around its builds. `terrain.GENERATOR_VERSION` is 2; `TerrainGenerator(seed,
+   version)` keeps version 1 (the generator of main 2e9d45b) as a few branches: its climate,
+   border noise, terracing and `_biome_v1`, and no `ice` or `shore` in `sample()`, so the
+   blocks and the distant terrain use the old shores and ice. `World(seed, earth, version)`;
+   `save()` writes `generator`, and `load()` reads a save without it as version 1. The builders
+   and the distant terrain's sampler get the version in their messages. The Earth's generator
+   has no versions. Version 1 was checked equal to main on 82 arrays (sample on two seeds, 72
+   sections); `tests/test_generator_version.py` holds a sample of main's generator
+   (`tests/data/generator_v1.npz`).
 8. **Check.** `tools/biomes.py` meets every goal on the four seeds; pytest; `tools/holes.py`,
    `tools/render_views.py`, a play-test; the speed budget.
 

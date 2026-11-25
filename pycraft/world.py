@@ -15,11 +15,13 @@ SAVE_VERSION = 3  # 3: block states; a save of version 2 (no states) still loads
 
 
 class World:
-    def __init__(self, seed, earth=None):
-        """earth: the earth.Place of a world on the real Earth."""
+    def __init__(self, seed, earth=None, version=terrain.GENERATOR_VERSION):
+        """earth: the earth.Place of a world on the real Earth. version: of the usual generator
+        (terrain.GENERATOR_VERSION), the one the world was made with."""
         self.seed = int(seed)
         self.earth = earth
-        self.gen = terrain.make_generator(self.seed, earth)
+        self.version = int(version)
+        self.gen = terrain.make_generator(self.seed, earth, self.version)
         # On Earth, in the game's own process: the tiles the ground is made from (earth.tiles.TileStore).
         # The game only goes, and only asks for terrain, where they are there (ready)
         self.store = None
@@ -297,7 +299,7 @@ class World:
         state_keys = sorted(k for k in self.states if k in self.edited)
         if self.earth is not None:
             extra["earth"] = np.array([self.earth.lat, self.earth.lon])
-        np.savez_compressed(path, version=SAVE_VERSION, seed=self.seed,
+        np.savez_compressed(path, version=SAVE_VERSION, seed=self.seed, generator=self.version,
                             keys=np.array(keys, dtype=np.int64).reshape(-1, 3),
                             sections=np.array(blocks, dtype=np.uint8).reshape(-1, CHUNK, CHUNK, CHUNK),
                             state_keys=np.array(state_keys, dtype=np.int64).reshape(-1, 3),
@@ -313,7 +315,10 @@ class World:
         if int(data.pop("version", 1)) not in (2, SAVE_VERSION):
             raise ValueError("this save is from another version of the game")
         earth = data.pop("earth", None)
-        world = cls(int(data.pop("seed")), None if earth is None else Place(float(earth[0]), float(earth[1]), root))
+        # The generator's version: a save from before there was one was made with version 1
+        version = int(data.pop("generator", 1))
+        world = cls(int(data.pop("seed")), None if earth is None else Place(float(earth[0]), float(earth[1]), root),
+                    version)
         for key, blocks in zip(data.pop("keys"), data.pop("sections")):
             key = tuple(int(v) for v in key)
             world.sections[key] = blocks.copy()

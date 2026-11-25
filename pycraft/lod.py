@@ -270,8 +270,8 @@ class Sampler:
         self.calls += 1
         call = (self.number, self.calls)
         for i, part in enumerate(parts):
-            work.put((call, i, self.world.seed, self.world.earth, self.spacing, self.block_colors, level, gx[part],
-                      gz[part], sub))
+            work.put((call, i, self.world.seed, self.world.earth, self.world.version, self.spacing,
+                      self.block_colors, level, gx[part], gz[part], sub))
         recs = [None] * len(parts)
         missing = set(range(len(parts)))
         lock = threading.Lock()
@@ -291,7 +291,7 @@ class Sampler:
                 except queue.Empty:
                     continue
                 if item[0] == call:  # (else a leftover of a job that was given up)
-                    finish(item[1], self._sample_chunk(level, item[7], item[8], sub))
+                    finish(item[1], self._sample_chunk(level, item[-3], item[-2], sub))  # (its gx, gz)
 
         threads = [self.pool.submit(local) for _ in range(self.threads)]
         while missing and self.alive():
@@ -685,7 +685,8 @@ class Sampler:
 
 def _worker(tasks, results, current, work, done):
     """Main loop of the sampler's process. Messages:
-    ("config", number, seed, place on Earth or None, edited sections, spacing, size, levels, block colors)
+    ("config", number, seed, place on Earth or None, generator version, edited sections, spacing, size, levels,
+     block colors)
                                                             a new sampler
     ("set", x, y, z, block)                                 a block the player changed
     ("job", number, batch, origins, edits)                  see Sampler.job
@@ -706,10 +707,10 @@ def _worker(tasks, results, current, work, done):
             if msg[0] == "config":
                 if msg[1] != current.value:
                     continue  # already replaced by another one
-                _, number, seed, earth, edited, spacing, size, levels, colors = msg
+                _, number, seed, earth, version, edited, spacing, size, levels, colors = msg
                 if sampler is not None:
                     sampler.close()
-                world = World(seed, earth)
+                world = World(seed, earth, version)
                 for key, blocks in edited:
                     world.sections[key] = blocks
                     world.edited.add(key)
@@ -753,7 +754,8 @@ class SamplerProcess:
         self.current.value = self.number
         edited = [(k, world.sections[k]) for k in world.edited]
         edited = [(k, np.full((CHUNK,) * 3, s, np.uint8) if isinstance(s, int) else s) for k, s in edited]
-        self.tasks.put(("config", self.number, world.seed, world.earth, edited, spacing, size, levels, block_colors))
+        self.tasks.put(("config", self.number, world.seed, world.earth, world.version, edited, spacing, size, levels,
+                        block_colors))
 
     def block_changed(self, x, y, z, block):
         self.tasks.put(("set", x, y, z, block))

@@ -241,12 +241,13 @@ def _help_sampler(world, shared, helpers):
     this process has the world it takes, the blocks the player changed included."""
     work, done, current = shared
     try:
-        call, i, seed, earth, spacing, colors, level, gx, gz, sub = work.get_nowait()
+        call, i, seed, earth, version, spacing, colors, level, gx, gz, sub = work.get_nowait()
     except queue.Empty:
         return
     rec = None
     try:
-        if call[0] == current.value and world is not None and (world.seed, world.earth) == (seed, earth):
+        if call[0] == current.value and world is not None and (world.seed, world.earth, world.version) == (
+                seed, earth, version):
             from pycraft import lod  # (not at the top: lod imports this module)
             key = (id(world), spacing)
             if key not in helpers:
@@ -259,7 +260,8 @@ def _help_sampler(world, shared, helpers):
 
 def _worker(tasks, results, shared=None):
     """Main loop of a worker process. Messages:
-    ("world", generation, seed, place on Earth or None, edited sections, their states) start over with another world
+    ("world", generation, seed, place on Earth or None, generator version, edited sections, their states)
+                                                 start over with another world
     ("set", x, y, z, block, state)               a block the player (or a machine) changed
     ("columns", generation, [column])            send these columns back (for the game's own world)
     ("build", generation, (cx, cy, cz) of the camera, [(column, version, sections done, caves)])
@@ -283,8 +285,8 @@ def _worker(tasks, results, shared=None):
             continue
         try:
             if msg[0] == "world":
-                _, generation, seed, earth, edited, states = msg
-                world, forget_center = World(seed, earth), None
+                _, generation, seed, earth, version, edited, states = msg
+                world, forget_center = World(seed, earth, version), None
                 for key, blocks in edited:
                     world.sections[key] = blocks
                     world.edited.add(key)
@@ -334,7 +336,7 @@ class Builders:
         edited = [(k, np.full((CHUNK,) * 3, s, np.uint8) if isinstance(s, int) else s) for k, s in edited]
         states = {k: s for k, s in world.states.items() if k in world.edited}
         for tasks, flying in zip(self.tasks, self.in_flight):
-            tasks.put(("world", self.generation, world.seed, world.earth, edited, states))
+            tasks.put(("world", self.generation, world.seed, world.earth, world.version, edited, states))
             flying.clear()
 
     def block_changed(self, x, y, z, block, state=0):

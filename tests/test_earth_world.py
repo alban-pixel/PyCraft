@@ -34,7 +34,7 @@ def test_place_travels_between_processes(tmp_path):
 
 
 def test_save_load_earth(tmp_path, monkeypatch):
-    monkeypatch.setattr(T, "make_generator", lambda seed, earth: T.TerrainGenerator(seed))
+    monkeypatch.setattr(T, "make_generator", lambda seed, earth, version=None: T.TerrainGenerator(seed))
     world = World(5, Place(45.9, 6.9, str(tmp_path)))
     world.set(3, 900, 3, STONE)
     world.save(tmp_path / "a.npz", mode=1)

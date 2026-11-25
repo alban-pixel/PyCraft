@@ -61,7 +61,10 @@ le même code sert au monde jouable et au terrain lointain.
    et le sable ou les galets suivent le masque `shore` (plage, berges).
    Les mesas en gradins des badlands suivent la même température (refroidie par
    l'altitude) que le biome : il y a des gradins là où le biome est badlands, et
-   nulle part ailleurs. `python tools/biomes.py` mesure la
+   nulle part ailleurs.
+   Le générateur a une version (`terrain.GENERATOR_VERSION`, gardée dans la
+   sauvegarde sous `generator`) : un monde garde celle avec laquelle il a été
+   créé, et une sauvegarde sans elle est en version 1 (avant ces biomes). `python tools/biomes.py` mesure la
    logique de la carte des biomes (voir `docs/superpowers/plans/2026-11-23-biomes-logiques.md`).
 
 Les couches lisses sont calculées tous les 8 blocs et interpolées — la
