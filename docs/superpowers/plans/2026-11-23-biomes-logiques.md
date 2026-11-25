@@ -85,8 +85,14 @@ about 15%: the distant terrain samples millions of columns.
    has no versions. Version 1 was checked equal to main on 82 arrays (sample on two seeds, 72
    sections); `tests/test_generator_version.py` holds a sample of main's generator
    (`tests/data/generator_v1.npz`).
-8. **Check.** `tools/biomes.py` meets every goal on the four seeds; pytest; `tools/holes.py`,
-   `tools/render_views.py`, a play-test; the speed budget.
+8. **Check** (done, 2026-11-24). `tools/biomes.py`: 44 of 44 goals met (11 measures, four
+   seeds). pytest: 370 passed, 3 skipped, no expected failure left. `tools/holes.py`: 0 holes
+   in 16 views. `tools/render_views.py`: pictures looked at (river through spruce forest at
+   the spawn, snow on the higher ground). `tools/play_window.py`: a new world, walking,
+   placing, a 6 km teleport, night, save and continue, no error. `sample()` about 3.5% slower
+   than main, within the 15% budget. Left open: blending trees and ground blocks across a
+   border (step 6), and the tests fail on macOS in CI since step 2 (Linux and Windows pass;
+   the log needs a GitHub sign-in to read).
 
 Open questions for the owner: add River and Stony shore biomes in step 4, or keep the 18? Keep the
 old generator for old worlds (step 7), or accept a seam?
